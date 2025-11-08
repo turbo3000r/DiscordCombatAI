@@ -1,0 +1,37 @@
+{
+    "log_directory": "logs",
+    "files": {
+        "errors": {
+            "filename": "Errors.log",
+            "level": "ERROR",
+            "levels": ["ERROR", "CRITICAL"]
+        },
+        "log": {
+            "filename": "Log.log",
+            "level": "INFO",
+            "levels": ["INFO", "WARNING", "ERROR", "CRITICAL"]
+        },
+        "latest": {
+            "filename": "Latest.log",
+            "level": "DEBUG",
+            "levels": ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
+            "clear_on_startup": true
+        },
+        "debug": {
+            "filename": "debug.log",
+            "level": "DEBUG",
+            "levels": ["DEBUG"]
+        }
+    },
+    "console": {
+        "enabled": true,
+        "level": "DEBUG",
+        "levels": ["DEBUG"]
+    },
+    "format": {
+        "file": "[%(asctime)s][%(name)s][%(levelname)s][%(guild)s]: %(message)s",
+        "console": "[%(asctime)s][%(name)s][%(levelname)s][%(guild)s]: %(message)s"
+    },
+    "date_format": "%Y-%m-%d %H:%M:%S"
+}
+

@@ -1,0 +1,10 @@
+# Environment variables
+.env
+
+# Generic data
+/guilds/*
+/logs/*
+
+# Cache
+__pycache__/
+*.pyc

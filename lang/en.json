@@ -1,0 +1,10 @@
+{
+  "common": {
+    "hello": "Hello, {user}!",
+    "pong": "Pong! {ms}ms"
+  },
+  "errors": {
+    "member_has_no_permissions": "You do not have permission to use this command.",
+    "error": "An error occurred while processing your request. Please try again later."
+  }
+}
