@@ -3,10 +3,12 @@ import shutil
 import discord
 from discord.ext import commands
 
+from modules.BattleHandler import BattleHandler
 from modules.guild import Guild
 from modules.utils import load_guilds, setup_guild, ProcessCommand
 from modules.ConfigurationHandler import register_setup
 from modules.LoggerHandler import get_logger
+from modules.LocalizationHandler import LocalizationHandler, DiscordTranslator, lstr
 
 logger = get_logger()
 
@@ -19,14 +21,20 @@ class DiscordBot(commands.Bot):
 
         super().__init__(intents=intents, command_prefix="!")
         
+        # Initialize localization handler and translator
+        self.l10n = LocalizationHandler()
+        translator = DiscordTranslator(self.l10n)
+        
         
         register_setup(self)
+        self.battle_handler = BattleHandler(self)
 
         @self.event
         async def on_ready():
             logger.info(f"Bot logged in as {self.user}", extra={"guild": "Core"})
             # Ensure slash commands are synced on startup
             try:
+                await self.tree.set_translator(translator)
                 await self.tree.sync()
                 logger.info("Slash commands synced successfully", extra={"guild": "Core"})
             except Exception as e:
@@ -42,12 +50,15 @@ class DiscordBot(commands.Bot):
             await self.process_commands(message)
 
         # Example slash command: /ping
-        @self.tree.command(name="ping", description="Check bot latency")
+        @self.tree.command(
+            name="ping",
+            description=lstr("commands.ping.description", default="Check bot latency")
+        )
         @ProcessCommand(allowed_permissions={discord.Permissions.administrator: True})
-        async def ping(interaction: discord.Interaction, guild: Guild, member: discord.Member):
+        async def ping(interaction: discord.Interaction, guild: Guild):
             latency_ms = round(self.latency * 1000)
             
-            await interaction.response.send_message(f"Pong! {latency_ms}ms", ephemeral=True)
+            await interaction.response.send_message(guild.localization.t("common.pong", ms=latency_ms), ephemeral=True)
 
         # Setup command and gating are registered via ConfigurationHandler
 

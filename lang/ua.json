@@ -1,0 +1,107 @@
+{
+  "common": {
+    "hello": "Привіт, {user}!",
+    "pong": "Понг! {ms}мс"
+  },
+  "errors": {
+    "member_has_no_permissions": "У вас немає дозволу на використання цієї команди.",
+    "error": "Під час обробки вашого запиту сталася помилка. Будь ласка, спробуйте пізніше."
+  },
+  "commands": {
+    "ping": {
+      "description": "Перевірити затримку бота"
+    },
+    "setup": {
+      "description": "Налаштувати бота для цього сервера"
+    },
+    "quick-battle": {
+      "description": "Почати швидкий бій",
+      "args": [
+        {
+          "name": "timeout",
+          "description": "Таймаут у секундах"
+        },
+        {
+          "name": "custom_environment",
+          "description": "Загальне або власне"
+        },
+        {
+          "name": "setting",
+          "description": "Налаштування/стиль бою"
+        }
+      ],
+      "choices": {
+        "custom_environment": {
+          "generic": "Загальне",
+          "custom": "Власне"
+        }
+      },
+      "communication": {
+        "request_embed_title": "Запит на швидкий бій",
+        "request_embed_description": "Запит на швидкий бій надіслано користувачем {owner}.",
+        "request_embed_participants": "Учасники: ",
+        "environment_field": "Середовище: ",
+        "timeout_field": "Таймаут: {timeout} секунд",
+        "join_button": "Приєднатися",
+        "leave_button": "Покинути",
+        "start_button": "Почати",
+        "abort_button": "Скасувати",
+        "joined_message": "{user} приєднався до бою.",
+        "left_message": "{user} покинув бій.",
+        "already_joined": "Ви вже приєдналися до цього бою.",
+        "not_joined": "Ви не берете участі в цьому бою.",
+        "only_owner_can_start": "Тільки власник бою може почати бій.",
+        "only_owner_can_abort": "Тільки власник бою може скасувати бій.",
+        "battle_starting": "Початок бою...",
+        "battle_aborted": "Бій було скасовано.",
+        "battle_aborted_message": "Запит на бій було скасовано.",
+        "create_environment_message": "Створення середовища...\n Очікування учасників: {participants}"
+      },
+      "environment": {
+        "title": "Створення середовища",
+        "description": "Будь ласка, надішліть опис середовища. Натисніть кнопку нижче, щоб надіслати.",
+        "button_label": "Надіслати середовище",
+        "modal_title": "Надсилання середовища",
+        "input_label": "Опис середовища",
+        "input_placeholder": "Опишіть середовище бою...",
+        "remaining": "Очікування надсилань від:",
+        "none_remaining": "Всі учасники надіслали свої дані!",
+        "not_participant": "Ви не є учасником цього бою.",
+        "already_submitted": "Ви вже надіслали своє середовище.",
+        "empty_input": "Опис середовища не може бути порожнім.",
+        "submitted": "Ваше середовище успішно надіслано!"
+      },
+      "fighter": {
+        "title": "Створення бійця",
+        "description": "Будь ласка, створіть свого бійця. Натисніть кнопку нижче, щоб надіслати.",
+        "button_label": "Створити бійця",
+        "modal_title": "Створення бійця",
+        "name_label": "Ім'я бійця",
+        "name_placeholder": "Введіть ім'я вашого бійця...",
+        "description_label": "Опис бійця",
+        "description_placeholder": "Опишіть вашого бійця...",
+        "remaining": "Очікування надсилань від:",
+        "none_remaining": "Всі учасники надіслали свої дані!",
+        "not_participant": "Ви не є учасником цього бою.",
+        "already_submitted": "Ви вже надіслали свого бійця.",
+        "empty_input": "Ім'я та опис бійця не можуть бути порожніми.",
+        "submitted": "Ваш бієць успішно створено!"
+      },
+      "strategy": {
+        "title": "Надсилання стратегії",
+        "description": "Будь ласка, надішліть свою бойову стратегію. Натисніть кнопку нижче, щоб надіслати.",
+        "button_label": "Надіслати стратегію",
+        "modal_title": "Надсилання стратегії",
+        "input_label": "Бойова стратегія",
+        "input_placeholder": "Опишіть свою бойову стратегію...",
+        "remaining": "Очікування надсилань від:",
+        "none_remaining": "Всі учасники надіслали свої дані!",
+        "not_participant": "Ви не є учасником цього бою.",
+        "already_submitted": "Ви вже надіслали свою стратегію.",
+        "empty_input": "Стратегія не може бути порожньою.",
+        "submitted": "Вашу стратегію успішно надіслано!"
+      }
+    }
+  }
+}
+

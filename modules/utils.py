@@ -60,11 +60,13 @@ def ProcessCommand(allowed_permissions: list = None):
     def decorator(func: Callable[..., Any]):
         # Create a wrapper with clean signature for Discord.py
         # This ensures Discord.py only sees interaction: discord.Interaction
-        async def discord_wrapper(interaction: discord.Interaction):
+        signature = inspect.signature(func)
+        default_args = [param.name for param in signature.parameters.values() if param.name in ["guild", "executor"]]
+        async def discord_wrapper(interaction: discord.Interaction, *args, **kwargs):
             # This is what Discord.py sees and registers
             # Now call our actual processing implementation
             await _process_command_impl(
-                func, interaction, allowed_permissions
+                func, interaction, allowed_permissions, default_args, *args, **kwargs
             )
         
         # Copy function metadata for Discord.py
@@ -72,12 +74,14 @@ def ProcessCommand(allowed_permissions: list = None):
         discord_wrapper.__qualname__ = func.__qualname__
         discord_wrapper.__doc__ = func.__doc__
         
+        
+        discord_wrapper.__signature__ = signature.replace(parameters=[param for param in signature.parameters.values() if param.name not in default_args])
         return discord_wrapper
     
     return decorator
 
 
-async def _process_command_impl(func: Callable[..., Any], interaction: discord.Interaction, allowed_permissions: dict[flag_value, bool]):
+async def _process_command_impl(func: Callable[..., Any], interaction: discord.Interaction, allowed_permissions: dict[flag_value, bool], default_args: list[inspect.Parameter], *args, **kwargs):
     """Internal implementation of command processing."""
     # Check if interaction is in a guild
     if not interaction.guild:
@@ -91,8 +95,6 @@ async def _process_command_impl(func: Callable[..., Any], interaction: discord.I
     # Check permissions if required
     if allowed_permissions:
         member_permissions = member.guild_permissions
-        logger.debug(f"Member permissions: {member_permissions.value}", extra={"guild": guild.name})
-        logger.debug(f"Allowed permissions: {[perm.flag for perm in allowed_permissions]}", extra={"guild": guild.name})
         missing = []
         for perm_flag in allowed_permissions:
             try:
@@ -152,26 +154,16 @@ async def _process_command_impl(func: Callable[..., Any], interaction: discord.I
         logger.debug(f"Command arguments: {command_args}", extra={"guild": guild.name})
     
     try:
-        # Check function signature to see if it accepts guild and member
-        sig = inspect.signature(func)
-        params = list(sig.parameters.keys())
-        
-        # Build arguments based on function signature
-        # Always pass interaction as first argument
-        call_args = [interaction]
-        
-        # Check if function accepts guild as second parameter (by name, not type annotation)
-        if len(params) > 1 and params[1] == 'guild':
-            call_args.append(guild)
-            # Check if function accepts member as third parameter
-            if len(params) > 2 and params[2] == 'member':
-                call_args.append(member)
-        elif len(params) > 1 and params[1] == 'member':
-            # Function might accept member directly without guild
-            call_args.append(member)
-        
-        # Call the original function with appropriate arguments
-        await func(*call_args)
+        # Call the original function with all passed arguments and keyword arguments
+        call_args = {
+            "guild": guild,
+            "executor": member,
+        }
+        for arg in default_args:
+            kwargs[arg] = call_args[arg]
+        signature = inspect.signature(func)
+
+        await func(interaction, *args, **kwargs)
     except Exception as e:
         logger.error(
             f"Error processing command {func.__name__} for guild {guild.name} and member {member.name}: {str(e)}",

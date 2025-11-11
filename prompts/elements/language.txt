@@ -1,0 +1,2 @@
+## LANGUAGE-LOCALE:
+{locale}

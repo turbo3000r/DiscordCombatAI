@@ -6,5 +6,101 @@
   "errors": {
     "member_has_no_permissions": "You do not have permission to use this command.",
     "error": "An error occurred while processing your request. Please try again later."
+  },
+  "commands": {
+    "ping": {
+      "description": "Check bot latency"
+    },
+    "setup": {
+      "description": "Configure the bot for this server"
+    },
+    "quick-battle": {
+      "description": "Start a quick battle",
+      "args": [
+        {
+          "name": "timeout",
+          "description": "Timeout in seconds"
+        },
+        {
+          "name": "custom_environment",
+          "description": "Generic or custom"
+        },
+        {
+          "name": "setting",
+          "description": "Battle setting/style"
+        }
+      ],
+      "choices": {
+        "custom_environment": {
+          "generic": "Generic",
+          "custom": "Custom"
+        }
+      },
+      "communication": {
+        "request_embed_title": "Quick Battle Request",
+        "request_embed_description": "A quick battle request has been sent by {owner}.",
+        "request_embed_participants": "Participants: ",
+        "environment_field": "Environment: ",
+        "timeout_field": "Timeout: {timeout} seconds",
+        "join_button": "Join",
+        "leave_button": "Leave",
+        "start_button": "Start",
+        "abort_button": "Abort",
+        "joined_message": "{user} has joined the battle.",
+        "left_message": "{user} has left the battle.",
+        "already_joined": "You have already joined this battle.",
+        "not_joined": "You are not in this battle.",
+        "only_owner_can_start": "Only the battle owner can start the battle.",
+        "only_owner_can_abort": "Only the battle owner can abort the battle.",
+        "battle_starting": "Starting the battle...",
+        "battle_aborted": "Battle has been aborted.",
+        "battle_aborted_message": "The battle request has been aborted.",
+        "create_environment_message": "Creating environment...\n Waiting for participants: {participants}"
+      },
+      "environment": {
+        "title": "Environment Creation",
+        "description": "Please submit your environment description. Click the button below to submit.",
+        "button_label": "Submit Environment",
+        "modal_title": "Environment Submission",
+        "input_label": "Environment Description",
+        "input_placeholder": "Describe the battle environment...",
+        "remaining": "Waiting for submissions from:",
+        "none_remaining": "All participants have submitted!",
+        "not_participant": "You are not a participant in this battle.",
+        "already_submitted": "You have already submitted your environment.",
+        "empty_input": "Environment description cannot be empty.",
+        "submitted": "Your environment has been submitted successfully!"
+      },
+      "fighter": {
+        "title": "Fighter Creation",
+        "description": "Please create your fighter. Click the button below to submit.",
+        "button_label": "Create Fighter",
+        "modal_title": "Fighter Creation",
+        "name_label": "Fighter Name",
+        "name_placeholder": "Enter your fighter's name...",
+        "description_label": "Fighter Description",
+        "description_placeholder": "Describe your fighter...",
+        "remaining": "Waiting for submissions from:",
+        "none_remaining": "All participants have submitted!",
+        "not_participant": "You are not a participant in this battle.",
+        "already_submitted": "You have already submitted your fighter.",
+        "empty_input": "Fighter name and description cannot be empty.",
+        "submitted": "Your fighter has been created successfully!"
+      },
+      "strategy": {
+        "title": "Strategy Submission",
+        "description": "Please submit your battle strategy. Click the button below to submit.",
+        "button_label": "Submit Strategy",
+        "modal_title": "Strategy Submission",
+        "input_label": "Battle Strategy",
+        "input_placeholder": "Describe your battle strategy...",
+        "remaining": "Waiting for submissions from:",
+        "none_remaining": "All participants have submitted!",
+        "not_participant": "You are not a participant in this battle.",
+        "already_submitted": "You have already submitted your strategy.",
+        "empty_input": "Strategy cannot be empty.",
+        "submitted": "Your strategy has been submitted successfully!"
+      }
+    }
   }
 }

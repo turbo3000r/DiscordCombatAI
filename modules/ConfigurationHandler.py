@@ -2,11 +2,12 @@ import discord
 from modules.LoggerHandler import get_logger
 from modules.guild import Guild
 from modules.utils import ProcessCommand
+from modules.LocalizationHandler import LocalizationHandler, lstr
 
 logger = get_logger()
 
 
-ALLOWED_LANGS = {"en", "es"}
+ALLOWED_LANGS = {"en", "es", "ua"}
 ALLOWED_MODELS = {
     "gemini-1.5-flash",
     "gemini-1.5-pro",
@@ -16,7 +17,7 @@ ALLOWED_MODELS = {
 
 class SetupModal(discord.ui.Modal, title="Configure Bot"):
     api_key = discord.ui.TextInput(label="Google API Key", style=discord.TextStyle.short, required=True)
-    language = discord.ui.TextInput(label="Language (en/es)", style=discord.TextStyle.short, required=False, placeholder="en", default="en")
+    language = discord.ui.TextInput(label="Language (en/es/ua)", style=discord.TextStyle.short, required=False, placeholder="en", default="en")
     model = discord.ui.TextInput(label="Model", style=discord.TextStyle.short, required=False, placeholder="gemini-2.5-flash", default="gemini-2.5-flash")
 
     def __init__(self, bot: discord.Client):
@@ -65,13 +66,12 @@ async def is_configured(interaction: discord.Interaction, guilds_data: dict) -> 
 
 
 def register_setup(bot: discord.Client):
-    @bot.tree.command(name="setup", description="Configure the bot for this server")
+    @bot.tree.command(
+        name="setup",
+        description=lstr("commands.setup.description", default="Configure the bot for this server")
+    )
     @ProcessCommand(allowed_permissions={discord.Permissions.administrator: True})
-    async def setup_cmd(interaction: discord.Interaction):
-        guild = Guild(interaction.guild)
-        if not guild.check():
-            guild.onMemberHasNoPermissions(interaction)
-            return
+    async def setup_cmd(interaction: discord.Interaction, guild: Guild):
         await interaction.response.send_modal(SetupModal(bot))
     
     # Register interaction handler for global check

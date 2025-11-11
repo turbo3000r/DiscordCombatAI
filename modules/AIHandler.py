@@ -1,7 +1,7 @@
 import threading
 from typing import Optional
-import google.generativeai as genai
-
+from google import genai
+from google.genai import types
 
 _client_locks = {}
 _client_locks_lock = threading.Lock()
@@ -20,7 +20,7 @@ class AIHandler:
     def __init__(self, api_key: str, model: str):
         self.api_key = api_key
         self.model = model
-        genai.configure(api_key=api_key)
+        self.client = genai.Client(api_key=api_key)
 
     @classmethod
     def from_guild(cls, guild) -> "AIHandler":
@@ -28,18 +28,38 @@ class AIHandler:
         model = guild.__dict__.get("model") or "gemini-1.5-flash"
         return cls(api_key=api_key, model=model)
     
-    def generate_response(self, prompt: str, *, system_instruction: Optional[str] = None) -> str:
+    def generate_response(self, prompt: str, *, system_instruction: Optional[str] = None, temperature: Optional[float] = 0.7) -> str:
         if not self.api_key:
             raise RuntimeError("AI API key is not configured for this guild.")
 
-        model = genai.GenerativeModel(model_name=self.model, system_instruction=system_instruction)
+        contents = [
+            types.Content(
+                role="user",
+                parts=[
+                    types.Part.from_text(text=prompt),
+                ],
+            ),
+        ]
+
+        generate_content_config = types.GenerateContentConfig(
+            temperature=temperature,
+        )
+
+        if system_instruction:
+            generate_content_config.system_instruction = [
+                types.Part.from_text(text=system_instruction),
+            ]
 
         # Use a per-api-key lock to avoid client-level race conditions while
         # still allowing different api keys (i.e., agents) to run concurrently.
         lock = _get_lock_for_api_key(self.api_key)
         with lock:
             try:
-                response = model.generate_content(prompt)
+                response = self.client.models.generate_content(
+                    model=self.model,
+                    contents=contents,
+                    config=generate_content_config,
+                )
             except Exception as e:
                 raise RuntimeError(f"AI generation failed: {e}")
 
@@ -48,3 +68,5 @@ class AIHandler:
             return response.text or ""
         except Exception:
             return ""
+
+    

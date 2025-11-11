@@ -1,6 +1,7 @@
 import json
 from discord import Guild as DiscordGuild
 import discord
+from modules.AIHandler import AIHandler
 from modules.LocalizationHandler import LocalizationHandler
 
 
@@ -10,6 +11,7 @@ class Guild:
         self.guild_id = guild.id
         self.params = {}
         self.__load__()
+        self.AIHandler = AIHandler(api_key=self.params.get("api_key"), model=self.params.get("model"))
 
     @property
     def localization(self):
