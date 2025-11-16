@@ -41,17 +41,10 @@ class WelcomeLocaleSelect(discord.ui.Select):
         )
     
     async def callback(self, interaction: discord.Interaction):
-        if interaction.guild is None:
-            await interaction.response.send_message("This command must be used in a server.", ephemeral=True)
-            return
         
         selected_locale = self.values[0]
         l10n = LocalizationHandler()
         
-        # Update the guild's language setting
-        if self.guild_id in self.bot.guilds_data:
-            guild_obj = self.bot.guilds_data[self.guild_id]
-            guild_obj["language"] = selected_locale
         
         # Get translated welcome message
         welcome_text = l10n.t(
@@ -67,9 +60,6 @@ class WelcomeLocaleSelect(discord.ui.Select):
         # Update the message with translated text
         await interaction.response.edit_message(content=welcome_text, view=view)
         
-        guild_identifier = f"{interaction.guild.name}({self.guild_id})"
-        logger.info(f"Language changed to {selected_locale} for guild {self.guild_id}", extra={"guild": guild_identifier})
-
 
 class WelcomeView(discord.ui.View):
     """View containing the locale selector for welcome message."""
@@ -89,6 +79,8 @@ class DiscordBot(commands.Bot):
 
         intents = discord.Intents.default()
         intents.message_content = True
+        intents.members = True
+        intents.guild_messages = True
 
         super().__init__(intents=intents, command_prefix="!")
         
@@ -132,7 +124,6 @@ class DiscordBot(commands.Bot):
         @ProcessCommand(allowed_permissions={discord.Permissions.administrator: True})
         async def ping(interaction: discord.Interaction, guild: Guild):
             latency_ms = round(self.latency * 1000)
-            
             await interaction.response.send_message(guild.localization.t("common.pong", ms=latency_ms), ephemeral=True)
 
         # Setup command and gating are registered via ConfigurationHandler
@@ -152,10 +143,12 @@ class DiscordBot(commands.Bot):
             welcome_text = self.l10n.t("common.welcome", locale=current_locale, name=self.user.name, version=read_bot_config()["version"])
             view = WelcomeView(self, guild.id, current_locale)
             
-            if guild.system_channel:
+            if guild.system_channel and guild.system_channel.permissions_for(guild.me).send_messages:
                 await guild.system_channel.send(welcome_text, view=view)
-            else:
+            elif guild.owner:
                 await guild.owner.send(welcome_text, view=view)
+            else:
+                logger.warning(f"Could not send welcome message to guild {guild.id}: no system channel and owner is None", extra={"guild": f"{guild.name}({guild.id})"})
             
             logger.debug(f"Guild {guild.id} setup completed", extra={"guild": f"{guild.name}({guild.id})"})
         

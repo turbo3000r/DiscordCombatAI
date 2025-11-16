@@ -369,6 +369,38 @@ class DiscordTranslator(app_commands.Translator):
             # Return a special key that we'll handle in translate method
             return f"commands.{command_name}.args.{param_name}"
         
+        elif location == app_commands.TranslationContextLocation.choice_name:
+            # For choice name, we need to extract command, parameter, and choice value
+            # The data should be a Choice object
+            choice = data
+            # Get the parameter that this choice belongs to
+            # We need to traverse up to find the parameter
+            # The choice should have a reference to its parameter
+            try:
+                # Try to get parameter from choice's parent
+                if hasattr(choice, 'parameter'):
+                    parameter = choice.parameter
+                    command = parameter.command
+                    command_name = command.name
+                    param_name = parameter.name
+                    # Map choice value to key name
+                    # For custom_environment: 0 -> "generic", 1 -> "custom"
+                    choice_value = choice.value
+                    choice_key = None
+                    if param_name == "custom_environment":
+                        choice_key = "generic" if choice_value == 0 else "custom"
+                    else:
+                        # For other parameters, use the value as string if it's a string
+                        choice_key = str(choice_value) if isinstance(choice_value, str) else None
+                    
+                    if choice_key:
+                        # Try both path formats for compatibility
+                        # Format 1: commands.{command}.choices.{param}.{choice}
+                        # Format 2: commands.{command}.args.{param}.choices.{choice}
+                        return f"commands.{command_name}.choices.{param_name}.{choice_key}"
+            except Exception:
+                pass
+        
         # For other locations, return None (no translation)
         return None
     
@@ -381,6 +413,26 @@ class DiscordTranslator(app_commands.Translator):
                 for arg in args:
                     if isinstance(arg, dict) and arg.get("name") == param_name:
                         return arg.get("description")
+        return None
+    
+    def _lookup_choice_name(self, locale_data: Dict[str, Any], command_name: str, param_name: str, choice_key: str) -> Optional[str]:
+        """Look up choice name from the choices object in locale data."""
+        command_data = self.l10n._lookup(locale_data, f"commands.{command_name}")
+        if command_data and isinstance(command_data, dict):
+            # Try format 1: commands.{command}.choices.{param}.{choice}
+            choices = command_data.get("choices")
+            if isinstance(choices, dict):
+                param_choices = choices.get(param_name)
+                if isinstance(param_choices, dict):
+                    return param_choices.get(choice_key)
+            # Try format 2: commands.{command}.args.{param}.choices.{choice}
+            args = command_data.get("args")
+            if isinstance(args, list):
+                for arg in args:
+                    if isinstance(arg, dict) and arg.get("name") == param_name:
+                        arg_choices = arg.get("choices")
+                        if isinstance(arg_choices, dict):
+                            return arg_choices.get(choice_key)
         return None
     
     async def translate(
@@ -426,15 +478,84 @@ class DiscordTranslator(app_commands.Translator):
         locale_data = self.l10n._cache.get(simple_locale, {})
         
         # Handle explicit keys or inferred keys
-        if ".args." in translation_key and not translation_key.endswith(".description"):
-            # Argument description - need to look up from array if not an explicit '.description' path
-            parts = translation_key.split(".args.")
+        # Strip .description suffix if present for arg descriptions
+        translation_key_for_lookup = translation_key
+        is_arg_description = translation_key.endswith(".description") and ".args." in translation_key
+        if is_arg_description:
+            translation_key_for_lookup = translation_key[:-11]  # Remove ".description"
+        
+        if ".args." in translation_key_for_lookup and not translation_key_for_lookup.endswith(".description"):
+            # Check if this is a choice name lookup
+            if ".choices." in translation_key_for_lookup:
+                # Choice name lookup: commands.{command}.choices.{param}.{choice} or commands.{command}.args.{param}.choices.{choice}
+                parts = translation_key_for_lookup.split(".choices.")
+                if len(parts) == 2:
+                    # Extract command and param from first part
+                    first_part = parts[0].replace("commands.", "")
+                    if ".args." in first_part:
+                        # Format: commands.{command}.args.{param}.choices.{choice}
+                        cmd_and_param = first_part.split(".args.")
+                        if len(cmd_and_param) == 2:
+                            command_name = cmd_and_param[0]
+                            param_name = cmd_and_param[1]
+                            choice_key = parts[1]
+                            translated = self._lookup_choice_name(locale_data, command_name, param_name, choice_key)
+                            if translated:
+                                return translated
+                    else:
+                        # Format: commands.{command}.choices.{param}.{choice}
+                        # First part is just command name, need to extract param from the structure
+                        # Actually, the format should be: commands.{command}.choices.{param}.{choice}
+                        # So we need to split differently
+                        if "." in first_part:
+                            # This shouldn't happen with this format, but handle it
+                            pass
+                        else:
+                            # We need param name from context, but we can try to extract from the key
+                            # The full key is: commands.{command}.choices.{param}.{choice}
+                            # So we need to split on ".choices." and then get param from the second part
+                            second_part = parts[1]
+                            if "." in second_part:
+                                param_and_choice = second_part.split(".", 1)
+                                if len(param_and_choice) == 2:
+                                    param_name = param_and_choice[0]
+                                    choice_key = param_and_choice[1]
+                                    command_name = first_part
+                                    translated = self._lookup_choice_name(locale_data, command_name, param_name, choice_key)
+                                    if translated:
+                                        return translated
+            else:
+                # Argument description - need to look up from array if not an explicit '.description' path
+                parts = translation_key_for_lookup.split(".args.")
+                if len(parts) == 2:
+                    command_name = parts[0].replace("commands.", "")
+                    param_name = parts[1]
+                    translated = self._lookup_arg_description(locale_data, command_name, param_name)
+                    if translated:
+                        return translated
+        elif is_arg_description:
+            # Handle case where key ends with .description - strip it and look up
+            parts = translation_key_for_lookup.split(".args.")
             if len(parts) == 2:
                 command_name = parts[0].replace("commands.", "")
                 param_name = parts[1]
                 translated = self._lookup_arg_description(locale_data, command_name, param_name)
                 if translated:
                     return translated
+        elif ".choices." in translation_key and ".args." not in translation_key:
+            # Choice name lookup in format: commands.{command}.choices.{param}.{choice}
+            parts = translation_key.split(".choices.")
+            if len(parts) == 2:
+                command_name = parts[0].replace("commands.", "")
+                second_part = parts[1]
+                if "." in second_part:
+                    param_and_choice = second_part.split(".", 1)
+                    if len(param_and_choice) == 2:
+                        param_name = param_and_choice[0]
+                        choice_key = param_and_choice[1]
+                        translated = self._lookup_choice_name(locale_data, command_name, param_name, choice_key)
+                        if translated:
+                            return translated
 
         # Fallback to direct lookup using translate (handles normal keys, including '.description' or any provided path)
         translated = self.l10n.translate(simple_locale, translation_key)

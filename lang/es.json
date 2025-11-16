@@ -132,7 +132,8 @@
     },
     "messages": {
       "applied": "¡Configuración aplicada exitosamente!",
-      "changes_pending": "⚠️ Cambios pendientes - Haz clic en Aplicar para guardar"
+      "changes_pending": "⚠️ Cambios pendientes - Haz clic en Aplicar para guardar",
+      "no_changes": "No hay cambios pendientes para aplicar."
     }
   }
 }

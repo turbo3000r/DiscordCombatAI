@@ -17,7 +17,7 @@ def setup_guild(guild_id: int):
     if not os.path.exists(f"guilds/{guild_id}"):
         os.makedirs(f"guilds/{guild_id}")
         with open(f"guilds/{guild_id}/config.json", "w") as f:
-            json.dump({"enabled": False, "language": "en", "api_key": "", "model": "gemini-2.5-flash", "webhook_url": ""}, f)
+            json.dump({"enabled": False, "language": "en","AIEnabled":False, "api_key": "", "model": "gemini-2.5-flash", "webhook_url": ""}, f)
 
 
 def load_guilds(bot: discord.ext.commands.Bot) -> dict:
@@ -87,13 +87,15 @@ def update_bot_config(bot: discord.Client) -> None:
 
 
 
-def ProcessCommand(allowed_permissions: list = None):
+def ProcessCommand(allowed_permissions: list = None, required_guild: bool = True, required_guild_enabled: bool = True):
     """
     Decorator to process Discord slash commands with logging and permission checking.
     
     Args:
         allowed_permissions: List of discord.Permissions flags that are required to run the command.
                            If None or empty, no permission check is performed.
+        required_guild: If True, the command must be used in a guild.
+        required_guild_enabled: If True, the guild must be enabled.
     
     Usage:
         # Simple usage - function only needs interaction parameter
@@ -126,7 +128,7 @@ def ProcessCommand(allowed_permissions: list = None):
             # This is what Discord.py sees and registers
             # Now call our actual processing implementation
             await _process_command_impl(
-                func, interaction, allowed_permissions, default_args, *args, **kwargs
+                func, interaction, allowed_permissions, default_args, required_guild, required_guild_enabled, *args, **kwargs
             )
         
         # Copy function metadata for Discord.py
@@ -141,16 +143,28 @@ def ProcessCommand(allowed_permissions: list = None):
     return decorator
 
 
-async def _process_command_impl(func: Callable[..., Any], interaction: discord.Interaction, allowed_permissions: dict[flag_value, bool], default_args: list[inspect.Parameter], *args, **kwargs):
+async def _process_command_impl(func: Callable[..., Any], interaction: discord.Interaction, allowed_permissions: dict[flag_value, bool], default_args: list[inspect.Parameter], required_guild: bool, required_guild_enabled: bool, *args, **kwargs):
     """Internal implementation of command processing."""
     # Check if interaction is in a guild
-    if not interaction.guild:
-        await interaction.response.send_message("This command can only be used in a server.", ephemeral=True)
-        return
-    
+    if required_guild:
+        if not interaction.guild:
+            await interaction.response.send_message("This command can only be used in a guild.", ephemeral=True)
+            return
     # Create Guild wrapper
     guild = Guild(interaction.guild)
     member = interaction.user
+
+    if required_guild_enabled:
+        if not guild.enabled:
+            logger.warning(f"Command {interaction.command.name if interaction.command else 'unknown'} blocked - guild not configured", extra={"guild": f"{interaction.guild.name}({interaction.guild.id})"})
+            await interaction.response.send_message(
+                "This bot is not configured for this server. Please use `/config` to configure it first.",
+                ephemeral=True
+            )
+            return
+    
+    
+
     
     # Check permissions if required
     if allowed_permissions:

@@ -367,7 +367,7 @@ class EnvironmentCreator:
         self.aborted = False
         self.setting = setting
     
-    def combine_environment(self, environtments: list[str]) -> str:
+    async def combine_environment(self, environtments: list[str]) -> str:
         prompt = "\n---\n".join(environtments)
         prompts_list = [
             Prompts.Core.EnvironmentCombiner,
@@ -375,7 +375,7 @@ class EnvironmentCreator:
             Prompts.Elements.Language.fill(locale=self.guild.localization.full_localization_name(self.guild.params.get("language")))
         ]
     
-        return PromptHandler.from_guild(self.guild).evaluateMultiple(prompts_list, prompt)
+        return await PromptHandler.from_guild(self.guild).evaluateMultiple(prompts_list, prompt)
     
     async def _button_callback(self, interaction: discord.Interaction):
         """Handle button click to open modal."""
@@ -440,7 +440,7 @@ class EnvironmentCreator:
         
         # Combine environments
         environment_list = list(self.submissions.values())
-        self.environment = self.combine_environment(environment_list)
+        self.environment = await self.combine_environment(environment_list)
         
         return self.environment
     
@@ -734,10 +734,13 @@ class QuickBattleRequest:
     
     async def _async_timeout_complete(self):
         """Complete the timeout process asynchronously."""
-        # Clear UI (create empty view in async context)
-        self.ui = discord.ui.View()  # Empty view
-        await self.message.edit(embed=self.embed, view=self.ui)
-        await self._async_timeout()
+        try:
+            # Clear UI (create empty view in async context)
+            self.ui = discord.ui.View()  # Empty view
+            await self.message.edit(embed=self.embed, view=self.ui)
+            await self._async_timeout()
+        except Exception as e:
+            logger.error(f"Error in timeout completion: {e}", exc_info=True, extra={"guild": f"{self.guild.guild.name}({self.guild.guild.id})" if self.guild and self.guild.guild else "Unknown"})
     
     async def _start_battle(self):
         """Start the battle immediately (before timeout)."""
@@ -802,7 +805,7 @@ class QuickBattleRequest:
             self.setting,
             Prompts.Elements.Language.fill(locale=self.guild.localization.full_localization_name(self.guild.params.get("language")))
         ]
-        FightResult = PromptHandler.from_guild(self.guild).evaluateMultiple(prompts_list, prompt=f"Start the battle {random_string(128)}")
+        FightResult = await PromptHandler.from_guild(self.guild).evaluateMultiple(prompts_list, prompt=f"Start the battle {random_string(128)}")
         await self.message.channel.send(FightResult)
     
 class BattleHandler:
@@ -815,19 +818,19 @@ class BattleHandler:
             description=lstr("commands.quick-battle.description", default="Start a quick battle")
         )
         @discord.app_commands.describe(
-            custom_environment=lstr("commands.quick-battle.args.custom_environment.description", default="Generic or custom?"),
-            timeout=lstr("commands.quick-battle.args.timeout.description", default="Timeout in seconds"),
-            setting=lstr("commands.quick-battle.args.setting.description", default="Battle setting/style"),
+            custom_environment=lstr("commands.quick-battle.args.custom_environment", default="Generic or custom?"),
+            timeout=lstr("commands.quick-battle.args.timeout", default="Timeout in seconds"),
+            setting=lstr("commands.quick-battle.args.setting", default="Battle setting/style"),
         )
         @discord.app_commands.choices(
             custom_environment=[
                 discord.app_commands.Choice(
                     name=lstr("commands.quick-battle.args.custom_environment.choices.generic", default="Generic"),
-                    value="generic"
+                    value=0
                 ),
                 discord.app_commands.Choice(
                     name=lstr("commands.quick-battle.args.custom_environment.choices.custom", default="Custom"),
-                    value="custom"
+                    value=1
                 ),
             ],
             setting=[
@@ -838,7 +841,7 @@ class BattleHandler:
         @ProcessCommand(allowed_permissions={})
         async def quick_battle(
             interaction: discord.Interaction,
-            custom_environment: discord.app_commands.Choice[str],
+            custom_environment: discord.app_commands.Choice[int],
             timeout: typing.Annotated[int, discord.app_commands.Range[int, 30, 600]] = 60,
             setting: discord.app_commands.Choice[str] = None,
             guild: Guild = None,
@@ -847,4 +850,4 @@ class BattleHandler:
             await interaction.response.send_message("@everyone")
             message = await(await interaction.original_response()).fetch()
             setting_prompt = SETTINGS.get(setting.value) if setting else SETTINGS.get("unpredictable-funny")
-            QuickBattleRequest(message, custom_environment.value, timeout, executor, guild, setting_prompt)
+            QuickBattleRequest(message, bool(custom_environment.value), timeout, executor, guild, setting_prompt)

@@ -193,7 +193,7 @@ class ConfigView(discord.ui.View):
         )
         
         # AI Active field
-        ai_active = bool(config["api_key"])
+        ai_active = bool(config.get("enabled"))
         ai_status = "✅ Yes" if ai_active else "❌ No"
         embed.add_field(
             name=l10n.t("config.embed.fields.ai_active", locale=config["language"]),
@@ -252,15 +252,35 @@ class ConfigView(discord.ui.View):
 
         # Apply pending changes
         if guild_id in _pending_changes and _pending_changes[guild_id]:
-            for key, value in _pending_changes[guild_id].items():
+            pending = _pending_changes[guild_id]
+            for key, value in pending.items():
                 g[key] = value
             
-            # Enable if API key is set
-            if "api_key" in _pending_changes[guild_id] and _pending_changes[guild_id]["api_key"]:
-                g["enabled"] = True
+            # Enable flag mirrors whether a working API key is stored
+            if "api_key" in pending:
+                g["api_key"] = pending["api_key"]
+                g["model"] = pending["model"]
+                g["enabled"] = g.enableAI()
+                if not g["enabled"]:
+                    logger.warning(
+                        "AI initialization failed; disabling bot for this guild",
+                        extra={"guild": guild_identifier}
+                    )
             
             # Clear pending changes
             _pending_changes[guild_id] = {}
+
+            # Verify AI readiness when enabled
+            ai_should_be_enabled = bool(g.params.get("enabled"))
+            ai_ready = False
+            if ai_should_be_enabled and g.params.get("api_key"):
+                ai_ready = g.enableAI()
+            if ai_should_be_enabled and not ai_ready:
+                g["enabled"] = False
+                logger.warning(
+                    "AI initialization failed; disabling bot for this guild",
+                    extra={"guild": guild_identifier}
+                )
             
             logger.info(f"Configuration applied for guild {guild_id}", extra={"guild": guild_identifier})
             
@@ -275,7 +295,7 @@ class ConfigView(discord.ui.View):
         else:
             l10n = LocalizationHandler(default_locale=g.params.get("language", "en"))
             await interaction.response.send_message(
-                "No pending changes to apply.",
+                l10n.t("config.messages.no_changes", locale=g.params.get("language", "en")),
                 ephemeral=True
             )
 
@@ -305,7 +325,7 @@ def register_setup(bot: discord.Client):
         name="config",
         description=lstr("commands.config.description", default="Configure the bot for this server")
     )
-    @ProcessCommand(allowed_permissions={discord.Permissions.administrator: True})
+    @ProcessCommand(allowed_permissions={discord.Permissions.administrator: True}, required_guild=True, required_guild_enabled=False)
     async def config_cmd(interaction: discord.Interaction, guild: Guild):
         # Create and send the config embed with view
         view = ConfigView(bot, interaction.guild.id)
@@ -316,31 +336,5 @@ def register_setup(bot: discord.Client):
             return
         
         await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
-    
-    # Register interaction handler for global check
-    # This replaces the non-existent tree.add_check() method
-    @bot.event
-    async def on_interaction(interaction: discord.Interaction):
-        # Only check app commands, skip other interaction types (buttons, modals, etc.)
-        if interaction.type == discord.InteractionType.application_command:
-            # Skip the config command itself - it should always be accessible
-            if interaction.command and interaction.command.name == "config":
-                return
-            
-            # Safety check: ensure guilds_data is initialized
-            if not hasattr(bot, 'guilds_data') or bot.guilds_data is None:
-                return
-            
-            # Check if guild is configured
-            if not await is_configured(interaction, bot.guilds_data):
-                guild_id = interaction.guild.id if interaction.guild else None
-                guild_name = interaction.guild.name if interaction.guild else "DM"
-                guild_identifier = f"{guild_name}({guild_id})" if guild_id else "DM"
-                logger.warning(f"Command {interaction.command.name if interaction.command else 'unknown'} blocked - guild not configured", extra={"guild": guild_identifier})
-                await interaction.response.send_message(
-                    "This bot is not configured for this server. Please use `/config` to configure it first.",
-                    ephemeral=True
-                )
-                return
     
     logger.debug("Config gate check registered successfully", extra={"guild": "Core"})

@@ -129,7 +129,8 @@
     },
     "messages": {
       "applied": "Configuration applied successfully!",
-      "changes_pending": "⚠️ Changes pending - Click Apply to save"
+      "changes_pending": "⚠️ Changes pending - Click Apply to save",
+      "no_changes": "No pending changes to apply."
     }
   }
 }

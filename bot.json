@@ -3,5 +3,5 @@
   "description": "AI-powered combat bot for Discord",
   "id": "1425155374218219642",
   "invite_link": "https://discord.com/api/oauth2/authorize?client_id=1425155374218219642&permissions=2147600384&scope=bot%20applications.commands",
-  "version": "0.0.1"
+  "version": "0.1.0"
 }

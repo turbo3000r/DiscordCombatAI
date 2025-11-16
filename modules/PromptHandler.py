@@ -81,18 +81,18 @@ class PromptHandler:
     def from_guild(cls, guild: Guild) -> "PromptHandler":
         return cls(guild, guild.AIHandler)
 
-    def evaluateSingle(self, system_prompt: typing.Union[SystemPrompt, Prompt], prompt: str, temperature: float = 1.2) -> str:
+    async def evaluateSingle(self, system_prompt: typing.Union[SystemPrompt, Prompt], prompt: str, temperature: float = 1.2) -> str:
         logger.debug(f"Evaluating single prompt: {system_prompt} with prompt: {prompt}")
-        return self.ai_handler.generate_response(system_instruction=str(system_prompt), prompt=prompt, temperature=1.2)
+        return await self.ai_handler.generate_response(system_instruction=str(system_prompt), prompt=prompt, temperature=1.2)
 
-    def evaluateMultiple(self, system_prompts: list[typing.Union[SystemPrompt, Prompt]], prompt: typing.Union[SystemPrompt, Prompt]) -> str:
+    async def evaluateMultiple(self, system_prompts: list[typing.Union[SystemPrompt, Prompt]], prompt: typing.Union[SystemPrompt, Prompt]) -> str:
         combined_system_prompt = system_prompts[0]
         for sp in system_prompts[1:]:
             combined_system_prompt = combined_system_prompt + sp
-        return self.evaluateSingle(combined_system_prompt, prompt)
+        return await self.evaluateSingle(combined_system_prompt, prompt)
 #from dotenv import load_dotenv
 #load_dotenv()
-AIHandler = AIHandler(api_key=os.getenv("AI_TOKEN"), model=os.getenv("MODEL"))
+#AIHandler = AIHandler(api_key=os.getenv("AI_TOKEN"), model=os.getenv("MODEL"))
 
 
 #prompt = Prompts.Core.GenericEnvironment

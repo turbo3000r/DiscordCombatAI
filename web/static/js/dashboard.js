@@ -188,6 +188,34 @@ function updateChartWithHistory(chart, historyData) {
     chart.update('none'); // Update without animation for smoothness
 }
 
+async function loadInitialLogs() {
+    const consoleContent = document.getElementById('consoleContent');
+    if (!consoleContent) return;
+
+    try {
+        consoleContent.innerHTML = '<div class="console-loading">Loading recent logs...</div>';
+        const response = await fetch('/api/logs?lines=200');
+        const data = await response.json();
+        
+        if (data.logs && data.logs.length > 0) {
+            consoleContent.innerHTML = '';
+            data.logs.forEach(line => {
+                if (line.trim()) {
+                    const logElement = parseLogLine(line);
+                    consoleContent.appendChild(logElement);
+                }
+            });
+            // Scroll to bottom after loading
+            consoleContent.scrollTop = consoleContent.scrollHeight;
+        } else {
+            consoleContent.innerHTML = '<div class="console-empty">No logs yet...</div>';
+        }
+    } catch (error) {
+        console.error('Failed to load initial logs:', error);
+        consoleContent.innerHTML = '<div class="console-empty">Waiting for logs...</div>';
+    }
+}
+
 function initLogsStreaming() {
     const consoleContent = document.getElementById('consoleContent');
     if (!consoleContent) return;
@@ -201,7 +229,6 @@ function initLogsStreaming() {
             reconnectTimeout = null;
         }
         updateConnectionStatus(true);
-        consoleContent.innerHTML = '<div class="console-empty">Waiting for logs...</div>';
     };
 
     logsSocket.onmessage = (event) => {
@@ -209,12 +236,15 @@ function initLogsStreaming() {
         const line = event.data;
         const atBottom = Math.abs(consoleContent.scrollTop + consoleContent.clientHeight - consoleContent.scrollHeight) < 5;
 
+        // Clear placeholder messages if they exist
         if (consoleContent.querySelector('.console-empty') || consoleContent.querySelector('.console-loading')) {
             consoleContent.innerHTML = '';
         }
+        
         const logElement = parseLogLine(line);
         consoleContent.appendChild(logElement);
 
+        // Auto-scroll if user is at bottom
         if (autoScroll && atBottom) {
             consoleContent.scrollTop = consoleContent.scrollHeight;
         }
@@ -229,6 +259,7 @@ function initLogsStreaming() {
         reconnectTimeout = setTimeout(initLogsStreaming, 3000);
     };
 
+    // Track scroll position for auto-scroll behavior
     consoleContent.addEventListener('scroll', () => {
         const atBottom = Math.abs(consoleContent.scrollTop + consoleContent.clientHeight - consoleContent.scrollHeight) < 5;
         autoScroll = atBottom;
@@ -272,11 +303,14 @@ function updateConnectionStatus(isConnected) {
 }
 
 // Initialize dashboard
-function init() {
+async function init() {
     initCharts();
     
     // Initial updates
     updateMetrics();
+    
+    // Load recent logs first, then start streaming
+    await loadInitialLogs();
     initLogsStreaming();
     
     // Set up intervals

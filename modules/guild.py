@@ -3,32 +3,42 @@ from discord import Guild as DiscordGuild
 import discord
 from modules.AIHandler import AIHandler
 from modules.LocalizationHandler import LocalizationHandler
+from modules.LoggerHandler import get_logger
 
-
+logger = get_logger()
 class Guild:
     def __init__(self, guild: DiscordGuild):
         self._guild = guild
         self.guild_id = guild.id
         self.params = {}
         self.__load__()
-        self.AIHandler = AIHandler(api_key=self.params.get("api_key"), model=self.params.get("model"))
 
     @property
     def localization(self):
         return LocalizationHandler(default_locale=self.params.get("language"))
     
-    def onMemberHasNoPermissions(self, interaction: discord.Interaction):
-        interaction.response.send_message(self.localization.t("errors.member_has_no_permissions"), ephemeral=True)
 
-
-    def onError(self, interaction: discord.Interaction, error: Exception):
-        interaction.response.send_message(self.localization.t("errors.error"), ephemeral=True)
-
-    def isOwnerCheck(self, interaction: discord.Interaction):
-        return interaction.user.id == self._guild.owner_id
+    def __initAIHandler__(self) :
+        self.AIHandler = None
+        if self.enabled:
+            self.AIHandler = AIHandler.from_guild(self)
         
 
+    def enableAI(self) -> bool:
+        try:
+            self.AIHandler = AIHandler.from_guild(self)
+        except Exception as e:
+            logger.error(f"Failed to enable AI for guild {self.guild_id}: {e}", exc_info=True, extra={"guild": f"{self.name}({self.guild_id})"})
+            return False
+        if not self.AIHandler or not self.AIHandler.is_api_key_valid:
+            logger.warning(f"Failed to enable AI for guild {self.guild_id}: Invalid API key", exc_info=True, extra={"guild": f"{self.name}({self.guild_id})"})
+            return False
+        return True
+        
     def __getattr__(self, name):
+        
+        if name in self.params:
+            return self.params[name]
         # Delegate missing attributes to the underlying discord.Guild
         return getattr(self._guild, name)
     
@@ -40,6 +50,7 @@ class Guild:
     def __load__(self):
         with open(f"guilds/{self.guild_id}/config.json", "r") as f:
             self.params.update(json.load(f))
+        self.__initAIHandler__()
 
     def __save__(self):
         with open(f"guilds/{self.guild_id}/config.json", "w") as f:
