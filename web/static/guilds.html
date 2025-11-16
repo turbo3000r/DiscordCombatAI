@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Guilds - Discord Combat AI Bot</title>
+    <link rel="stylesheet" href="/static/css/styles.css">
+</head>
+<body>
+    <nav class="navbar">
+        <div class="nav-container">
+            <button class="hamburger-menu" id="hamburgerBtn" aria-label="Toggle menu">
+                <span class="hamburger-icon">☰</span>
+            </button>
+            <div class="dropdown-menu" id="dropdownMenu">
+                <a href="/" class="dropdown-link">Home</a>
+                <a href="/dashboard" class="dropdown-link">Dashboard</a>
+                <a href="/guilds" class="dropdown-link active">Guilds</a>
+                <a href="/performance" class="dropdown-link">Performance</a>
+                <a href="/webhook" class="dropdown-link">Webhook</a>
+            </div>
+            <div class="nav-brand">Discord Combat AI</div>
+        </div>
+    </nav>
+
+    <div class="guilds-container">
+        <div class="guilds-header">
+            <h1>Guild Management</h1>
+            <div class="status-indicator">
+                <span class="status-dot" id="connectionStatus"></span>
+                <span id="connectionText">Connecting...</span>
+            </div>
+        </div>
+
+        <div class="split-panel-container">
+            <!-- Left Panel: Guild List -->
+            <div class="split-panel left-panel" id="leftPanel">
+                <div class="panel-header">
+                    <h3>Guilds (<span id="guildCount">0</span>)</h3>
+                    <button id="refreshBtn" class="btn btn-small">Refresh</button>
+                </div>
+                <div class="guild-list" id="guildList">
+                    <div class="loading-message">Loading guilds...</div>
+                </div>
+            </div>
+
+            <!-- Resizer -->
+            <div class="panel-resizer" id="panelResizer"></div>
+
+            <!-- Right Panel: Guild Details -->
+            <div class="split-panel right-panel" id="rightPanel">
+                <div class="panel-header">
+                    <h3>Guild Details</h3>
+                </div>
+                <div class="guild-details" id="guildDetails">
+                    <div class="placeholder-message">
+                        <div class="placeholder-icon">🏰</div>
+                        <h3>Select a Guild</h3>
+                        <p>Click on a guild from the list to view details</p>
+                        <p class="text-muted">(Full functionality coming soon)</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <footer class="footer">
+        <p>&copy; 2025 <span id="botNameFooter">Discord Combat AI Bot</span>. Web Interface <span id="botVersion">v1.0.0</span></p>
+        <p><a href="#" id="addBotLink" style="color: inherit; text-decoration: none;" target="_blank">Add bot to your server</a></p>
+    </footer>
+
+    <script src="/static/js/navigation.js"></script>
+    <script src="/static/js/common.js"></script>
+    <script src="/static/js/guilds.js"></script>
+</body>
+</html>
+

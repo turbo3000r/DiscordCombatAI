@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dashboard - Discord Combat AI Bot</title>
+    <link rel="stylesheet" href="/static/css/styles.css">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+</head>
+<body>
+    <nav class="navbar">
+        <div class="nav-container">
+            <button class="hamburger-menu" id="hamburgerBtn" aria-label="Toggle menu">
+                <span class="hamburger-icon">☰</span>
+            </button>
+            <div class="dropdown-menu" id="dropdownMenu">
+                <a href="/" class="dropdown-link">Home</a>
+                <a href="/dashboard" class="dropdown-link active">Dashboard</a>
+                <a href="/guilds" class="dropdown-link">Guilds</a>
+                <a href="/performance" class="dropdown-link">Performance</a>
+                <a href="/webhook" class="dropdown-link">Webhook</a>
+            </div>
+            <div class="nav-brand">Discord Combat AI</div>
+        </div>
+    </nav>
+
+    <div class="dashboard-container">
+        <div class="dashboard-header">
+            <h1>Bot Dashboard</h1>
+            <div style="display: flex; align-items: center; gap: 1rem;">
+                <a href="/webhook" class="announcement-btn" title="Send Announcement">
+                    📢 Send Announcement
+                </a>
+                <div class="status-indicator">
+                    <span class="status-dot" id="connectionStatus"></span>
+                    <span id="connectionText">Connecting...</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- Metrics Cards -->
+        <div class="metrics-grid">
+            <div class="metric-card">
+                <div class="metric-icon">⏱️</div>
+                <div class="metric-content">
+                    <div class="metric-label">Uptime</div>
+                    <div class="metric-value" id="uptimeValue">--</div>
+                </div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-icon">⚡</div>
+                <div class="metric-content">
+                    <div class="metric-label">Bot Latency</div>
+                    <div class="metric-value" id="latencyValue">-- ms</div>
+                </div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-icon">🏰</div>
+                <div class="metric-content">
+                    <div class="metric-label">Guilds</div>
+                    <div class="metric-value" id="guildsValue">--</div>
+                </div>
+            </div>
+            <div class="metric-card error-card">
+                <div class="metric-icon">❌</div>
+                <div class="metric-content">
+                    <div class="metric-label">Total Errors</div>
+                    <div class="metric-value" id="errorsValue">--</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Performance Graphs -->
+        <div class="graphs-section">
+            <div class="graph-card">
+                <div class="graph-header">
+                    <h3>CPU Usage</h3>
+                    <span class="graph-value" id="cpuCurrentValue">0%</span>
+                </div>
+                <div class="graph-container">
+                    <canvas id="cpuChart"></canvas>
+                </div>
+            </div>
+
+            <div class="graph-card">
+                <div class="graph-header">
+                    <h3>Memory Usage</h3>
+                    <span class="graph-value" id="memoryCurrentValue">0 MB</span>
+                </div>
+                <div class="graph-container">
+                    <canvas id="memoryChart"></canvas>
+                </div>
+            </div>
+
+            <div class="graph-card">
+                <div class="graph-header">
+                    <h3>Bot Latency</h3>
+                    <span class="graph-value" id="latencyGraphValue">0 ms</span>
+                </div>
+                <div class="graph-container">
+                    <canvas id="latencyChart"></canvas>
+                </div>
+            </div>
+        </div>
+
+        <!-- Console -->
+        <div class="console-section">
+            <div class="console-header">
+                <h3>Live Console</h3>
+                <div class="console-controls">
+                    <button id="pauseBtn" class="btn btn-small">Pause</button>
+                    <button id="clearBtn" class="btn btn-small">Clear</button>
+                    <span class="console-info" id="consoleInfo">Auto-refresh: ON</span>
+                </div>
+            </div>
+            <div class="console-content" id="consoleContent">
+                <div class="console-loading">Loading logs...</div>
+            </div>
+        </div>
+    </div>
+
+    <footer class="footer">
+        <p>&copy; 2025 <span id="botNameFooter">Discord Combat AI Bot</span>. Web Interface <span id="botVersion">v1.0.0</span></p>
+        <p><a href="#" id="addBotLink" style="color: inherit; text-decoration: none;" target="_blank">Add bot to your server</a></p>
+    </footer>
+
+    <script src="/static/js/navigation.js"></script>
+    <script src="/static/js/common.js"></script>
+    <script src="/static/js/dashboard.js"></script>
+</body>
+</html>
+

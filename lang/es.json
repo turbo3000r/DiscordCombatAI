@@ -1,6 +1,7 @@
 {
   "common": {
     "hello": "¡Hola, {user}!",
+    "welcome": "¡Hola, soy {name}-v{version}!\nEl bot que creará y juzgará las batallas más espectaculares para ti!\n\nPara empezar, por favor usa el comando /config para configurar el bot.",
     "pong": "¡Pong! {ms}ms"
   },
   "errors": {
@@ -12,6 +13,9 @@
       "description": "Verificar la latencia del bot"
     },
     "setup": {
+      "description": "Configurar el bot para este servidor"
+    },
+    "config": {
       "description": "Configurar el bot para este servidor"
     },
     "quick-battle": {
@@ -101,6 +105,34 @@
         "empty_input": "La estrategia no puede estar vacía.",
         "submitted": "¡Tu estrategia ha sido enviada exitosamente!"
       }
+    }
+  },
+  "config": {
+    "embed": {
+      "title": "Configuración del Bot",
+      "fields": {
+        "ai_active": "IA Activa",
+        "language": "Idioma",
+        "webhook_configured": "Webhook Configurado"
+      }
+    },
+    "buttons": {
+      "apply": "Aplicar",
+      "ai_config": "Configuración IA",
+      "webhook_change": "Cambiar Webhook"
+    },
+    "modal": {
+      "ai_config": {
+        "title": "Configuración de IA"
+      },
+      "webhook": {
+        "title": "Configuración de Webhook",
+        "url_label": "URL del Webhook"
+      }
+    },
+    "messages": {
+      "applied": "¡Configuración aplicada exitosamente!",
+      "changes_pending": "⚠️ Cambios pendientes - Haz clic en Aplicar para guardar"
     }
   }
 }

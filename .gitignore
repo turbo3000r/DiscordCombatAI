@@ -1,5 +1,6 @@
 # Environment variables
 .env
+.cursor/*
 
 # Generic data
 /guilds/*
@@ -8,3 +9,6 @@
 # Cache
 __pycache__/
 *.pyc
+
+# Database
+metrics.db

@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Performance - Discord Combat AI Bot</title>
+    <link rel="stylesheet" href="/static/css/styles.css">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
+</head>
+<body>
+    <nav class="navbar">
+        <div class="nav-container">
+            <button class="hamburger-menu" id="hamburgerBtn" aria-label="Toggle menu">
+                <span class="hamburger-icon">☰</span>
+            </button>
+            <div class="dropdown-menu" id="dropdownMenu">
+                <a href="/" class="dropdown-link">Home</a>
+                <a href="/dashboard" class="dropdown-link">Dashboard</a>
+                <a href="/guilds" class="dropdown-link">Guilds</a>
+                <a href="/performance" class="dropdown-link active">Performance</a>
+                <a href="/webhook" class="dropdown-link">Webhook</a>
+            </div>
+            <div class="nav-brand">Discord Combat AI</div>
+        </div>
+    </nav>
+
+    <div class="performance-container">
+        <div class="performance-header">
+            <h1>Performance Analytics</h1>
+            <div class="performance-controls">
+                <div class="time-range-selector">
+                    <label for="timeRange">Time Range:</label>
+                    <select id="timeRange" class="time-range-select">
+                        <option value="60">Last Hour</option>
+                        <option value="180">Last 3 Hours</option>
+                        <option value="360">Last 6 Hours</option>
+                        <option value="720">Last 12 Hours</option>
+                        <option value="1440" selected>Last 24 Hours</option>
+                    </select>
+                </div>
+                <div class="status-indicator">
+                    <span class="status-dot" id="connectionStatus"></span>
+                    <span id="connectionText">Connecting...</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- Large Performance Graphs -->
+        <div class="large-graphs-section">
+            <div class="large-graph-card">
+                <div class="graph-header">
+                    <h2>CPU Usage Over Time</h2>
+                    <div class="graph-stats">
+                        <span class="stat-item">Current: <span id="cpuCurrent">--</span>%</span>
+                        <span class="stat-item">Average: <span id="cpuAverage">--</span>%</span>
+                        <span class="stat-item">Peak: <span id="cpuPeak">--</span>%</span>
+                    </div>
+                </div>
+                <div class="large-graph-container">
+                    <canvas id="cpuChart"></canvas>
+                </div>
+            </div>
+
+            <div class="large-graph-card">
+                <div class="graph-header">
+                    <h2>Memory Usage Over Time</h2>
+                    <div class="graph-stats">
+                        <span class="stat-item">Current: <span id="memoryCurrent">--</span> MB</span>
+                        <span class="stat-item">Average: <span id="memoryAverage">--</span> MB</span>
+                        <span class="stat-item">Peak: <span id="memoryPeak">--</span> MB</span>
+                    </div>
+                </div>
+                <div class="large-graph-container">
+                    <canvas id="memoryChart"></canvas>
+                </div>
+            </div>
+
+            <div class="large-graph-card">
+                <div class="graph-header">
+                    <h2>Bot Latency Over Time</h2>
+                    <div class="graph-stats">
+                        <span class="stat-item">Current: <span id="latencyCurrent">--</span> ms</span>
+                        <span class="stat-item">Average: <span id="latencyAverage">--</span> ms</span>
+                        <span class="stat-item">Peak: <span id="latencyPeak">--</span> ms</span>
+                    </div>
+                </div>
+                <div class="large-graph-container">
+                    <canvas id="latencyChart"></canvas>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <footer class="footer">
+        <p>&copy; 2025 <span id="botNameFooter">Discord Combat AI Bot</span>. Web Interface <span id="botVersion">v1.0.0</span></p>
+        <p><a href="#" id="addBotLink" style="color: inherit; text-decoration: none;" target="_blank">Add bot to your server</a></p>
+    </footer>
+
+    <script src="/static/js/navigation.js"></script>
+    <script src="/static/js/common.js"></script>
+    <script src="/static/js/performance.js"></script>
+</body>
+</html>
+

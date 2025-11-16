@@ -1,6 +1,7 @@
 {
   "common": {
     "hello": "Hello, {user}!",
+    "welcome": "Hello, i am {name}-v{version}!\nThe bot that will create and judge the most spectacular battles for you!\n\nTo get started, please use the /config command to configure the bot.",
     "pong": "Pong! {ms}ms"
   },
   "errors": {
@@ -11,7 +12,7 @@
     "ping": {
       "description": "Check bot latency"
     },
-    "setup": {
+    "config": {
       "description": "Configure the bot for this server"
     },
     "quick-battle": {
@@ -101,6 +102,34 @@
         "empty_input": "Strategy cannot be empty.",
         "submitted": "Your strategy has been submitted successfully!"
       }
+    }
+  },
+  "config": {
+    "embed": {
+      "title": "Bot Configuration",
+      "fields": {
+        "ai_active": "AI Active",
+        "language": "Language",
+        "webhook_configured": "Webhook Configured"
+      }
+    },
+    "buttons": {
+      "apply": "Apply",
+      "ai_config": "AI Config",
+      "webhook_change": "Webhook Change"
+    },
+    "modal": {
+      "ai_config": {
+        "title": "AI Configuration"
+      },
+      "webhook": {
+        "title": "Webhook Configuration",
+        "url_label": "Webhook URL"
+      }
+    },
+    "messages": {
+      "applied": "Configuration applied successfully!",
+      "changes_pending": "⚠️ Changes pending - Click Apply to save"
     }
   }
 }

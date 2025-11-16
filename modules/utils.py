@@ -2,7 +2,7 @@ from functools import wraps
 import inspect
 import json
 import os
-from typing import Any, Callable
+from typing import Any, Callable, Dict
 
 import discord
 from discord.flags import flag_value
@@ -11,11 +11,13 @@ from modules.LoggerHandler import get_logger
 
 logger = get_logger()
 
+BOT_CONFIG_FILE = "bot.json"
+
 def setup_guild(guild_id: int):
     if not os.path.exists(f"guilds/{guild_id}"):
         os.makedirs(f"guilds/{guild_id}")
         with open(f"guilds/{guild_id}/config.json", "w") as f:
-            json.dump({"enabled": False, "language": "en", "api_key": "", "model": "gemini-2.5-flash"}, f)
+            json.dump({"enabled": False, "language": "en", "api_key": "", "model": "gemini-2.5-flash", "webhook_url": ""}, f)
 
 
 def load_guilds(bot: discord.ext.commands.Bot) -> dict:
@@ -24,6 +26,64 @@ def load_guilds(bot: discord.ext.commands.Bot) -> dict:
         g = Guild(bot.get_guild(int(id)))
         guilds[int(id)] = g
     return guilds
+
+
+def read_bot_config() -> Dict[str, Any]:
+    """Read bot configuration from bot.json."""
+    if not os.path.exists(BOT_CONFIG_FILE):
+        # Create default config if it doesn't exist
+        default_config = {
+            "name": "Discord Combat AI Bot",
+            "description": "AI-powered combat bot for Discord",
+            "id": "",
+            "invite_link": "",
+            "version": "1.0.0"
+        }
+        write_bot_config(default_config)
+        return default_config
+    
+    try:
+        with open(BOT_CONFIG_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception as e:
+        logger.error(f"Failed to read bot config: {e}", extra={"guild": "Core"})
+        return {
+            "name": "Discord Combat AI Bot",
+            "description": "AI-powered combat bot for Discord",
+            "id": "",
+            "invite_link": "",
+            "version": "1.0.0"
+        }
+
+
+def write_bot_config(config: Dict[str, Any]) -> None:
+    """Write bot configuration to bot.json."""
+    try:
+        with open(BOT_CONFIG_FILE, "w", encoding="utf-8") as f:
+            json.dump(config, f, indent=2, ensure_ascii=False)
+    except Exception as e:
+        logger.error(f"Failed to write bot config: {e}", extra={"guild": "Core"})
+
+
+def update_bot_config(bot: discord.Client) -> None:
+    """Update bot.json with current bot information."""
+    config = read_bot_config()
+    
+    if bot.user:
+        config["id"] = str(bot.user.id)
+        # Generate invite link with appropriate permissions
+        # Permissions: Send Messages, Embed Links, Attach Files, Read Message History, Use Slash Commands
+        permissions = discord.Permissions(
+            send_messages=True,
+            embed_links=True,
+            attach_files=True,
+            read_message_history=True,
+            use_application_commands=True
+        )
+        config["invite_link"] = f"https://discord.com/api/oauth2/authorize?client_id={bot.user.id}&permissions={permissions.value}&scope=bot%20applications.commands"
+    
+    write_bot_config(config)
+    logger.info("Bot configuration updated", extra={"guild": "Core"})
 
 
 
