@@ -3,9 +3,9 @@ import threading
 from typing import Optional
 from google import genai
 from google.genai import types
-from modules.LoggerHandler import get_logger
+#from modules.LoggerHandler import get_logger
 
-logger = get_logger()
+#logger = get_logger()
 _client_locks = {}
 _client_locks_lock = threading.Lock()
 
@@ -121,5 +121,3 @@ class AIHandler:
             lambda: self._generate_response_sync(prompt, system_instruction=system_instruction, temperature=temperature)
         )
 
-    
-#AIHandler = AIHandler(api_key="231243434324", model="gemini-1.5-flash")

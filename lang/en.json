@@ -6,7 +6,9 @@
   },
   "errors": {
     "member_has_no_permissions": "You do not have permission to use this command.",
-    "error": "An error occurred while processing your request. Please try again later."
+    "error": "An error occurred while processing your request. Please try again later.",
+    "message_too_long": "The message is too long({length} characters). It has been saved to a file.",
+    "quick-battle_error": "An error occurred while starting the battle. Please try again later."
   },
   "commands": {
     "ping": {
@@ -101,6 +103,46 @@
         "already_submitted": "You have already submitted your strategy.",
         "empty_input": "Strategy cannot be empty.",
         "submitted": "Your strategy has been submitted successfully!"
+      }
+    },
+    "suggest": {
+      "description": "Suggest a feature or report a bug",
+      "prompt": "Select a type and one or more categories, then press the button to describe your suggestion.",
+      "success": "Thank you! Your suggestion has been recorded.",
+      "response": "Thank you for your suggestion: \"{suggestion}\"",
+      "button": {
+        "open_modal": "Write suggestion"
+      },
+      "modal": {
+        "title": "Share your suggestion",
+        "title_label": "Title",
+        "title_placeholder": "Brief summary...",
+        "label": "Suggestion details",
+        "placeholder": "Describe your idea, issue, or feedback..."
+      },
+      "types": {
+        "minor": "Minor issue",
+        "major": "Major issue",
+        "request": "Request",
+        "improvement": "Improvement",
+        "feedback": "Feedback"
+      },
+      "categories": {
+        "category_1": "Category 1",
+        "category_2": "Category 2",
+        "category_3": "Category 3"
+      },
+      "placeholders": {
+        "type": "Select suggestion type",
+        "category": "Select categories"
+      },
+      "errors": {
+        "selection": "Please select a type and at least one category first.",
+        "empty": "Title and details cannot be empty.",
+        "generic": "Something went wrong. Please try again later."
+      },
+      "auto_feedback": {
+        "default": "Your suggestion has been reviewed. Thank you for helping us improve!"
       }
     }
   },

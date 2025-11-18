@@ -1,17 +1,40 @@
 import os
 import shutil
+from datetime import datetime
+from typing import Dict, List, Optional
+
 import discord
 from discord.ext import commands
 
 from modules.BattleHandler import BattleHandler
 from modules.guild import Guild
-from modules.utils import load_guilds, read_bot_config, setup_guild, ProcessCommand, update_bot_config
+from modules.utils import (
+    load_guilds,
+    read_bot_config,
+    setup_guild,
+    ProcessCommand,
+    update_bot_config,
+    append_suggestion_record,
+)
 from modules.ConfigurationHandler import register_setup, ALLOWED_LANGS
 from modules.LoggerHandler import get_logger
 from modules.LocalizationHandler import LocalizationHandler, DiscordTranslator, lstr
 
 logger = get_logger()
 
+suggestion_types = [
+    {"value": "minor_issue", "label": "minor issue"},
+    {"value": "major_issue", "label": "major issue"},
+    {"value": "request", "label": "request"},
+    {"value": "improvement", "label": "improvement"},
+    {"value": "feedback", "label": "feedback"},
+]
+
+suggestion_categories = [
+    {"value": "category_1", "label": "category 1"},
+    {"value": "category_2", "label": "category 2"},
+    {"value": "category_3", "label": "category 3"},
+]
 
 class WelcomeLocaleSelect(discord.ui.Select):
     """Select dropdown for choosing locale in welcome message."""
@@ -74,8 +97,274 @@ class WelcomeView(discord.ui.View):
         self.add_item(self.locale_select)
 
 
+def _simplify_locale(locale: Optional[discord.Locale]) -> Optional[str]:
+    if not locale:
+        return None
+    value = str(locale.value)
+    return value.split("-")[0].lower()
+
+
+def _translate(localization: LocalizationHandler, key: str, fallback: str, locale: Optional[str] = None) -> str:
+    if not localization:
+        return fallback
+    translated = localization.t(key, locale=locale)
+    if not translated or translated == key:
+        return fallback
+    return translated
+
+
+class SuggestionTypeSelect(discord.ui.Select):
+    def __init__(self, parent_view: "SuggestionView"):
+        self.parent_view = parent_view
+        options = []
+        for suggestion_type in parent_view.suggestion_types:
+            label = suggestion_type["label"]
+            options.append(
+                discord.SelectOption(
+                    label=label,
+                    value=suggestion_type["value"],
+                )
+            )
+            parent_view.type_label_map[suggestion_type["value"]] = label
+        localization = parent_view.localization
+        locale = parent_view.locale_code
+        placeholder = _translate(localization, "commands.suggest.placeholders.type", "Select suggestion type", locale)
+        super().__init__(placeholder=placeholder, min_values=1, max_values=1, options=options, custom_id="suggestion_type_select")
+
+    async def callback(self, interaction: discord.Interaction):
+        self.parent_view.selected_type = self.values[0]
+        await interaction.response.defer()
+
+
+class SuggestionCategorySelect(discord.ui.Select):
+    def __init__(self, parent_view: "SuggestionView", categories: List[dict]):
+        self.parent_view = parent_view
+        options = []
+        for category in categories:
+            label = category["label"]
+            options.append(discord.SelectOption(label=label, value=category["value"]))
+            parent_view.category_label_map[category["value"]] = label
+        localization = parent_view.localization
+        locale = parent_view.locale_code
+        placeholder = _translate(localization, "commands.suggest.placeholders.category", "Select categories", locale)
+        max_values = max(1, len(options))
+        super().__init__(
+            placeholder=placeholder,
+            min_values=1,
+            max_values=max_values,
+            options=options,
+            custom_id="suggestion_category_select",
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        self.parent_view.selected_categories = list(self.values)
+        await interaction.response.defer()
+
+
+class SuggestionModal(discord.ui.Modal):
+    def __init__(self, parent_view: "SuggestionView"):
+        self.parent_view = parent_view
+        localization = parent_view.localization
+        locale = parent_view.locale_code
+        title = _translate(localization, "commands.suggest.modal.title", "Share your suggestion", locale)
+        super().__init__(title=title, custom_id="suggestion_modal")
+        
+        title_label = _translate(localization, "commands.suggest.modal.title_label", "Title", locale)
+        title_placeholder = _translate(localization, "commands.suggest.modal.title_placeholder", "Brief summary...", locale)
+        self.title_input = discord.ui.TextInput(
+            label=title_label,
+            style=discord.TextStyle.short,
+            placeholder=title_placeholder,
+            max_length=100,
+            required=True,
+        )
+        self.add_item(self.title_input)
+        
+        label = _translate(localization, "commands.suggest.modal.label", "Suggestion details", locale)
+        placeholder = _translate(localization, "commands.suggest.modal.placeholder", "Describe your idea or issue...", locale)
+        self.body_input = discord.ui.TextInput(
+            label=label,
+            style=discord.TextStyle.long,
+            placeholder=placeholder,
+            max_length=2000,
+            required=True,
+        )
+        self.add_item(self.body_input)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        title = self.title_input.value.strip()
+        content = self.body_input.value.strip()
+        localization = self.parent_view.localization
+        locale = self.parent_view.locale_code
+        if not title or not content:
+            error_text = _translate(localization, "commands.suggest.errors.empty", "Title and details cannot be empty.", locale)
+            await interaction.response.send_message(error_text, ephemeral=True)
+            return
+
+        payload = self.parent_view.build_payload(title, content, interaction)
+        stored = append_suggestion_record(payload)
+
+        logger.info(
+            f"Stored suggestion {stored.get('id')} from user {stored['user'].get('id')}",
+            extra={"guild": stored.get("guild", {}).get("name", "Suggestions")},
+        )
+
+        await self.parent_view.make_unavailable()
+
+        success_text = _translate(localization, "commands.suggest.success", "Thank you! Your suggestion was recorded.", locale)
+        await interaction.response.send_message(success_text, ephemeral=True)
+
+    async def on_error(self, interaction: discord.Interaction, error: Exception) -> None:
+        logger.error(f"Error submitting suggestion: {error}", exc_info=True, extra={"guild": "Suggestions"})
+        localization = self.parent_view.localization
+        locale = self.parent_view.locale_code
+        error_text = _translate(localization, "commands.suggest.errors.generic", "Something went wrong. Please try again.", locale)
+        if not interaction.response.is_done():
+            await interaction.response.send_message(error_text, ephemeral=True)
+        else:
+            await interaction.followup.send(error_text, ephemeral=True)
+
+
+class SuggestionView(discord.ui.View):
+    def __init__(
+        self,
+        bot: commands.Bot,
+        author: discord.abc.User,
+        localization: LocalizationHandler,
+        locale_code: Optional[str],
+        configured_guild: Optional[Guild],
+        discord_guild: Optional[discord.Guild],
+        categories: Optional[List[dict]] = None,
+    ):
+        super().__init__(timeout=600)
+        self.bot = bot
+        self.author = author
+        self.localization = localization
+        self.locale_code = locale_code
+        self.configured_guild = configured_guild
+        self.discord_guild = discord_guild
+        self.command_interaction: Optional[discord.Interaction] = None
+        self.message: Optional[discord.Message] = None
+        self.selected_type: Optional[str] = None
+        self.selected_categories: List[str] = []
+        self.type_label_map: Dict[str, str] = {}
+        self.category_label_map: Dict[str, str] = {}
+        self.suggestion_types = suggestion_types
+        self.categories = categories or suggestion_categories
+
+        self.type_select = SuggestionTypeSelect(self)
+        self.category_select = SuggestionCategorySelect(self, self.categories)
+        self.add_item(self.type_select)
+        self.add_item(self.category_select)
+        self.open_modal.label = self._button_label()
+
+    def _button_label(self) -> str:
+        return _translate(self.localization, "commands.suggest.button.open_modal", "Write suggestion", self.locale_code)
+
+    async def _send_selection_warning(self, interaction: discord.Interaction):
+        localization = self.localization
+        locale = self.locale_code
+        missing_text = _translate(localization, "commands.suggest.errors.selection", "Select a type and at least one category first.", locale)
+        if not interaction.response.is_done():
+            await interaction.response.send_message(missing_text, ephemeral=True)
+        else:
+            await interaction.followup.send(missing_text, ephemeral=True)
+
+    @discord.ui.button(
+        label="Write suggestion",
+        style=discord.ButtonStyle.primary,
+        custom_id="suggestion_open_modal",
+    )
+    async def open_modal(self, interaction: discord.Interaction, _: discord.ui.Button):
+        if not self.selected_type or not self.selected_categories:
+            await self._send_selection_warning(interaction)
+            return
+        modal = SuggestionModal(self)
+        modal.title = _translate(self.localization, "commands.suggest.modal.title", modal.title, self.locale_code)
+        modal.body_input.label = _translate(self.localization, "commands.suggest.modal.label", modal.body_input.label, self.locale_code)
+        modal.body_input.placeholder = _translate(
+            self.localization, "commands.suggest.modal.placeholder", modal.body_input.placeholder, self.locale_code
+        )
+        await interaction.response.send_modal(modal)
+
+    def translate(self, key: str, fallback: str) -> str:
+        return _translate(self.localization, key, fallback, self.locale_code)
+
+    async def make_unavailable(self):
+        for child in self.children:
+            if hasattr(child, "disabled"):
+                child.disabled = True
+        if self.message:
+            try:
+                await self.message.edit(view=self)
+            except Exception as e:
+                logger.warning(f"Failed to disable suggestion view message: {e}", exc_info=True, extra={"guild": "Suggestions"})
+
+    async def on_timeout(self):
+        await self.make_unavailable()
+
+    def build_payload(self, title: str, message: str, interaction: discord.Interaction) -> dict:
+        now = datetime.utcnow().isoformat()
+        guild_obj = self.discord_guild or interaction.guild
+        categories = [
+            {
+                "value": category_value,
+                "label": self.category_label_map.get(category_value, category_value),
+            }
+            for category_value in self.selected_categories
+        ]
+        suggestion_type = {
+            "value": self.selected_type,
+            "label": self.type_label_map.get(self.selected_type, self.selected_type),
+        }
+        user = interaction.user
+        locale_info = {
+            "user": str(interaction.locale.value) if interaction.locale else None,
+            "guild": str(interaction.guild_locale.value) if interaction.guild_locale else None,
+            "stored": self.locale_code,
+        }
+        guild_payload = None
+        if guild_obj:
+            guild_payload = {
+                "id": str(guild_obj.id),
+                "name": guild_obj.name,
+                "configured": str(self.configured_guild.guild_id) if isinstance(self.configured_guild, Guild) else None,
+            }
+
+        return {
+            "title": title,
+            "type": suggestion_type,
+            "categories": categories,
+            "message": message,
+            "created_at": now,
+            "user": {
+                "id": str(user.id),
+                "name": user.name,
+                "display_name": getattr(user, "display_name", user.name),
+                "global_name": getattr(user, "global_name", None),
+                "discriminator": getattr(user, "discriminator", "0"),
+            },
+            "contact": {
+                "method": "dm",
+                "user_id": str(user.id),
+            },
+            "locale": locale_info,
+            "guild": guild_payload,
+            "context": {
+                "interaction_id": str(interaction.id),
+                "channel_id": str(interaction.channel_id) if interaction.channel_id else None,
+                "in_guild": guild_obj is not None,
+            },
+            "responded": False,
+            "response_given": False,
+            "response_text": None,
+            "response_type": None,
+            "response_sent_at": None,
+        }
+
+
 class DiscordBot(commands.Bot):
-    def __init__(self):
+    def __init__(self, dev: bool = False):
 
         intents = discord.Intents.default()
         intents.message_content = True
@@ -83,7 +372,7 @@ class DiscordBot(commands.Bot):
         intents.guild_messages = True
 
         super().__init__(intents=intents, command_prefix="!")
-        
+        self.dev = dev
         # Initialize localization handler and translator
         self.l10n = LocalizationHandler()
         translator = DiscordTranslator(self.l10n)
@@ -121,12 +410,43 @@ class DiscordBot(commands.Bot):
             name="ping",
             description=lstr("commands.ping.description", default="Check bot latency")
         )
-        @ProcessCommand(allowed_permissions={discord.Permissions.administrator: True})
+        @ProcessCommand(self, allowed_permissions={discord.Permissions.administrator: True})
         async def ping(interaction: discord.Interaction, guild: Guild):
             latency_ms = round(self.latency * 1000)
             await interaction.response.send_message(guild.localization.t("common.pong", ms=latency_ms), ephemeral=True)
 
-        # Setup command and gating are registered via ConfigurationHandler
+        @self.tree.command(
+            name="suggest",
+            description=lstr("commands.suggest.description", default="Suggest a feature or report a bug")
+        )
+        @ProcessCommand(self, allowed_permissions={}, required_guild=False, required_guild_enabled=False)
+        async def suggest(interaction: discord.Interaction, guild: Guild = None, executor: discord.Member = None):
+            localization = guild.localization if isinstance(guild, Guild) else self.l10n
+            locale_code = _simplify_locale(interaction.locale)
+            view = SuggestionView(
+                bot=self,
+                author=executor or interaction.user,
+                localization=localization,
+                locale_code=locale_code,
+                configured_guild=guild if isinstance(guild, Guild) else None,
+                discord_guild=interaction.guild,
+                categories=suggestion_categories,
+            )
+
+            content = _translate(
+                localization,
+                "commands.suggest.prompt",
+                "Help us improve by selecting the type and categories, then press the button to describe your suggestion.",
+                locale_code,
+            )
+
+            await interaction.response.send_message(content, view=view, ephemeral=True)
+            view.command_interaction = interaction
+            try:
+                view.message = await interaction.original_response()
+            except Exception:
+                view.message = None
+
 
         @self.event
         async def on_guild_join(guild: discord.Guild):

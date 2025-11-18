@@ -325,7 +325,7 @@ def register_setup(bot: discord.Client):
         name="config",
         description=lstr("commands.config.description", default="Configure the bot for this server")
     )
-    @ProcessCommand(allowed_permissions={discord.Permissions.administrator: True}, required_guild=True, required_guild_enabled=False)
+    @ProcessCommand(bot, allowed_permissions={discord.Permissions.administrator: True}, required_guild=True, required_guild_enabled=False)
     async def config_cmd(interaction: discord.Interaction, guild: Guild):
         # Create and send the config embed with view
         view = ConfigView(bot, interaction.guild.id)

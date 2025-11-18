@@ -1,4 +1,5 @@
 import asyncio
+import datetime
 from threading import Timer
 import typing
 
@@ -8,11 +9,12 @@ from modules.LocalizationHandler import lstr
 from modules.LocalizationHandler import LocalizationHandler
 from modules.LoggerHandler import get_logger
 from modules.guild import Guild
-from modules.utils import ProcessCommand
+from modules.utils import BattleMetadata, ProcessCommand, save_battle_result, editMessage, sendMessage
 
 from modules.PromptHandler import Prompt, PromptHandler, Prompts, SystemPrompt, random_string, SETTINGS
 
 logger = get_logger()
+
 
 
 class Fighter:
@@ -96,7 +98,12 @@ class StrategyCreator:
             self.view.add_item(CreatorAbortButton(self, self.owner, self.guild.localization.t("commands.quick-battle.communication.abort_button")))
         
         # Send message
-        self.message = await self.channel.send(embed=embed, view=self.view)
+        self.message = await sendMessage(self.channel, self.guild, embed=embed, view=self.view)
+        if self.message is None:
+            # Failed to send message, abort
+            self.aborted = True
+            self.completed.set()
+            return None
         
         # Wait for all submissions or abort
         await self.completed.wait()
@@ -107,7 +114,7 @@ class StrategyCreator:
         
         # Disable button
         self.view.clear_items()
-        await self.message.edit(view=self.view)
+        await editMessage(self.message, view=self.view)
         
         return self.participants
     
@@ -121,7 +128,7 @@ class StrategyCreator:
             color=discord.Color.red()
         )
         self.view.clear_items()
-        await self.message.edit(embed=embed, view=self.view)
+        await editMessage(self.message, embed=embed, view=self.view)
         self.completed.set()
 
 
@@ -183,7 +190,7 @@ class StrategyModal(discord.ui.Modal):
                 value="\n".join([p.mention for p in remaining]) if remaining else self.creator.guild.localization.t("commands.quick-battle.strategy.none_remaining"),
                 inline=False
             )
-            await self.creator.message.edit(embed=embed, view=self.creator.view)
+            await editMessage(self.creator.message, embed=embed, view=self.creator.view)
         else:
             # All submitted
             self.creator.completed.set()
@@ -248,7 +255,12 @@ class FighterCreator:
         self.view = view
         
         # Send message
-        self.message = await self.channel.send(embed=embed, view=view)
+        self.message = await sendMessage(self.channel, self.guild, embed=embed, view=view)
+        if self.message is None:
+            # Failed to send message, abort
+            self.aborted = True
+            self.completed.set()
+            return None
         
         # Wait for all submissions or abort
         await self.completed.wait()
@@ -259,7 +271,7 @@ class FighterCreator:
         
         # Disable button
         view.clear_items()
-        await self.message.edit(view=view)
+        await editMessage(self.message, view=view)
         
         return self.fighters
     
@@ -273,7 +285,7 @@ class FighterCreator:
             color=discord.Color.red()
         )
         self.view.clear_items()
-        await self.message.edit(embed=embed, view=self.view)
+        await editMessage(self.message, embed=embed, view=self.view)
         self.completed.set()
 
 
@@ -347,7 +359,7 @@ class FighterModal(discord.ui.Modal):
                 value="\n".join([p.mention for p in remaining]) if remaining else self.creator.guild.localization.t("commands.quick-battle.fighter.none_remaining"),
                 inline=False
             )
-            await self.creator.message.edit(embed=embed, view=self.creator.view)
+            await editMessage(self.creator.message, embed=embed, view=self.creator.view)
         else:
             # All submitted
             self.creator.completed.set()
@@ -425,7 +437,12 @@ class EnvironmentCreator:
         self.view = view
         
         # Send message
-        self.message = await self.channel.send(embed=embed, view=view)
+        self.message = await sendMessage(self.channel, self.guild, embed=embed, view=view)
+        if self.message is None:
+            # Failed to send message, abort
+            self.aborted = True
+            self.completed.set()
+            return None
         
         # Wait for all submissions or abort
         await self.completed.wait()
@@ -436,7 +453,7 @@ class EnvironmentCreator:
         
         # Disable button
         view.clear_items()
-        await self.message.edit(view=view)
+        await editMessage(self.message, view=view)
         
         # Combine environments
         environment_list = list(self.submissions.values())
@@ -454,7 +471,7 @@ class EnvironmentCreator:
             color=discord.Color.red()
         )
         self.view.clear_items()
-        await self.message.edit(embed=embed, view=self.view)
+        await editMessage(self.message, embed=embed, view=self.view)
         self.completed.set()
 
 
@@ -516,7 +533,7 @@ class EnvironmentModal(discord.ui.Modal):
                 value="\n".join([p.mention for p in remaining]) if remaining else self.creator.guild.localization.t("commands.quick-battle.environment.none_remaining"),
                 inline=False
             )
-            await self.creator.message.edit(embed=embed, view=self.creator.view)
+            await editMessage(self.creator.message, embed=embed, view=self.creator.view)
         else:
             # All submitted
             self.creator.completed.set()
@@ -657,7 +674,7 @@ class QuickBattleRequest:
         """Initialize the message with embed and view in async context."""
         self.__update_embed()
         self.__update_ui()
-        await self.message.edit(embed=self.embed, view=self.ui)
+        await editMessage(self.message, embed=self.embed, view=self.ui)
 
     def __tick__(self):
         if not self._timer_running:
@@ -684,13 +701,13 @@ class QuickBattleRequest:
     async def _async_update_message(self):
         """Update the message asynchronously, creating the View in the async context."""
         self.__update_ui()
-        await self.message.edit(embed=self.embed, view=self.ui)
+        await editMessage(self.message, embed=self.embed, view=self.ui)
     
     async def __update_async__(self):
         """Async version of __update__ for use in async contexts."""
         self.__update_embed()
         self.__update_ui()
-        await self.message.edit(embed=self.embed, view=self.ui)
+        await editMessage(self.message, embed=self.embed, view=self.ui)
     
     def __update_embed(self):
         if self.embed is not None:
@@ -737,7 +754,7 @@ class QuickBattleRequest:
         try:
             # Clear UI (create empty view in async context)
             self.ui = discord.ui.View()  # Empty view
-            await self.message.edit(embed=self.embed, view=self.ui)
+            await editMessage(self.message, embed=self.embed, view=self.ui)
             await self._async_timeout()
         except Exception as e:
             logger.error(f"Error in timeout completion: {e}", exc_info=True, extra={"guild": f"{self.guild.guild.name}({self.guild.guild.id})" if self.guild and self.guild.guild else "Unknown"})
@@ -753,11 +770,15 @@ class QuickBattleRequest:
         # Clear UI and update message
         self.__update_embed()
         self.ui = discord.ui.View()  # Empty view
-        await self.message.edit(embed=self.embed, view=self.ui)
+        await editMessage(self.message, embed=self.embed, view=self.ui)
         
         # Start the battle process
-        await self._async_timeout()
-    
+        try:
+            await self._async_timeout()
+        except Exception as e:
+            logger.error(f"Error in quick-battle starting: {e}", exc_info=True, extra={"guild": f"{self.guild.guild.name}({self.guild.guild.id})" if self.guild and self.guild.guild else "Unknown"})
+            await sendMessage(self.message.channel, self.guild, self.guild.localization.t("errors.quick-battle_error"))
+            return
     async def _abort_battle(self):
         """Abort the battle starting process."""
         # Stop the timer
@@ -778,7 +799,7 @@ class QuickBattleRequest:
         
         # Clear UI
         self.ui = discord.ui.View()  # Empty view
-        await self.message.edit(embed=self.embed, view=self.ui)
+        await editMessage(self.message, embed=self.embed, view=self.ui)
     
     async def _async_timeout(self):
         """Async part of timeout that creates environments, fighters, and strategies."""
@@ -786,18 +807,28 @@ class QuickBattleRequest:
             environment = await EnvironmentCreator(self.message.channel, self.participants, self.owner, self.setting).get_environment()
             if environment is None:  # Aborted
                 return
-            await self.message.channel.send(environment)
+            await sendMessage(self.message.channel, self.guild, environment)
             environment = Prompts.Elements.CustomEnvironment.fill(env=environment)
         else:
             environment = Prompts.Core.GenericEnvironment
-        
+        logger.debug(f"Environment: {environment}", extra={"guild": f"{self.guild.guild.name}({self.guild.guild.id})" if self.guild and self.guild.guild else "Unknown"})
         fighters = await FighterCreator(self.message.channel, self.participants, self.owner).get_fighters()
         if fighters is None:  # Aborted
             return
+        logger.debug(f"Fighters: {fighters}", extra={"guild": f"{self.guild.guild.name}({self.guild.guild.id})" if self.guild and self.guild.guild else "Unknown"})
         fighters = await StrategyCreator(self.message.channel, fighters, self.owner).get_strategy()
         if fighters is None:  # Aborted
             return
+        logger.debug(f"Fighters with strategies: {fighters}", extra={"guild": f"{self.guild.guild.name}({self.guild.guild.id})" if self.guild and self.guild.guild else "Unknown"})
         fightersPrompt = FighterPrompt().fill(fighters)
+        metadata = BattleMetadata(
+            self.guild, 
+            datetime.now(), 
+            environment="custom" if self.custom_environment else "generic", 
+            fighters=[(member.id, fighter.name, fighter.description) for member, fighter in fighters.values()], 
+            setting=self.setting.name, 
+            participants=[(participant.id, participant.name) for participant in self.participants]
+        )
         prompts_list = [
             Prompts.Core.SimpleBattle,
             environment,
@@ -806,7 +837,8 @@ class QuickBattleRequest:
             Prompts.Elements.Language.fill(locale=self.guild.localization.full_localization_name(self.guild.params.get("language")))
         ]
         FightResult = await PromptHandler.from_guild(self.guild).evaluateMultiple(prompts_list, prompt=f"Start the battle {random_string(128)}")
-        await self.message.channel.send(FightResult)
+        save_battle_result(self.guild, metadata, FightResult, folder="quick-battle")
+        await sendMessage(self.message.channel, self.guild, FightResult)
     
 class BattleHandler:
     def __init__(self, bot: discord.Client):
@@ -838,7 +870,7 @@ class BattleHandler:
                 for key in SETTINGS.keys()
             ]
         )
-        @ProcessCommand(allowed_permissions={})
+        @ProcessCommand(self.bot, allowed_permissions={})
         async def quick_battle(
             interaction: discord.Interaction,
             custom_environment: discord.app_commands.Choice[int],
@@ -848,6 +880,6 @@ class BattleHandler:
             executor: discord.Member = None,
         ):
             await interaction.response.send_message("@everyone")
-            message = await(await interaction.original_response()).fetch()
+            message = await interaction.original_response()
             setting_prompt = SETTINGS.get(setting.value) if setting else SETTINGS.get("unpredictable-funny")
             QuickBattleRequest(message, bool(custom_environment.value), timeout, executor, guild, setting_prompt)
