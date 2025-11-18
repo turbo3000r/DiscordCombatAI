@@ -12,6 +12,7 @@ const state = {
         type: "",
         categories: [],
         order: "new",
+        status: "all",
     },
     selectedId: null,
     loading: false,
@@ -24,6 +25,7 @@ function cacheElements() {
     elements.typeFilter = document.getElementById("typeFilter");
     elements.categoryFilter = document.getElementById("categoryFilter");
     elements.orderFilter = document.getElementById("orderFilter");
+    elements.statusFilter = document.getElementById("statusFilter");
     elements.clearFiltersBtn = document.getElementById("clearFiltersBtn");
     elements.refreshBtn = document.getElementById("refreshBtn");
 
@@ -32,10 +34,11 @@ function cacheElements() {
     elements.detailUser = document.getElementById("detailUser");
     elements.detailGuild = document.getElementById("detailGuild");
     elements.detailCreated = document.getElementById("detailCreated");
+    elements.detailTicket = document.getElementById("detailTicket");
     elements.detailStatus = document.getElementById("detailStatus");
     elements.detailTags = document.getElementById("detailTags");
     elements.detailMessage = document.getElementById("detailMessage");
-    elements.detailResponseInfo = document.getElementById("detailResponseInfo");
+    elements.detailConversation = document.getElementById("detailConversation");
     elements.responseInput = document.getElementById("responseInput");
     elements.responseStatus = document.getElementById("responseStatus");
     elements.sendResponseBtn = document.getElementById("sendResponseBtn");
@@ -65,11 +68,18 @@ function registerEvents() {
         fetchSuggestions();
     });
 
+    elements.statusFilter.addEventListener("change", () => {
+        console.log("🔄 Status filter changed to:", elements.statusFilter.value);
+        state.filters.status = elements.statusFilter.value;
+        fetchSuggestions();
+    });
+
     elements.clearFiltersBtn.addEventListener("click", () => {
         console.log("🧹 Clearing filters");
-        state.filters = { type: "", categories: [], order: "new" };
+        state.filters = { type: "", categories: [], order: "new", status: "all" };
         elements.typeFilter.value = "";
         elements.orderFilter.value = "new";
+        elements.statusFilter.value = "all";
         Array.from(elements.categoryFilter.options).forEach(opt => opt.selected = false);
         fetchSuggestions();
     });
@@ -228,6 +238,62 @@ function renderSuggestionsList() {
     console.log("   ✅ List rendered with", elements.list.children.length, "children");
 }
 
+function renderConversationThread(conversation) {
+    if (!elements.detailConversation) {
+        return;
+    }
+
+    const container = elements.detailConversation;
+    container.innerHTML = "";
+
+    if (!conversation || !conversation.length) {
+        container.innerHTML = `<p class="muted">No conversation yet.</p>`;
+        return;
+    }
+
+    const sorted = [...conversation].sort((a, b) => {
+        const aDate = new Date(a.created_at || a.timestamp || 0).getTime();
+        const bDate = new Date(b.created_at || b.timestamp || 0).getTime();
+        return aDate - bDate;
+    });
+
+    sorted.forEach(entry => {
+        const wrapper = document.createElement("div");
+        wrapper.className = `conversation-entry conversation-${entry.author_role || "user"}`;
+
+        const header = document.createElement("div");
+        header.className = "conversation-entry-header";
+
+        const roleLabel = entry.author_role === "staff" ? "Team" : "User";
+        const directionLabel = entry.direction === "outgoing" ? "→" : "←";
+
+        const authorSpan = document.createElement("span");
+        authorSpan.textContent = `${roleLabel} ${directionLabel}`;
+        header.appendChild(authorSpan);
+
+        const timeSpan = document.createElement("span");
+        timeSpan.textContent = formatDate(entry.created_at || entry.timestamp);
+        header.appendChild(timeSpan);
+
+        wrapper.appendChild(header);
+
+        if (entry.metadata && entry.metadata.mode) {
+            const meta = document.createElement("p");
+            meta.className = "conversation-entry-meta";
+            const modeLabel = String(entry.metadata.mode).replace(/_/g, " ");
+            meta.textContent = `Mode: ${modeLabel}`;
+            wrapper.appendChild(meta);
+        }
+
+        const body = document.createElement("p");
+        body.className = "conversation-entry-body";
+        body.textContent = entry.text || "No text provided.";
+        wrapper.appendChild(body);
+
+        container.appendChild(wrapper);
+    });
+}
+
 function renderDetail() {
     console.log("📄 renderDetail called, selectedId:", state.selectedId);
     const suggestion = state.suggestions.find(item => item.id === state.selectedId);
@@ -241,6 +307,9 @@ function renderDetail() {
         elements.detailPanel.classList.add("empty");
         elements.responseInput.value = "";
         elements.responseStatus.textContent = "";
+        if (elements.detailConversation) {
+            elements.detailConversation.innerHTML = "";
+        }
         return;
     }
     
@@ -255,6 +324,9 @@ function renderDetail() {
     elements.detailUser.innerHTML = `👤 <strong>User:</strong> ${suggestion.user?.display_name || suggestion.user?.name || "Unknown"}`;
     elements.detailGuild.innerHTML = `🏰 <strong>Guild:</strong> ${suggestion.guild?.name || "Direct message"}`;
     elements.detailCreated.innerHTML = `🕒 <strong>Created:</strong> ${formatDate(suggestion.created_at)}`;
+    if (elements.detailTicket) {
+        elements.detailTicket.innerHTML = `🎫 <strong>Ticket:</strong> ${suggestion.ticket_uid || "N/A"}`;
+    }
     elements.detailStatus.textContent = suggestion.responded ? "✓ Responded" : "⏳ Pending";
     elements.detailStatus.className = `status-badge ${suggestion.responded ? "status-success" : "status-warning"}`;
 
@@ -279,18 +351,7 @@ function renderDetail() {
 
     elements.detailMessage.textContent = suggestion.message || "No message provided.";
 
-    if (suggestion.responded) {
-        elements.detailResponseInfo.innerHTML = `
-            <div style="background-color: var(--bg-tertiary); padding: 1rem; border-radius: 6px; border-left: 3px solid var(--success-color);">
-                <p><strong>📤 Response Text:</strong></p>
-                <p style="margin-top: 0.5rem; color: var(--text-secondary);">${suggestion.response_text || "No text stored"}</p>
-                <p style="margin-top: 1rem;"><strong>Type:</strong> ${suggestion.response_type || "unknown"}</p>
-                <p><strong>Sent at:</strong> ${formatDate(suggestion.response_sent_at)}</p>
-            </div>
-        `;
-    } else {
-        elements.detailResponseInfo.innerHTML = `<p class="muted" style="padding: 1rem; background-color: var(--bg-tertiary); border-radius: 6px;">⏳ No response sent yet.</p>`;
-    }
+    renderConversationThread(suggestion.conversation || []);
 
     elements.responseInput.value = suggestion.response_text || "";
     const disabled = suggestion.responded;
@@ -333,8 +394,17 @@ async function fetchSuggestions() {
         const data = await response.json();
         console.log("   Raw API response:", data);
         
-        state.suggestions = data.items || [];
-        console.log("   ✅ Loaded", state.suggestions.length, "suggestions");
+        let allSuggestions = data.items || [];
+        
+        // Apply client-side status filter
+        if (state.filters.status === "pending") {
+            allSuggestions = allSuggestions.filter(s => !s.responded);
+        } else if (state.filters.status === "done") {
+            allSuggestions = allSuggestions.filter(s => s.responded);
+        }
+        
+        state.suggestions = allSuggestions;
+        console.log("   ✅ Loaded", state.suggestions.length, "suggestions (after status filter)");
         console.log("   Suggestions:", state.suggestions);
         
         // Reset selection if current no longer exists

@@ -58,7 +58,8 @@
         "battle_starting": "Starting the battle...",
         "battle_aborted": "Battle has been aborted.",
         "battle_aborted_message": "The battle request has been aborted.",
-        "create_environment_message": "Creating environment...\n Waiting for participants: {participants}"
+        "create_environment_message": "Creating environment...\n Waiting for participants: {participants}",
+        "evaluating_prompts": "Evaluating prompts..."
       },
       "environment": {
         "title": "Environment Creation",

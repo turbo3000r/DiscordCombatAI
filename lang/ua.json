@@ -58,7 +58,8 @@
         "battle_starting": "Початок бою...",
         "battle_aborted": "Бій було скасовано.",
         "battle_aborted_message": "Запит на бій було скасовано.",
-        "create_environment_message": "Створення середовища...\n Очікування учасників: {participants}"
+        "create_environment_message": "Створення середовища...\n Очікування учасників: {participants}",
+        "evaluating_prompts": "Моделювання бою..."
       },
       "environment": {
         "title": "Створення середовища",

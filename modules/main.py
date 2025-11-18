@@ -15,6 +15,8 @@ from modules.utils import (
     ProcessCommand,
     update_bot_config,
     append_suggestion_record,
+    generate_ticket_uid,
+    create_conversation_entry,
 )
 from modules.ConfigurationHandler import register_setup, ALLOWED_LANGS
 from modules.LoggerHandler import get_logger
@@ -31,9 +33,14 @@ suggestion_types = [
 ]
 
 suggestion_categories = [
-    {"value": "category_1", "label": "category 1"},
-    {"value": "category_2", "label": "category 2"},
-    {"value": "category_3", "label": "category 3"},
+    {"value": "prompts", "label": "Prompts"},
+    {"value": "gamemodes", "label": "Gamemodes"},
+    {"value": "settings", "label": "Battle settings"},
+    {"value": "generic_environments", "label": "Generic environments"},
+    {"value": "commands", "label": "Commands"},
+    {"value": "functionalities", "label": "Functionalities"},
+    {"value": "localization", "label": "Localization"},
+    {"value": "other", "label": "Other"},
 ]
 
 class WelcomeLocaleSelect(discord.ui.Select):
@@ -305,6 +312,7 @@ class SuggestionView(discord.ui.View):
 
     def build_payload(self, title: str, message: str, interaction: discord.Interaction) -> dict:
         now = datetime.utcnow().isoformat()
+        ticket_uid = generate_ticket_uid()
         guild_obj = self.discord_guild or interaction.guild
         categories = [
             {
@@ -331,12 +339,26 @@ class SuggestionView(discord.ui.View):
                 "configured": str(self.configured_guild.guild_id) if isinstance(self.configured_guild, Guild) else None,
             }
 
+        conversation = []
+        if message:
+            conversation.append(
+                create_conversation_entry(
+                    author_role="user",
+                    direction="incoming",
+                    text=message,
+                    created_at=now,
+                    metadata={"title": title},
+                    source="suggestion_modal",
+                )
+            )
+
         return {
             "title": title,
             "type": suggestion_type,
             "categories": categories,
             "message": message,
             "created_at": now,
+            "ticket_uid": ticket_uid,
             "user": {
                 "id": str(user.id),
                 "name": user.name,
@@ -360,6 +382,7 @@ class SuggestionView(discord.ui.View):
             "response_text": None,
             "response_type": None,
             "response_sent_at": None,
+            "conversation": conversation,
         }
 
 

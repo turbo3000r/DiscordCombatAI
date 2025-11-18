@@ -58,7 +58,8 @@
         "battle_starting": "Iniciando la batalla...",
         "battle_aborted": "La batalla ha sido cancelada.",
         "battle_aborted_message": "La solicitud de batalla ha sido cancelada.",
-        "create_environment_message": "Creando entorno...\n Esperando participantes: {participants}"
+        "create_environment_message": "Creando entorno...\n Esperando participantes: {participants}",
+        "evaluating_prompts": "Evaluando prompts..."
       },
       "environment": {
         "title": "Creación de Entorno",

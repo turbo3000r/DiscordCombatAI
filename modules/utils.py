@@ -8,6 +8,7 @@ from typing import Any, Callable, Dict, List, Optional, Sequence
 from datetime import datetime
 import discord
 from discord.flags import flag_value
+from modules.PromptHandler import Prompt
 from modules.guild import Guild
 from modules.LoggerHandler import get_logger
 
@@ -32,8 +33,8 @@ class BattleMetadata:
         return json.dumps({
             "date": self.date.isoformat(),
             "guild": self.guild.guild_id,
-            "kwargs": self.kwargs
-        })
+            "kwargs": {key: value.to_dict() if isinstance(value, Prompt) else value for key, value in self.kwargs.items()}
+        }, ensure_ascii=False).encode('utf-8').decode('utf-8')
 
     def __getitem__(self, key: str):
         return self.kwargs[key]
@@ -145,10 +146,124 @@ def _write_suggestions_unlocked(records: List[Dict[str, Any]]) -> None:
         json.dump(records, f, indent=2, ensure_ascii=False)
 
 
+# --- Suggestion helpers ----------------------------------------------------
+
+def generate_ticket_uid() -> str:
+    """Return a short, human-friendly ticket identifier."""
+    return f"SUG-{uuid.uuid4().hex[:8].upper()}"
+
+
+def create_conversation_entry(
+    author_role: str,
+    direction: str,
+    text: str,
+    *,
+    created_at: Optional[str] = None,
+    metadata: Optional[Dict[str, Any]] = None,
+    source: Optional[str] = None,
+) -> Dict[str, Any]:
+    if not text:
+        text = ""
+    entry = {
+        "entry_id": str(uuid.uuid4()),
+        "author_role": author_role,
+        "direction": direction,
+        "text": text,
+        "created_at": created_at or datetime.utcnow().isoformat(),
+        "metadata": metadata or {},
+    }
+    if source:
+        entry["source"] = source
+    return entry
+
+
+def ensure_ticket_metadata(record: Dict[str, Any]) -> bool:
+    """
+    Ensure a suggestion record has ticket_uid and a conversation history.
+
+    Returns:
+        bool: True if the record was modified.
+    """
+    changed = False
+    if not record.get("ticket_uid"):
+        record["ticket_uid"] = generate_ticket_uid()
+        changed = True
+
+    conversation = record.get("conversation")
+    if not isinstance(conversation, list):
+        conversation = []
+        record["conversation"] = conversation
+        changed = True
+
+    if not conversation:
+        primary_message = (record.get("message") or "").strip()
+        if primary_message:
+            conversation.append(
+                create_conversation_entry(
+                    "user",
+                    "incoming",
+                    primary_message,
+                    created_at=record.get("created_at"),
+                    metadata={"title": record.get("title")},
+                    source="suggestion",
+                )
+            )
+            changed = True
+
+        response_text = record.get("response_text")
+        if response_text:
+            conversation.append(
+                create_conversation_entry(
+                    "staff",
+                    "outgoing",
+                    response_text,
+                    created_at=record.get("response_sent_at"),
+                    metadata={"response_type": record.get("response_type")},
+                    source="legacy_response",
+                )
+            )
+            changed = True
+
+    return changed
+
+
+def append_conversation_entry(
+    record: Dict[str, Any],
+    *,
+    author_role: str,
+    direction: str,
+    text: str,
+    created_at: Optional[str] = None,
+    metadata: Optional[Dict[str, Any]] = None,
+    source: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Append a conversation entry to the provided suggestion record.
+    """
+    ensure_ticket_metadata(record)
+    entry = create_conversation_entry(
+        author_role,
+        direction,
+        text,
+        created_at=created_at,
+        metadata=metadata,
+        source=source,
+    )
+    record["conversation"].append(entry)
+    return entry
+
+
 def load_suggestions() -> List[Dict[str, Any]]:
     """Return a copy of all stored suggestions."""
     with _suggestions_lock:
-        return list(_read_suggestions_unlocked())
+        suggestions = _read_suggestions_unlocked()
+        changed = False
+        for suggestion in suggestions:
+            if ensure_ticket_metadata(suggestion):
+                changed = True
+        if changed:
+            _write_suggestions_unlocked(suggestions)
+        return list(suggestions)
 
 
 def append_suggestion_record(record: Dict[str, Any]) -> Dict[str, Any]:
@@ -165,6 +280,7 @@ def append_suggestion_record(record: Dict[str, Any]) -> Dict[str, Any]:
         suggestions = _read_suggestions_unlocked()
         stored_record = record.copy()
         stored_record.setdefault("id", str(uuid.uuid4()))
+        ensure_ticket_metadata(stored_record)
         suggestions.append(stored_record)
         _write_suggestions_unlocked(suggestions)
         return stored_record
@@ -174,8 +290,14 @@ def find_suggestion_by_id(suggestion_id: str) -> Optional[Dict[str, Any]]:
     """Find a suggestion by id."""
     with _suggestions_lock:
         suggestions = _read_suggestions_unlocked()
-        for suggestion in suggestions:
+        changed = False
+        for index, suggestion in enumerate(suggestions):
             if str(suggestion.get("id")) == str(suggestion_id):
+                if ensure_ticket_metadata(suggestion):
+                    suggestions[index] = suggestion
+                    changed = True
+                if changed:
+                    _write_suggestions_unlocked(suggestions)
                 return suggestion
     return None
 
@@ -196,6 +318,7 @@ def update_suggestion_record(suggestion_id: str, updater: Callable[[Dict[str, An
         updated = None
         for index, suggestion in enumerate(suggestions):
             if str(suggestion.get("id")) == str(suggestion_id):
+                ensure_ticket_metadata(suggestion)
                 updater(suggestion)
                 updated = suggestion
                 suggestions[index] = suggestion

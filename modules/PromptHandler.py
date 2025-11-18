@@ -21,6 +21,9 @@ class Prompt:
     
     def __add__(self, other: "Prompt") -> "Prompt":
         return Prompt(self.content+"\n---\n"+other.content)
+    
+    def to_dict(self) -> dict:
+        return {"content": self.content}
 
     def __str__(self):
         return self.content

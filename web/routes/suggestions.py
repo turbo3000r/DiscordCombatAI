@@ -10,6 +10,8 @@ from modules.utils import (
     find_suggestion_by_id,
     load_suggestions,
     update_suggestion_record,
+    append_conversation_entry,
+    ensure_ticket_metadata,
 )
 
 router = APIRouter(prefix="/api", tags=["suggestions"])
@@ -91,16 +93,17 @@ async def get_suggestion(suggestion_id: str):
     return JSONResponse(content=suggestion)
 
 
-async def _send_response_message(user_id: str, content: str) -> bool:
+async def _send_response_message(suggestion: dict, payload: SuggestionResponsePayload, content: str) -> bool:
     """
     Send a DM to the provided user ID through the bot bridge.
     Imported lazily to avoid circular imports when the server starts without the bot.
     """
     try:
-        from web.bot_bridge import send_user_dm  # Local import to avoid import cycles
+        from web.bot_bridge import send_suggestion_response_dm  # Local import to avoid import cycles
     except ImportError:
         return False
-    return await send_user_dm(int(user_id), content)
+    allow_followup = payload.mode == "send" and not suggestion.get("responded")
+    return await send_suggestion_response_dm(suggestion, content, allow_followup=allow_followup)
 
 
 def _resolve_auto_feedback_locale(suggestion: dict) -> str:
@@ -138,7 +141,7 @@ async def _deliver_response(suggestion: dict, payload: SuggestionResponsePayload
 
     sent = False
     if message_to_send:
-        sent = await _send_response_message(user_id, message_to_send)
+        sent = await _send_response_message(suggestion, payload, message_to_send)
     return sent, message_to_send, response_type
 
 
@@ -152,17 +155,48 @@ async def respond_to_suggestion(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Suggestion not found")
 
     sent, message_text, response_type = await _deliver_response(suggestion, payload)
-    responded_at = datetime.utcnow().isoformat()
+    event_time = datetime.utcnow().isoformat()
 
     def _update(entry: dict):
-        entry["responded"] = True
-        entry["response_given"] = sent
+        ensure_ticket_metadata(entry)
+
+        closing_mode = payload.mode in {"done_no_feedback", "done_auto_feedback"}
+
         if message_text:
             entry["response_text"] = message_text
-        if payload.response_text and not message_text:
+        elif payload.response_text and payload.mode == "send":
             entry["response_text"] = payload.response_text
+
         entry["response_type"] = response_type
-        entry["response_sent_at"] = responded_at if sent or payload.mode == "done_no_feedback" else entry.get("response_sent_at")
+        entry["last_response_mode"] = payload.mode
+        entry["responded"] = True if closing_mode else entry.get("responded", False)
+        entry["response_given"] = entry.get("response_given", False) or sent
+
+        if sent:
+            entry["response_sent_at"] = event_time
+        elif payload.mode == "done_no_feedback":
+            entry["response_sent_at"] = entry.get("response_sent_at") or event_time
+
+        convo_text = message_text
+        if payload.mode == "done_no_feedback":
+            convo_text = "Marked as done without sending a response."
+        elif payload.mode == "done_auto_feedback" and not message_text:
+            convo_text = "Marked as done with automatic feedback."
+
+        if convo_text:
+            append_conversation_entry(
+                entry,
+                author_role="staff",
+                direction="outgoing",
+                text=convo_text,
+                metadata={
+                    "mode": payload.mode,
+                    "response_type": response_type,
+                    "sent": sent,
+                },
+                created_at=event_time,
+                source="web_panel",
+            )
 
     updated = update_suggestion_record(suggestion_id, _update)
     if not updated:

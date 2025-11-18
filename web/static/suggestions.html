@@ -54,6 +54,14 @@
                     <option value="old">Oldest first</option>
                 </select>
             </div>
+            <div class="filter-group">
+                <label for="statusFilter">Status</label>
+                <select id="statusFilter">
+                    <option value="all">All</option>
+                    <option value="pending">Pending only</option>
+                    <option value="done">Done only</option>
+                </select>
+            </div>
             <div class="filter-group actions">
                 <button class="btn btn-secondary" id="clearFiltersBtn">Clear filters</button>
             </div>
@@ -76,6 +84,7 @@
                                 <span id="detailUser">User</span>
                                 <span id="detailGuild">Guild</span>
                                 <span id="detailCreated">Created</span>
+                                <span id="detailTicket">Ticket</span>
                             </div>
                         </div>
                         <span class="status-badge" id="detailStatus">Pending</span>
@@ -88,7 +97,10 @@
                         <p id="detailMessage"></p>
                     </div>
 
-                    <div class="detail-response-info" id="detailResponseInfo"></div>
+                    <div class="detail-conversation">
+                        <h3>Conversation</h3>
+                        <div class="conversation-thread" id="detailConversation"></div>
+                    </div>
 
                     <div class="response-form">
                         <label for="responseInput">Response (DM)</label>

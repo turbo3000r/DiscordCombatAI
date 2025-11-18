@@ -776,7 +776,7 @@ class QuickBattleRequest:
         try:
             await self._async_timeout()
         except Exception as e:
-            logger.error(f"Error in quick-battle starting: {e}", exc_info=True, extra={"guild": f"{self.guild.guild.name}({self.guild.guild.id})" if self.guild and self.guild.guild else "Unknown"})
+            logger.error(f"Error in quick-battle starting: {e}", exc_info=True, extra={"guild": f"{self.guild.name}({self.guild.id})"})
             await sendMessage(self.message.channel, self.guild, self.guild.localization.t("errors.quick-battle_error"))
             return
     async def _abort_battle(self):
@@ -811,22 +811,22 @@ class QuickBattleRequest:
             environment = Prompts.Elements.CustomEnvironment.fill(env=environment)
         else:
             environment = Prompts.Core.GenericEnvironment
-        logger.debug(f"Environment: {environment}", extra={"guild": f"{self.guild.guild.name}({self.guild.guild.id})" if self.guild and self.guild.guild else "Unknown"})
+        logger.debug(f"Environment: {environment}", extra={"guild": f"{self.guild.name}({self.guild.id})"})
         fighters = await FighterCreator(self.message.channel, self.participants, self.owner).get_fighters()
         if fighters is None:  # Aborted
             return
-        logger.debug(f"Fighters: {fighters}", extra={"guild": f"{self.guild.guild.name}({self.guild.guild.id})" if self.guild and self.guild.guild else "Unknown"})
+        logger.debug(f"Fighters: {fighters}", extra={"guild": f"{self.guild.name}({self.guild.id})"})
         fighters = await StrategyCreator(self.message.channel, fighters, self.owner).get_strategy()
         if fighters is None:  # Aborted
             return
-        logger.debug(f"Fighters with strategies: {fighters}", extra={"guild": f"{self.guild.guild.name}({self.guild.guild.id})" if self.guild and self.guild.guild else "Unknown"})
+        logger.debug(f"Fighters with strategies: {fighters}", extra={"guild": f"{self.guild.name}({self.guild.id})"})
         fightersPrompt = FighterPrompt().fill(fighters)
         metadata = BattleMetadata(
             self.guild, 
-            datetime.now(), 
+            datetime.datetime.now(), 
             environment="custom" if self.custom_environment else "generic", 
-            fighters=[(member.id, fighter.name, fighter.description) for member, fighter in fighters.values()], 
-            setting=self.setting.name, 
+            fighters=[(member.id, fighter.name, fighter.description) for member, fighter in fighters.items()], 
+            setting=self.setting, 
             participants=[(participant.id, participant.name) for participant in self.participants]
         )
         prompts_list = [
@@ -836,6 +836,7 @@ class QuickBattleRequest:
             self.setting,
             Prompts.Elements.Language.fill(locale=self.guild.localization.full_localization_name(self.guild.params.get("language")))
         ]
+        await sendMessage(self.message.channel, self.guild, self.guild.localization.t("commands.quick-battle.communication.evaluating_prompts"))
         FightResult = await PromptHandler.from_guild(self.guild).evaluateMultiple(prompts_list, prompt=f"Start the battle {random_string(128)}")
         save_battle_result(self.guild, metadata, FightResult, folder="quick-battle")
         await sendMessage(self.message.channel, self.guild, FightResult)
@@ -870,7 +871,7 @@ class BattleHandler:
                 for key in SETTINGS.keys()
             ]
         )
-        @ProcessCommand(self.bot, allowed_permissions={})
+        @ProcessCommand(self.bot, allowed_permissions=[])
         async def quick_battle(
             interaction: discord.Interaction,
             custom_environment: discord.app_commands.Choice[int],
@@ -881,5 +882,7 @@ class BattleHandler:
         ):
             await interaction.response.send_message("@everyone")
             message = await interaction.original_response()
-            setting_prompt = SETTINGS.get(setting.value) if setting else SETTINGS.get("unpredictable-funny")
+            setting_prompt = SETTINGS.get(setting.value) if setting and setting.value else SETTINGS.get("unpredictable-funny")
+            if setting_prompt is None:
+                setting_prompt = SETTINGS.get("unpredictable-funny")
             QuickBattleRequest(message, bool(custom_environment.value), timeout, executor, guild, setting_prompt)
