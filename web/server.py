@@ -15,7 +15,8 @@ from fastapi.responses import FileResponse, RedirectResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 
-from web.routes import dashboard, guilds, webhook
+from web.routes import dashboard, guilds, webhook, suggestions
+from web.bot_bridge import set_bot
 from web.metrics import init_metrics, get_metrics, stop_metrics
 
 
@@ -93,6 +94,7 @@ app.add_middleware(
 app.include_router(dashboard.router)
 app.include_router(guilds.router)
 app.include_router(webhook.router)
+app.include_router(suggestions.router)
 
 # Get the directory where this file is located
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -131,6 +133,12 @@ async def performance_page():
 async def webhook_page():
     """Serve the webhook management page."""
     return FileResponse(os.path.join(STATIC_DIR, "webhook.html"))
+
+
+@app.get("/suggestions")
+async def suggestions_page():
+    """Serve the suggestions review page."""
+    return FileResponse(os.path.join(STATIC_DIR, "suggestions.html"))
 
 
 # Health check endpoint
@@ -225,6 +233,7 @@ def run_server_in_thread(bot_instance=None, host: str = "0.0.0.0", port: int = 8
     
     # Initialize metrics with bot instance
     init_metrics(bot_instance)
+    set_bot(bot_instance)
     
     # Store config
     _server_config["host"] = host

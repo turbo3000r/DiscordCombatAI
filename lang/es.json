@@ -6,14 +6,13 @@
   },
   "errors": {
     "member_has_no_permissions": "No tienes permisos para usar este comando.",
-    "error": "Ocurrió un error al procesar tu solicitud. Por favor, intenta nuevamente más tarde."
+    "error": "Ocurrió un error al procesar tu solicitud. Por favor, intenta nuevamente más tarde.",
+    "message_too_long": "El mensaje es demasiado largo ({length} caracteres). Ha sido guardado en un archivo.",
+    "quick-battle_error": "Ocurrió un error al iniciar la batalla. Por favor, intenta nuevamente más tarde."
   },
   "commands": {
     "ping": {
       "description": "Verificar la latencia del bot"
-    },
-    "setup": {
-      "description": "Configurar el bot para este servidor"
     },
     "config": {
       "description": "Configurar el bot para este servidor"
@@ -59,7 +58,8 @@
         "battle_starting": "Iniciando la batalla...",
         "battle_aborted": "La batalla ha sido cancelada.",
         "battle_aborted_message": "La solicitud de batalla ha sido cancelada.",
-        "create_environment_message": "Creando entorno...\n Esperando participantes: {participants}"
+        "create_environment_message": "Creando entorno...\n Esperando participantes: {participants}",
+        "evaluating_prompts": "Evaluando prompts..."
       },
       "environment": {
         "title": "Creación de Entorno",
@@ -104,6 +104,46 @@
         "already_submitted": "Ya has enviado tu estrategia.",
         "empty_input": "La estrategia no puede estar vacía.",
         "submitted": "¡Tu estrategia ha sido enviada exitosamente!"
+      }
+    },
+    "suggest": {
+      "description": "Sugerir una función o informar de un error",
+      "prompt": "Selecciona un tipo y una o más categorías, luego pulsa el botón para describir tu sugerencia.",
+      "success": "¡Gracias! Tu sugerencia ha sido registrada.",
+      "response": "Gracias por tu sugerencia: \"{suggestion}\"",
+      "button": {
+        "open_modal": "Escribir sugerencia"
+      },
+      "modal": {
+        "title": "Comparte tu sugerencia",
+        "title_label": "Título",
+        "title_placeholder": "Resumen breve...",
+        "label": "Detalles de la sugerencia",
+        "placeholder": "Describe tu idea, problema o comentario..."
+      },
+      "types": {
+        "minor": "Problema menor",
+        "major": "Problema mayor",
+        "request": "Solicitud",
+        "improvement": "Mejora",
+        "feedback": "Comentarios"
+      },
+      "categories": {
+        "category_1": "Categoría 1",
+        "category_2": "Categoría 2",
+        "category_3": "Categoría 3"
+      },
+      "placeholders": {
+        "type": "Selecciona el tipo",
+        "category": "Selecciona las categorías"
+      },
+      "errors": {
+        "selection": "Selecciona primero un tipo y al menos una categoría.",
+        "empty": "El título y los detalles no pueden estar vacíos.",
+        "generic": "Algo salió mal. Inténtalo nuevamente."
+      },
+      "auto_feedback": {
+        "default": "Tu sugerencia ha sido revisada. ¡Gracias por ayudarnos a mejorar!"
       }
     }
   },

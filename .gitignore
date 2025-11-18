@@ -1,10 +1,12 @@
 # Environment variables
 .env
 .cursor/*
+.vscode/*
 
 # Generic data
 /guilds/*
 /logs/*
+/generic/*
 
 # Cache
 __pycache__/

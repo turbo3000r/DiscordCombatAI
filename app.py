@@ -1,6 +1,7 @@
 import os
 import sys
 import asyncio
+from argparse import ArgumentParser
 from dotenv import load_dotenv
 from modules.main import DiscordBot
 from modules.LoggerHandler import init_logger
@@ -12,19 +13,30 @@ if sys.platform.startswith("win"):
 # Initialize logger
 logger = init_logger("logger_config.json").get_logger()
 
+
+
 load_dotenv()
 API_TOKEN = os.getenv("API_TOKEN")
 WEB_ENABLED = os.getenv("WEB_ENABLED", "true").lower() == "true"
 WEB_HOST = os.getenv("WEB_HOST", "0.0.0.0")
 WEB_PORT = int(os.getenv("WEB_PORT", "20000"))
 
+parser = ArgumentParser()
+parser.add_argument("--dev", action="store_true", help="Run in development mode")
+args = parser.parse_args()
+
 if __name__ == "__main__":
     if not API_TOKEN:
         logger.critical("API_TOKEN environment variable is not set")
         raise RuntimeError("API_TOKEN environment variable is not set")
     
-    logger.info("Starting Discord bot...")
-    bot = DiscordBot()
+    logger.info(f"Starting Discord bot... (Dev Mode: {args.dev})")
+    bot = DiscordBot(dev=args.dev)
+    if args.dev:
+        logger.info("Dev mode is enabled, bot will only respond to commands in the dev guild")
+        WEB_PORT = int(os.getenv("WEB_PORT_DEV", "20001"))
+    else:
+        logger.info("Production mode is enabled, bot will respond to commands in all guilds")
     
     # Start web interface if enabled
     if WEB_ENABLED:
