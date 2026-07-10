@@ -1,0 +1,228 @@
+# Graph: Environment
+
+## 1. Purpose & Scope
+
+The `environment` graph produces the narrative "battle environment" (setting-consistent scene description) used by `/quick-battle`. It runs inside `AI Worker`, invoked as part of handling an `ai_tasks` message (per `architecture.md`'s Bot ↔ RabbitMQ ↔ AI Worker flow).
+
+It has two entry modes, decided by the caller before invocation:
+
+- **`initial`** — players have described environment elements from scratch; the graph must generate a brand-new environment.
+- **`revision`** — an environment already exists and players have left comments requesting changes to it.
+
+There is also a **third, deliberately out-of-scope mode**: if players choose not to describe a custom environment at all, the caller picks a pre-written arena from `prompts/core/generic_environments/*.txt` directly and **never invokes this graph** — no LLM call, no state, nothing to validate. This mirrors the legacy `custom_environment` boolean toggle (`docs/legacy/Old_arch.md` line 216). Confirmed decision: `environment` is only ever invoked for `initial` or `revision`.
+
+> **Confirmed working assumption (project owner):** `environment` is invoked as its own distinct `ai_task` during the lobby phase, before fighters/strategies are collected — `battle` receives the finished `Environment` the same way it receives `setting` (as part of its own input), not as a graph it's ever nested inside. This is corroborated by `prompts/core/core_simple_battle.txt`, which already expects a finished `ENVIRONMENT` text block as one of its inputs, separate from `FIGHTERS`. The exact task-boundary mechanics (one `ai_task` per phase? how the lobby sequences them?) still depend on `ai_worker/graphs/quick-battle.md` and `bot/commands/quick-battle.md`, both unwritten stubs — but "is `environment` a separate phase from `battle`" is now settled, not open.
+
+---
+
+## 2. Invocation Contract
+
+**Input State:**
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `input_type` | `"initial" \| "revision"` | Yes | Selects the entry route (§4, §7). `"generic"` (pre-written arena, no AI) is deliberately **not** a value here — see §1, that mode never reaches this graph. |
+| `raw_input` | `list[str]` | Yes | One free-text entry per player — descriptions (`initial`) or comments (`revision`). **Confirmed as a list, not a single string:** `prompts/core/environment_combiner.txt` (the `Generator` prompt) explicitly synthesizes *multiple* environment descriptions into one, one per contributing player. Never rejected regardless of content — see `Normalise`, §6. |
+| `setting` | `str` (enum) | Yes | Direct 1:1 match to a `prompts/setting/<name>.txt` file stem (confirmed decision — no extra constraints object). **Current real values** (per actual repo contents, supersedes the 6-item list in `docs/legacy/Old_arch.md`): `realistic`, `realistic-urban`, `realistic-nature`, `dreamcore`, `unpredictable-realistic`, `unpredictable-dreamcore`, `unpredictable-funny`. |
+| `language_locale` | `str` | Yes | Output language/locale (e.g. `uk-UA`), injected via `prompts/elements/language.txt`'s `{locale}` slot — the same `{LANGUAGE-LOCALE}` directive `environment_combiner.txt` already expects. Kept as its own top-level field, not nested under `setting`, since it's an orthogonal directive in the real prompts. **Sourcing is now defined in `contracts/localization.md`** — a guild-level value set via `/config`, currently shared with Bot UI localization (resolved, was previously undocumented — see that contract's §5 for the one part still open: possible future decoupling). |
+| `existing_environment` | `Environment \| null` | Only for `revision` (must be `null` for `initial` — enforced, see §9) | The environment being modified. See `Environment` shape in §5. |
+| `max_enhancer_retries` | `int` | No — defaults to `ENVIRONMENT_MAX_ENHANCER_RETRIES` (§8) | Ceiling on `Validator`-driven retries before falling back to `Decider`, per the project owner's flow ("Validator can send to Enhancer 3 times, configurable"). |
+| `trace_id`, `guild_id` | `str` | Yes | Correlation metadata for logging, consistent with `architecture.md`'s structured log format. |
+| `api_key`, `model` | `str` | Yes | **Added this revision** — the requesting guild's own Gemini credential/model pair (`contracts/guild_config.md` §3), attached by `Bot` when it publishes the `ai_tasks` message (`ai_worker.md` §1/§4, closing that doc's credential gap). Every LLM-backed node in this graph uses these, not any worker-level default. Never logged (`ai_worker.md` §7). |
+
+**Output State:**
+
+| Field | Type | Description |
+|---|---|---|
+| `final_environment` | `Environment` | The environment returned to the caller — either a `Validator`-approved candidate or `Decider`'s pick. |
+| `attempts_used` | `int` | How many `Enhancer` passes were needed, including the first pass. Useful as a quality metric (§11). |
+| `forced_selection` | `bool` | `true` if no candidate ever passed `Validator` and `Decider` had to choose among imperfect attempts; `false` if some candidate was cleanly approved. |
+
+---
+
+## 3. Graph Structure
+
+The graph is split into **two phases**, each organized as its own node group (project owner's decision — this is the "split into 2" the flow was evaluated for):
+
+1. **`composer`** — resolves `input_type` and produces the very first candidate (`attempt #0`).
+   Nodes: `RouteInput` → `Generator` (initial) **or** `Normalise` → `Enhancer` (revision, first pass).
+2. **`refiner`** — the reusable propose → critique → retry loop. Single entry point: `Validator`.
+   Nodes: `Validator` → (loop) `Enhancer` → `Validator`, up to `max_enhancer_retries` times → `Decider` (fallback only).
+
+`Enhancer` is defined once (`graphs/environment/nodes/enhancer.py`) and used by **both** phases: by `composer` for the revision path's first pass, and by `refiner` for every `Validator`-driven retry afterward. This is intentional reuse of one node across two phases, not duplication — see §6.
+
+> **`refiner` is now a confirmed shared pattern, not just a reusability idea (resolved).** `battle` (`graphs/battle.md`) needed the exact same propose → critique → retry → decide shape, so `Validator` **and** `Decider` are now both documented once in `ai_worker/nodes.md` rather than here. `Enhancer` remains this graph's own "fixer" node — see `ai_worker/nodes.md` §4 for why the fixer itself is never shared across graphs.
+
+---
+
+## 4. Graph Diagram
+
+**Phase-level overview:**
+
+```mermaid
+flowchart LR
+    Input(["Player input\n(initial description OR revision comments)"]) --> Composer["composer\n(routes input, builds attempt #0)"]
+    Composer --> Refiner["refiner\n(validate → fix loop → decide)"]
+    Refiner --> Output(["final_environment"])
+```
+
+**Detailed state diagram:**
+
+```mermaid
+stateDiagram-v2
+    [*] --> RouteInput
+
+    state composer {
+        RouteInput --> Generator : input_type == initial
+        RouteInput --> Normalise : input_type == revision
+    }
+
+    Normalise --> Enhancer : attempt #0\n(active_request = origin_request)
+    Generator --> Validator : attempt #0
+
+    state refiner {
+        Validator --> Decider : invalid AND\nretry_count == max_enhancer_retries
+        Validator --> [*] : valid
+        Decider --> [*]
+    }
+
+    Enhancer --> Validator : attempt #N
+    Validator --> Enhancer : invalid AND\nretry_count < max_enhancer_retries\n(retry_count += 1,\nactive_request = fix_request)
+```
+
+Note how `Enhancer` sits outside both composite boxes: it is entered once from `composer` (attempt #0, revision only) and re-entered from `refiner`'s loop (attempts #1..N) — same node, two call sites, per §3.
+
+---
+
+## 5. State Schema (Internal)
+
+`ModificationRequest`, `ValidatorVerdict`, and `AttemptRecord` are now defined once in `ai_worker/nodes.md` §1 (the shared `refiner` contract) — not redefined here. This graph's `AttemptRecord.candidate` is an `Environment`, and `AttemptRecord.source` uses `"initial"` for attempt #0 (whether it came from `Generator` or `Normalise`+`Enhancer`'s first pass) and `"fixer"` for every `Enhancer`-driven retry.
+
+```python
+class Environment(TypedDict):
+    """Confirmed minimal shape (project owner) — kept freeform on purpose to stay LLM-friendly.
+    Injected into any prompt via the `environment.txt` element's `## Environment:\n{env}` wrapper
+    (ai_worker/prompts.md §3/§4.1; legacy name custom_environment.txt) — `{env}` is `description`
+    alone; `tags`/`setting` are graph-state bookkeeping, not part of what actually gets sent back
+    into a prompt as the environment text itself."""
+    description: str            # the actual narrative text — what {env} resolves to
+    tags: list[str]              # short keyword elements, cheap structured signal for Validator/Decider
+    setting: str                 # which elements/setting/<name>.txt (ai_worker/prompts.md §3) produced/last touched this environment
+
+class EnvironmentGraphState(TypedDict):
+    # --- Input contract (§2) ---
+    input_type: Literal["initial", "revision"]
+    raw_input: list[str]
+    setting: str
+    language_locale: str
+    existing_environment: Environment | None
+    max_enhancer_retries: int
+    trace_id: str
+    guild_id: str
+    api_key: str                  # per-guild Gemini credential, added this revision — see §2
+    model: str                    # per-guild Gemini model, added this revision — see §2
+
+    # --- Working / internal-only ---
+    origin_request: ModificationRequest | None   # Normalise's output (revision only); kept separate
+                                                  # from active_request so the player's original ask
+                                                  # survives across Validator-driven retries
+    active_request: ModificationRequest | None   # the request Enhancer applies THIS pass:
+                                                  #   attempt #0 (revision) -> origin_request
+                                                  #   attempt #N (retry)    -> previous fix_request
+    current_environment: Environment
+    attempts: list[AttemptRecord]
+    retry_count: int             # increments only on Validator-driven retries (attempt #0 is not a retry)
+
+    # --- Output contract (§2) ---
+    final_environment: Environment
+    attempts_used: int
+    forced_selection: bool
+```
+
+`origin_request` vs `active_request` is the one non-obvious modeling choice here: without keeping the player's original revision request separate, a few `Validator`-driven quality fixes in a row could quietly drift the environment away from what the player actually asked for, since `active_request` gets overwritten every retry.
+
+---
+
+## 6. Nodes
+
+| Node | Phase | Responsibility | Reads | Writes | LLM call | Prompt file(s) | Location |
+|---|---|---|---|---|---|---|---|
+| `RouteInput` | `composer` | Pure conditional routing on `input_type`. | `input_type` | — | No | none | `graphs/environment/nodes/route_input.py` (graph-specific) |
+| `Generator` | `composer` | Generates a brand-new environment by synthesizing all of `raw_input` (one description per player) into one arena, directed by `setting` + `language_locale`. Never reads `existing_environment` (must be `null` on this path — see §9). | `raw_input`, `setting`, `language_locale` | `current_environment`, `attempts[0]` | Yes | `ai_worker/prompts.md` §4.1 — `graphs/environment/generator.txt` (already written, content migrating from legacy `environment_combiner.txt`) | `graphs/environment/nodes/generator.py` (graph-specific) |
+| `Normalise` | `composer` | Converts free-text player comments into a `ModificationRequest`. **By design, never rejects input** — see design decision below. | `raw_input`, `existing_environment`, `setting`, `language_locale` | `origin_request`, `active_request` | Yes | `ai_worker/prompts.md` §4.1 — `graphs/environment/normalise.txt` (**content not written yet**, flagged in §12) | `graphs/environment/nodes/normalise.py` (graph-specific) |
+| `Enhancer` | `composer` (1st pass) + `refiner` (retries) | Applies `active_request` to `current_environment`, respecting `setting`/`language_locale`. Same function serves both call sites (§3). | `current_environment`, `active_request`, `setting`, `language_locale` | `current_environment`, appends `AttemptRecord` | Yes | `ai_worker/prompts.md` §4.1 — `graphs/environment/enhancer.txt` (**content not written yet**, flagged in §12) | `graphs/environment/nodes/enhancer.py` (graph-specific) |
+| `Validator` | `refiner` | Judges whether `current_environment` satisfies `setting`'s standards; if not, formulates `fix_request`. | `current_environment`, `setting`, `language_locale` | `attempts[-1].validator_verdict`, `active_request` (on failure) | Yes | `ai_worker/prompts.md` §4.1, §5 — `nodes/validator_base.txt` (shared) + `graphs/environment/validator_criteria.txt` (**content not written yet**, flagged in §12) | `ai_worker/nodes/validation.py` — **shared with `battle`** (confirmed; environment-specific criteria are passed in as parameters, not hardcoded in the shared module) |
+| `Decider` | `refiner` (fallback only) | Reached only when `retry_count == max_enhancer_retries` and the latest attempt is still invalid. Picks the best candidate from **all** recorded attempts. | `attempts` (full history, including attempt #0) | `final_environment`, `forced_selection = true` | Yes | `ai_worker/prompts.md` §4.1, §5 — `nodes/decider_base.txt` (shared) + `graphs/environment/decider_criteria.txt` (**content not written yet**, flagged in §12) | `ai_worker/nodes/decider.py` — **shared with `battle`** (confirmed, promoted from graph-specific in this revision — see `ai_worker/nodes.md` §3) |
+
+> **Prompt inventory note:** the target prompt file structure and per-node mapping is now fully designed — see `ai_worker/prompts.md` (not yet migrated on disk, its §1). Only `Generator`'s content actually exists today (as the legacy `core/environment_combiner.txt`, describing synthesizing multiple fresh descriptions). The entire revision machinery (`Normalise`/`Enhancer`/`Validator`'s environment criteria/`Decider`'s environment criteria) has a defined target file but no authored content yet — don't infer their tone/structure from `environment_combiner.txt`, they need to be written from scratch.
+
+> **Design decision — `Normalise` never fails (project owner):** even a comment with no apparent relevance must be creatively reinterpreted into a valid, setting-consistent modification request rather than erroring out — e.g. a player commenting just "peach" should become something like *"add a peach orchard to the scene"* or *"a giant peach crashes onto the battlefield"*, not a rejection. Consequently there is **no** "normalization failed" failure mode in this graph — see §9's explicit note on this.
+
+---
+
+## 7. Control Flow: Routing & Loop Termination
+
+- **Entry routing:** a single conditional edge on `input_type`, decided once at `RouteInput`, never revisited.
+- **Loop:** `Validator ↔ Enhancer`, bounded by `max_enhancer_retries` (default `3`). `retry_count` increments **only** on `Validator`-driven retries — the revision path's first `Enhancer` pass (attempt #0) does not count against the retry budget. (Reading of the project owner's flow: "Validator can send to Enhancer 3 times" = 3 retries *after* the first candidate, not 3 attempts total.)
+- **Exit conditions (mutually exclusive):**
+  1. `Validator` finds `current_environment` valid → graph ends, `forced_selection = false`.
+  2. `retry_count` reaches `max_enhancer_retries` and the latest attempt is still invalid → `Decider` → graph ends, `forced_selection = true`.
+- **Decider's candidate pool is all recorded attempts, including attempt #0** (confirmed decision) — not just the 3 retries — since an earlier attempt may objectively be closer to standard than a later one that drifted during fixing.
+- **No path returns to `Generator`** after the first pass. **No automatic full-regeneration fallback exists** if `Decider`'s pick still fails validation — `Decider`'s output is always final for v1 (confirmed decision; revisit only if this proves insufficient in practice).
+
+---
+
+## 8. Configuration / Tunable Parameters
+
+| Name | Default | Description |
+|---|---|---|
+| `ENVIRONMENT_MAX_ENHANCER_RETRIES` | `3` | Ceiling on `Validator`-driven retries before falling back to `Decider`. Exposed as the graph input `max_enhancer_retries` (§2) so it can be overridden per-call, defaulting to this env var. |
+| `AI_WORKER_LLM_MAX_RETRIES` | `2` (confirmed decision, §9) | Shared retry budget for transient Gemini API failures **and** malformed/unparseable structured LLM output — one unified wrapper around every LLM node call, not `environment`-specific. **Canonically defined in `ai_worker.md` §3** — not redefined here, this row exists only to explain why this graph's own Failure Modes (§9) depend on it. |
+
+> Naming follows the `HEAD_*`-style prefix convention from `head.md` §3. `ENVIRONMENT_MAX_ENHANCER_RETRIES` is graph-specific and belongs in this doc permanently; `AI_WORKER_LLM_MAX_RETRIES` is graph-agnostic and lives in `ai_worker.md` §3.
+
+---
+
+## 9. Failure Modes
+
+| Failure | Detection | Recovery |
+|---|---|---|
+| Gemini API call fails/times out (any LLM node) | Exception from the AI client | **Confirmed decision:** a shared retry-with-backoff wrapper around every LLM node call, budget `AI_WORKER_LLM_MAX_RETRIES` (§8, default `2`). If exhausted, the whole task fails — surfaces as a synthetic error result via `ai_tasks_results`, consistent with the existing "light crash" pattern already documented in `rabbitmq.md` §6/§9. This wrapper is graph-agnostic (belongs to `ai_worker`, not `environment` specifically). |
+| `Generator`/`Enhancer` returns structurally invalid output (fails schema parsing — not a content/quality issue) | Schema validation error on the node's own output, before it ever reaches `Validator` | **Confirmed decision:** unified into the *same* `AI_WORKER_LLM_MAX_RETRIES` budget as the row above — no separate structural-retry mechanism. Deliberately simple: one retry budget covers "the call failed" and "the call succeeded but returned garbage" alike. |
+| `existing_environment` missing on `revision` input, or present on `initial` input | Input validation at `RouteInput`, before any LLM call | **Confirmed decision:** hard invocation error — this is treated as a caller bug, not a runtime condition to tolerate or silently coerce. Fails fast, no LLM spend wasted. |
+| `max_enhancer_retries` reached with zero valid attempts | `retry_count == max_enhancer_retries` and the last verdict is still invalid | **Not a failure — expected, by-design path.** Routes to `Decider` per §7; `Decider`'s pick is always accepted as final (confirmed decision, no further escalation). |
+| `Normalise` receives irrelevant/nonsensical player input | — | **Explicitly not a failure mode** — see the design decision in §6. `Normalise` has no error branch; it always produces a usable `ModificationRequest`. |
+
+---
+
+## 10. Dependencies
+
+| Dependency | Used by | Notes |
+|---|---|---|
+| `ai_worker/nodes.md` (shared contract doc) | `Validator`, `Decider`, and this doc's own state schema (§5) | Defines `ModificationRequest`/`ValidatorVerdict`/`AttemptRecord` once — this doc no longer redefines them. |
+| `ai_worker/nodes/validation.py` (shared) | `Validator` | Shared with the `battle` graph (confirmed) — see §6. Environment-specific validation criteria (setting standards) are supplied as parameters, not hardcoded in the shared module. |
+| `ai_worker/nodes/decider.py` (shared) | `Decider` | Shared with the `battle` graph (confirmed, promoted in this revision) — see §6 and `ai_worker/nodes.md` §3. |
+| `ai_worker/prompts.md` (shared contract doc) | `Generator`, `Normalise`, `Enhancer`, `Validator`, `Decider` | Single source of truth for every prompt file this graph's nodes use, plus the injection pattern (system prompt + `elements/*` blocks) — see §6. Replaces individually citing `prompts/setting/*.txt`, `prompts/elements/language.txt`, `prompts/elements/environment.txt` here (previously `custom_environment.txt` — renamed, see `prompts.md` §6). |
+| `docs/contracts/localization.md` | `Generator`, `Enhancer`, `Validator` (any node consuming `language_locale`) | Defines where `language_locale`'s value comes from (guild-level `/config`, currently shared with Bot UI locale) — resolves the previously-open sourcing question, see §2. |
+| Google Gemini API | `Generator`, `Normalise`, `Enhancer`, `Validator`, `Decider` | Every node in this graph is LLM-backed except `RouteInput`. Failure/retry handling is now a confirmed decision — see §9. |
+| `docs/contracts/task_progress.md` | All nodes (indirectly, via the Celery task wrapper) | Defines the phase-update messages this graph's execution should emit (`composing`/`refining`/`finishing`) — see §11 for this graph's specific phase mapping. |
+| **Not a dependency (explicitly out of scope):** `prompts/static/generic_environments/*.txt` (target path — `ai_worker/prompts.md` §3) | — | These back the "generic, no-AI" third mode, which never invokes this graph at all — see §1. Listed here only to make the exclusion explicit, not because this graph reads them. |
+
+---
+
+## 11. Logging & Observability
+
+- Each node logs at `INFO` on entry/exit using the shared structured format from `architecture.md`'s Mosquitto section: `[%time%][%level%][ai_worker][graphs/environment/nodes/<node>]<trace_id, guild_id, attempt_index>: [%message%]`.
+- Recommended minimum tags on every log line in this graph: `trace_id`, `guild_id`, `attempt_index`, `input_type`. Not formally required anywhere yet — proposed here for consistency with the rest of the system's logging convention.
+- `attempts_used` and `forced_selection` (§2) double as lightweight quality metrics — how often `Decider` has to intervene is a useful signal for prompt-quality regressions over time. `ai_worker.md` §8 now lists these as candidate metrics, but flags that **no transport path to any persistent store exists yet** — not resolved by this doc either.
+- **Discord-facing task progress** (confirmed decision, separate from the structured log stream above): this graph's node-level granularity is translated down to the generic `queued`/`launching`/`composing`/`refining`/`finishing` phase vocabulary defined in `docs/contracts/task_progress.md`, published over Mosquitto (`progress/ai_worker/<task_id>`), not RabbitMQ. This graph's specific phase mapping — which nodes count as `composing` vs `refining` vs `finishing` — is defined once in `task_progress.md` §6.1, not duplicated here, to avoid two sources of truth drifting apart.
+
+---
+
+## 12. Open Items / Future Work
+
+- ~~Prompts for `Normalise`, `Enhancer`, `Decider`, and `Validator`'s environment-specific criteria still need to be written~~ — **partially resolved**: target file structure and per-node mapping is now fully designed in `ai_worker/prompts.md` §4.1. What remains open is purely **authoring the content** of `normalise.txt`, `enhancer.txt`, `validator_criteria.txt`, `decider_criteria.txt` — none exist yet. This is now the single biggest concrete gap for implementing this graph (the schema-level gaps from the previous revision of this doc are settled — see §5).
+- ~~`language_locale`'s origin is undocumented~~ — **resolved**: see `docs/contracts/localization.md`. Guild-level value, set via `/config`, currently shared with Bot UI localization. That contract's own §5 flags a likely future decoupling as not-yet-decided — not a concern for this graph doc.
+- ~~Whether `refiner` should become a shared, reusable pattern~~ — **resolved**: yes, confirmed once `battle` needed the same shape. See `ai_worker/nodes.md`.
+- The exact task-boundary mechanics between `environment` and `battle` (one `ai_task` per phase? how the lobby sequences them?) are still undocumented — `ai_worker/graphs/quick-battle.md` and `bot/commands/quick-battle.md` are both unwritten stubs. Note that "are they the same graph" is now settled (§1, confirmed: no) — what's left open is purely the sequencing/handoff mechanics.
+- The physical migration of `prompts/` on disk to the target structure in `ai_worker/prompts.md` §3 hasn't happened yet — this graph doc's prompt references (§6, §10) already describe the target paths, not the legacy ones.
