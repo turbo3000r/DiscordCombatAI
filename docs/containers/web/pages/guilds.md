@@ -27,7 +27,7 @@ Browse every guild the bot is configured for, and view a selected guild's basic 
 
 | Method | Path | Request | Response | Notes |
 |---|---|---|---|---|
-| `GET` | `/api/guilds` | Bearer required | `{guilds: [{id, name, member_count, icon_url, created_at, owner_id, webhook_configured}], count}` | **Never** returns `webhook_url` or `api_key` — only `webhook_configured: bool`. Every other field maps onto `contracts/guild_config.md` §3. |
+| `GET` | `/api/guilds` | Bearer required | `{guilds: [{id, name, member_count, icon_url, created_at, owner_id, webhook_configured}], count}` | **Never** returns `webhook_url` or `api_key` — only `webhook_configured: bool`. Every other field maps onto `contracts/guild_config.md` §3. **Default list excludes `left_at != null`** (`guild_config.md` §7). |
 | `GET` | `/api/guilds/{guild_id}` | Bearer required | Guild detail (basic info + bot config subset: language, model, enabled, `webhook_configured`) | Same redaction — no raw secrets |
 
 ## 6. User Interactions & Actions

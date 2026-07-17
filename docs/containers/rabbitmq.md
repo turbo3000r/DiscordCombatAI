@@ -12,13 +12,31 @@
 
 ## 2. File Structure
 
-`RabbitMQ` runs as an off-the-shelf broker image — there is no project-owned application code for this container, unlike `Head`/`Launcher`. Its only project-specific configuration is:
+`RabbitMQ` runs as an off-the-shelf broker image — there is no project-owned application code for this container, unlike `Head`/`Launcher`. Project-owned configuration lives under the **target** tree `infra/rabbitmq/` (paths below are the documented target architecture; they may not exist on disk until Phase 0 scaffolding lands):
 
-- The two application queues it holds: `ai_tasks` and `ai_tasks_results` — both durable, both declared with `x-dead-letter-exchange` pointing at one shared `dlx` exchange, bound to a single `dead_letter` queue (**new this revision, P0.4**, canonical policy in `contracts/ai_task.md` §9). A message that fails schema validation on either side is nacked without requeue and lands here instead of being retried forever.
-- The `rabbitmq_event_exchange` plugin, which must be enabled for `Head`'s log-bridging behavior to work at all (per `architecture.md`'s Mosquitto section: *"A lightweight bridge process (hosted within `Head`) subscribes to RabbitMQ's `rabbitmq_event_exchange` plugin..."*). This is a direct, load-bearing requirement — without this plugin enabled, `Head`'s RabbitMQ log bridging (see Section 7) silently does nothing.
-- Non-default broker credentials and vhost (§3, §13) — `guest`/`guest` is never used.
+```
+infra/rabbitmq/
+├── enabled_plugins          # Must enable rabbitmq_event_exchange (+ rabbitmq_management, §2a)
+└── definitions.json         # Optional import: durable queues/exchanges matching contracts/ai_task.md §9
+                             # (dlx + dead_letter). Application declare-on-connect remains authoritative
+                             # if definitions are absent; both must agree on queue args.
+```
 
-> **Open item:** where this configuration actually lives (a Dockerfile, an `enabled_plugins` file, or `docker-compose.yml` environment/command overrides) is not specified anywhere in the current project file structure (`architecture.md`'s tree has no `rabbitmq/` directory). Flagged as a gap to fill in when the Compose setup is actually written — not decided in this doc.
+Compose mounts those files into the official image (see `architecture.md` → Target Compose skeleton). The broker holds:
+
+- Durable `ai_tasks` and `ai_tasks_results`, both with `x-dead-letter-exchange` → shared `dlx` → `dead_letter` (`contracts/ai_task.md` §9).
+- Non-default credentials and vhost (§3, §13) — `guest`/`guest` is never used.
+
+### 2a. Plugins (resolved, P1.5)
+
+| Plugin | Required | Why |
+|---|---|---|
+| `rabbitmq_event_exchange` | **Yes** | `Head`'s log bridge subscribes here (`architecture.md` Mosquitto section, this doc §7). Without it, bridging is silently dead. |
+| `rabbitmq_management` | **Yes (internal only)** | Diagnostics + Compose health probe convenience. Management UI/API must remain on the Compose network only — **do not** publish host port `15672` in production `docker-compose.yml`. Dev compose may publish it optionally. |
+
+### 2b. Threat model / TLS (resolved, P1.5)
+
+**v1 accepts plaintext AMQP on the Compose-internal network only.** Do not publish host port `5672` in production compose. TLS between containers is **not** required for v1; the accepted exposure boundary is “same Docker network + host filesystem for the broker volume,” consistent with plaintext Gemini keys already accepted in §13. Revisit TLS only if brokers are ever exposed beyond that boundary.
 
 ---
 
@@ -86,12 +104,24 @@ Instead, broker-level events are **bridged** into that pipeline by `Head`: a sub
 
 ## 8. Metrics
 
-No dedicated RabbitMQ metrics collection is currently defined in any written doc. `template.md`'s own generic guidance flags `tasks_in_queue` as an illustrative example metric name for `ai_worker` — presumably meaning RabbitMQ queue depth — but:
+**Queue-depth / broker metrics are not part of the v1 telemetry contract** (`contracts/telemetry.md`). Operators may inspect depth via the internal management plugin; Head does not upload RabbitMQ queue depth to Table Storage in v1. (P2 if a dashboard consumer is ever defined.)
 
-- Which service is responsible for collecting it (AI Worker self-reporting? Head polling the management API?)
-- Where it would be stored (Azure Table Storage, alongside Head's existing metrics batching?)
+---
 
-...are both undecided. Flagged as an open item, not assigned to any service yet.
+## 8a. Client reconnect / backoff (resolved, P1.5)
+
+Shared policy for `Bot` and `AI Worker` AMQP/Celery clients:
+
+| Parameter | Value |
+|---|---|
+| Initial delay | `1s` |
+| Multiplier | `2` |
+| Cap | `60s` |
+| Jitter | ±20% |
+| Consumer reconnect | Infinite while the process is alive |
+| Publisher confirm wait | `5s` — treat timeout/nack as “not sent” |
+
+Celery/Kombu connection retry settings must implement this policy (exact library knobs are implementation). Do not invent a second ad-hoc reconnect loop beside the broker client.
 
 ---
 
@@ -99,12 +129,13 @@ No dedicated RabbitMQ metrics collection is currently defined in any written doc
 
 | Failure | Detection | Recovery |
 |---|---|---|
-| `RabbitMQ` container itself down (independent of any internet/Head issue) | `Bot` publish to `ai_tasks` fails / `AI Worker` connection drops | **Not specified anywhere.** `architecture.md` only defines behavior for the Head-internet-loss case (below) — a standalone RabbitMQ outage while `Head`/`Bot`/internet are otherwise healthy has no documented recovery path. Flagged as a real gap, not just missing detail — this is arguably the single most likely failure mode for a locally-run broker and currently has zero defined behavior. |
+| `RabbitMQ` container itself down (standalone outage; Head/Mosquitto/Azure healthy) | `Bot` `apply_async` / confirm fails; `AI Worker` connection drops | **Resolved (P1.5 / S05):** Leadership fencing unchanged — Bot does **not** hard-stop. **Bot:** do not create a `TaskRecord`; surface a localized ephemeral/command error on the AI-backed step that tried to publish; keep Gateway active. Background result consumer and Celery client reconnect per §8a. **AI Worker:** stop consuming until reconnected; any unacked claim is redelivered after recovery (`contracts/ai_task.md` §2). In-flight Discord workflows still count in `in_flight_workflows` until timeout/cancel (`contracts/drain_status.md`). Stall/overall timers still fire if a result never returns (`contracts/ai_task.md` §8). |
 | `Head` loses internet connectivity while leader (hard stop) | `Head`'s own election/backoff logic, see `head.md` §6/§9 | Per §6's corrected soft/hard split: `ai_tasks` is purged, any actively-running `AI Worker` execution is terminated (`revoke(terminate=True)`), and an `AiTaskResultFailed` (`contracts/ai_task.md` §4, `node: "worker_terminated"`) is added to `ai_tasks_results` for each affected task so `Bot` doesn't hang indefinitely and can notify the originating thread before disconnecting. |
-| `AI Worker` crashes mid-task | RabbitMQ consumer channel closes without an ack | **Resolved this revision, `contracts/ai_task.md` §2:** manual ack, only after publishing the corresponding `ai_tasks_results` message — so a mid-task crash means the original message is redelivered to another consumer. Accepted cost: a redelivered task re-runs the graph from scratch (possible duplicate LLM spend); `Bot`-side duplicate-result handling is `contracts/ai_task.md` §6. |
-| Queue overflow / broker resource exhaustion | `rabbitmq_event_exchange` event | Bridged to `logs/warning\|errors/rabbitmq` via `Head` (Section 7) for visibility; no automatic corrective action is defined beyond that. |
-| Malformed/poison message on either queue | Schema validation failure, either side | **Resolved this revision (P0.4):** nack-without-requeue, dead-lettered onto the shared `dead_letter` queue (§2, `contracts/ai_task.md` §9). `Head`'s log bridge surfaces a `logs/errors/rabbitmq` line whenever a message lands there; queue depth is the operational signal, no dedicated consumer exists for v1. |
-| Publish nacked / unconfirmed (publisher confirms enabled, §2/`contracts/ai_task.md` §2) | Confirm callback reports nack, or confirm times out | Treated as "not sent." On `Bot`'s `ai_tasks` publish: existing retry/error-surfacing logic (row above, standalone-outage gap still open). On `AI Worker`'s `ai_tasks_results` publish: the inbound `ai_tasks` message is simply not acked yet, so it redelivers naturally per the manual-ack ordering — not a second retry loop. |
+| `AI Worker` crashes mid-task | RabbitMQ consumer channel closes without an ack | **Resolved, `contracts/ai_task.md` §2:** manual ack only after publishing `ai_tasks_results` — mid-task crash → redelivery. Accepted cost: graph re-runs (possible duplicate LLM spend); Bot duplicate-result handling is `ai_task.md` §6. |
+| `AI Worker` loses broker mid-result-publish | Result publish confirm fails / connection drops before ack | Do **not** ack the inbound `ai_tasks` message. On reconnect, the claim redelivers; Bot discards unknown/`task_id`-absent duplicates if a prior result already completed the map (`ai_task.md` §6). |
+| Queue overflow / broker resource exhaustion | `rabbitmq_event_exchange` event | Bridged to `logs/warning\|errors/rabbitmq` via `Head` (Section 7); no automatic purge. |
+| Malformed/poison message on either queue | Schema validation failure, either side | **Resolved (P0.4):** nack-without-requeue → `dead_letter` (§2, `contracts/ai_task.md` §9). |
+| Publish nacked / unconfirmed | Confirm callback nack or §8a confirm timeout | Treated as “not sent.” Bot: same user-visible failure as standalone outage row. AI Worker result path: leave inbound unacked (redeliver). |
 
 ---
 
@@ -122,13 +153,28 @@ Consumed by: `Bot` (publish `ai_tasks`, consume `ai_tasks_results`), `AI Worker`
 
 ## 11. Health Check
 
-Not specified anywhere. RabbitMQ ships its own diagnostic tooling (`rabbitmq-diagnostics check_running`, management-plugin HTTP API) but whether any of it is wired into this project's own health-check conventions (a Docker Compose `healthcheck:` block, or surfaced through `Head`'s `/status`) is undecided. Flagged as an open item.
+**Compose `healthcheck` (required, P1.5):**
+
+```yaml
+healthcheck:
+  test: ["CMD", "rabbitmq-diagnostics", "-q", "check_running"]
+  interval: 10s
+  timeout: 5s
+  retries: 5
+  start_period: 30s
+```
+
+Dependent services (`bot`, `ai_worker`, and Head's event-bridge readiness) use `depends_on: condition: service_healthy`. Application-level `/status` may expose a boolean `rabbitmq_connected` derived from the client connection — optional for Head; Bot/AI Worker should set it when they expose process health (P1.8 may refine payload shape; the broker container check itself is fixed here).
 
 ---
 
 ## 12. Versioning & Update Behavior
 
-`RabbitMQ` is an off-the-shelf broker image, pinned via its tag in `docker-compose.yml` — it is **not** part of the coordinated version tag that `bot`/`head`/`ai_worker`/`web` share (per `Launcher.md` §12). Its own image tag/upgrade policy is a separate, infrastructure-level decision not covered by the application's update flow (`architecture.md` Scenario 5) and not yet decided anywhere.
+`RabbitMQ` uses a **pinned** official image tag in Compose — **target pin: `rabbitmq:3.13-management`** (management plugin image so §2a is available without a custom Dockerfile). It is **not** part of the coordinated `bot`/`head`/`ai_worker`/`web` application tag (`Launcher.md` §12).
+
+**Upgrade policy:** operators bump the pin manually and recreate the broker container. Broker upgrades are outside Scenario 5's application rolling update. Named volume data may require RabbitMQ's normal major-version upgrade notes; v1 does not automate broker migrations.
+
+**Resource limits (Compose target):** `mem_limit: 512m` (or equivalent deploy.resources); rely on RabbitMQ's default memory watermark relative to that cgroup. No separate CPU hard-limit required for v1.
 
 ---
 

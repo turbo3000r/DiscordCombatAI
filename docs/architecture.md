@@ -118,7 +118,7 @@
 ### `Mosquitto` — Internal Pub/Sub Broker
 
 * **Role:** Facilitates lightweight, fire-and-forget communication between all local containers: structured log aggregation, internal coordination signals, and service-to-service control commands. Operates independently from `RabbitMQ`, which remains dedicated exclusively to the AI task request/response queue.
-* **Behavior:** A standard Mosquitto container with no custom modifications, configured with local-only access (no external port exposure) and persistent session support disabled (logs/control are transient by nature).
+* **Behavior:** A standard Mosquitto container with no custom modifications, configured with local-only access (no external port exposure) and persistent session support disabled (logs/control are transient by nature). Control/drain topics use QoS 1; logs, progress, and heartbeats use QoS 0; heartbeats are never retained (`mosquitto.md` §6, P1.5).
 * **Topic Structure:**
 
 | Topic Pattern | Publishers | Subscribers | Purpose |
@@ -245,6 +245,30 @@
 
 ---
 
+## Target Compose skeleton (Phase 0 / P1.5)
+
+> Paths and service names below are the **documented target architecture**. They are not proof the files already exist on disk — Phase 0 scaffolding creates them. Full operational detail for brokers: `containers/rabbitmq.md`, `containers/mosquitto.md`.
+
+**Services (local node):** `mosquitto`, `rabbitmq`, `head`, `bot`, `ai_worker`. **`web` is excluded** (deployed independently). **`launcher` is excluded** (host binary).
+
+**Networks:** one internal bridge (`dca-internal`). Production compose publishes **no** host ports for Mosquitto `1883` or RabbitMQ `5672`/`15672`. Head IPC remains host-loopback only per `contracts/launcher_ipc.md`.
+
+**Volumes:** `rabbitmq-data` (sensitive — plaintext task payloads, see `rabbitmq.md` §13); optional Mosquitto config bind-mount only (persistence disabled).
+
+**Health / ordering:** `bot` and `ai_worker` `depends_on` RabbitMQ and Mosquitto with `condition: service_healthy`. `head` `depends_on` Mosquitto healthy (and may wait on RabbitMQ healthy before enabling the event bridge).
+
+**Broker mounts:**
+- `./infra/mosquitto/mosquitto.conf` → Mosquitto config
+- `./infra/rabbitmq/enabled_plugins` (+ optional `definitions.json`) → RabbitMQ
+
+**Prompts:** `ai_worker` bind-mounts `./prompts` (or image-copies at build) read-only — exact path ownership for generic arenas remains a P1.1 item; Compose must still reserve the mount point.
+
+**Restart:** `unless-stopped` for all local services.
+
+**Image pins (brokers):** `eclipse-mosquitto:2.0` (patch-pin in real Compose), `rabbitmq:3.13-management`. Application images use the coordinated release tag.
+
+---
+
 ## Project File Structure
 
 ```
@@ -252,6 +276,12 @@ discord-combat-ai/
 │
 ├── docker-compose.yml           # Orchestrates all local containers (Head, Bot, RabbitMQ, Mosquitto, AI Worker)
 ├── docker-compose.dev.yml       # Dev overrides (volume mounts, exposed ports, hot reload)
+├── infra/                       # Target: broker configs (not application code)
+│   ├── mosquitto/
+│   │   └── mosquitto.conf
+│   └── rabbitmq/
+│       ├── enabled_plugins
+│       └── definitions.json     # optional; see rabbitmq.md §2
 ├── pyproject.toml               # Single workspace root — all dependencies defined here
 ├── .env                         # Actual secrets (gitignored)
 ├── .env.example                 # Template with all required variables and descriptions

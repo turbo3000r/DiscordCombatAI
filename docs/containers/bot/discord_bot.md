@@ -132,12 +132,14 @@ On accepting a valid `active` grant:
 
 ### 6.2 Guild Lifecycle & Config Persistence
 
-All guild state lives in the single Cosmos DB document defined by `contracts/guild_config.md` — no local files, per that contract's replacement of legacy's per-guild JSON.
+All guild state lives in the single Cosmos DB document defined by `contracts/guild_config.md` — no local files, per that contract's replacement of legacy's per-guild JSON. Writes use field-scoped Patch + ETag (`guild_config.md` §4a).
 
-- **`on_guild_join`:** creates a new document with the confirmed defaults (`contracts/guild_config.md` §5) plus the Discord-sourced fields (`name`, `icon_url`, `member_count`, `owner_id`, `created_at`). Also sends the existing legacy welcome flow (`WelcomeView`/`WelcomeLocaleSelect`, unchanged — see `bot/visuals.md`'s component catalog).
-- **`on_guild_update`:** re-writes only the Discord-sourced fields that changed (name/icon/owner) — never touches the admin-configured fields.
-- **`on_guild_remove`:** sets `left_at` to now. **Does not delete the document** — soft-delete, per `contracts/guild_config.md` §6, so re-inviting the bot later doesn't lose history.
-- **Periodic reconciliation sweep** (`modules/services/guild_sync.py`, every `BOT_GUILD_SYNC_INTERVAL_SEC`): iterates `bot.guilds` and re-writes the Discord-sourced fields for every guild currently joined. This is the confirmed third trigger (alongside the two event handlers above) — it exists specifically because Discord has no push event for `member_count` drift on its own, and it also catches anything missed while `Bot` was offline between the two event-driven writes.
+- **`on_guild_join` / rejoin:** call `guilds.py` create-or-reactivate (`contracts/guild_config.md` §7). Fresh create uses defaults (§5 there) plus Discord metadata. Rejoin clears `left_at`, refreshes metadata, preserves `created_at` and admin config. Also sends the existing legacy welcome flow (`WelcomeView`/`WelcomeLocaleSelect`, unchanged — see `bot/visuals.md`'s component catalog).
+- **`on_guild_update`:** Patch only Discord-sourced fields that changed (name/icon/owner) — never touches admin-configured fields.
+- **`on_guild_remove`:** Patch `left_at` to now. **Does not delete** — soft-delete confirmed (`guild_config.md` §7).
+- **Periodic reconciliation sweep** (`modules/services/guild_sync.py`, every `BOT_GUILD_SYNC_INTERVAL_SEC`): iterates `bot.guilds` and Patches Discord-sourced fields for every currently joined guild. Catching Cosmos rows for guilds **absent** from `bot.guilds` (missed removals while offline) remains a remaining P1.3 item — not required to scaffold `guilds.py`.
+
+**AI locale:** when publishing `ai_tasks`, map `language` → `language_locale` per `contracts/localization.md` §4 (`ua` → `uk-UA`).
 
 ### 6.3 Task Tracking, Heartbeat, and the Status-Bar Backbone
 
@@ -250,14 +252,14 @@ The two metrics that **do** have a defined transport as of this revision are `la
 |---|---|---|
 | Discord Gateway disconnects unexpectedly (network blip, not a `Head`-driven stop) | discord.py's own connection-state events | Relies on discord.py's built-in automatic reconnect — no `Bot`-specific override decided. |
 | Cosmos DB unreachable (guild config or suggestion read/write) | Exception from `cosmos.py` (`azure.md` §9) | Surfaced per-command — see each command's own Failure Modes section (`config.md` §12, `suggest.md` §12). No container-wide fallback beyond what each command already documents. |
-| Azure Queue Storage poll fails (§6.6) | Exception from `queue.py` | Skip this poll cycle, retry at the next `BOT_QUEUE_POLL_INTERVAL_SEC` — same "skip and retry" pattern `head.md` §9 already uses for its own GitHub Releases polling. |
+| Azure Queue Storage poll fails (§6.6) | Exception from `queue.py` | Skip this poll cycle; after 3 consecutive failures mark `azure_queue` degraded (`azure.md` §6a). Retry at the next `BOT_QUEUE_POLL_INTERVAL_SEC`. Sweep path unaffected. |
 | A DM to a suggestion's original author fails (§6.6) | `discord.Forbidden` or similar from the DM send call | **Resolved this revision:** retried by the reconciliation sweep (§6.6) up to `BOT_SUGGESTION_MAX_DM_ATTEMPTS` combined attempts, then `notification_status` is set to `"failed"` — a terminal state the admin can eventually see reflected on `web/pages/suggestions.md`, rather than an indefinite retry or a silent drop. |
 | Mosquitto unreachable — affects progress, heartbeat, and leadership control | Control connection loss | Progress remains best-effort. For safety, immediately enter bounded soft-stop and reject new AI work; hard-stop at drain timeout or earlier grant expiry unless safe control is restored. |
 | Active grant expires or Head grant/watchdog disappears | Local monotonic deadline | Hard-stop autonomously; no Head publish is required. |
 | **New this revision** — a task's progress/heartbeat ticks stop arriving for longer than `BOT_AI_TASK_STALL_TIMEOUT_SEC` (§3, §6.3's `last_progress_at`) | `Bot`'s own per-task stall timer expires | `Bot` synthesizes an `AiTaskResultFailed` (`contracts/ai_task.md` §4) with `node: "bot_stall_timeout"`, removes the `TaskRecord` (§6.3), and notifies the user — without waiting for RabbitMQ. If the task was actually still alive (e.g. a transient Mosquitto hiccup on `AI Worker`'s side only), the eventual real result is safely discarded on arrival (`ai_task.md` §6) — accepted false-positive cost, not a bug. |
 | **New this revision** — a task's total duration exceeds `BOT_AI_TASK_TIMEOUT_SEC`, regardless of how healthy its progress ticks looked | `Bot`'s own per-task overall timer expires | Same synthesis/cleanup as the stall-timeout row, with `node: "bot_task_timeout"` instead — this is the absolute ceiling against a task that's ticking normally but never actually converging. |
 | `Bot` process crashes or restarts mid-task (after publishing `ai_tasks`, before consuming the matching `ai_tasks_results`) | N/A — no detection mechanism | The in-memory task map (§6.3), including both timers above, is lost entirely. On restart, if the matching `ai_tasks_results` message still arrives, it has no `TaskRecord` to update and is effectively orphaned — no reconciliation exists. This is now the **only** remaining shape of this gap — a task that survives `Bot`'s own process lifetime is always eventually resolved by either a real result or one of the two timers above. Flagged in §13. |
-| `RabbitMQ` unreachable when publishing `ai_tasks` | Publish failure | **Not specified** — inherited, unresolved gap already flagged in `rabbitmq.md` §9 (no standalone-RabbitMQ-outage behavior is documented anywhere yet). |
+| `RabbitMQ` unreachable when publishing `ai_tasks` | `apply_async` / confirm failure | **Resolved (P1.5):** no `TaskRecord`; localized command error; Gateway stays up; client reconnects per `rabbitmq.md` §8a. Canonical scenario: S05. |
 
 ---
 

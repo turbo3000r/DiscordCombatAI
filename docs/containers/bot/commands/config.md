@@ -17,7 +17,7 @@ commands/config/
 │   │   ├── api_key_modal.py    # Google API key ONLY now — Model moved off this modal onto the main view (§6)
 │   │   └── webhook_modal.py    # Webhook URL — unchanged from legacy's WebhookConfigModal
 │   └── views/
-│       ├── language_select.py  # Command-specific Select — options are the 3 Bot UI locales (contracts/localization.md §2)
+│       ├── language_select.py  # Command-specific Select — options en|es|ua (contracts/localization.md §3a)
 │       └── model_select.py     # Command-specific Select — options fetched live via service/model_catalog.py (§6)
 └── service/
     └── model_catalog.py        # Wraps Google's client.models.list(), applies the gemini+generateContent filter (§6)
@@ -46,7 +46,7 @@ Per `visuals.md` §1's confirmed decision, this is a multi-field settings panel 
 | Piece | Shared or command-specific | Notes |
 |---|---|---|
 | `StagedSettingsView` | Shared (`visuals.md` §3) | Base container: staged in-memory dict + Apply button. This command is currently its only consumer — kept in the shared catalog on the expectation any future "N settings staged then applied" command reuses it, the same reasoning `quick-battle.md` §2 already applies to `LobbyView`/`SequentialCollector` despite those also having one consumer today |
-| `LanguageSelect` | Command-specific (this doc) | Options = the 3 Bot UI locales (`contracts/localization.md` §2) |
+| `LanguageSelect` | Command-specific (this doc) | Options = closed v1 enum `en` \| `es` \| `ua` (`contracts/localization.md` §3a) |
 | `ModelSelect` | Command-specific (this doc) | **New** — replaces legacy's free-text Model field inside `AIConfigModal`. Disabled with a placeholder until a valid API key is staged; populated live from `service/model_catalog.py` (§6) |
 | `api_key_modal.py` | Command-specific | Single-field modal (API key only) — Model split out onto `ModelSelect` (§6); the one structural UI change from legacy's combined `AIConfigModal` |
 | `webhook_modal.py` | Command-specific | Unchanged from legacy's `WebhookConfigModal` |
@@ -125,7 +125,7 @@ Per-action tags: `guild_id`, `command: "config"`, plus command-specific: which f
 | Model-listing call fails (bad key, network, zero results) | Exception/empty result from `client.models.list()` | `ModelSelect` stays disabled with an inline error (§6) — no fallback list; Apply still works for any other staged fields |
 | Staged API key fails the Apply-time validity check (§6 step 6) | `enableAI()`/`is_api_key_valid` returns `False` | `enabled` set/stays `false`, inline warning shown — same wording as legacy |
 | Staged webhook URL fails Discord-host allowlist (§6 step 5–6) | URL host/scheme not in `contracts/web_auth.md` §7 allowlist | Reject stage/Apply with localized error; do not write invalid `webhook_url` |
-| Cosmos DB unreachable on Apply | Exception from `cosmos.py` | Not specified beyond `azure.md` §9's generic "surfaced to the calling service" note — no command-specific recovery yet, flagged in §14 |
+| Cosmos DB unreachable / auth failure on Apply | Classified exception from `cosmos.py` (`azure.md` §6) | **Keep all staged in-memory changes.** Show a localized ephemeral/inline error: transient → “Could not save — try Apply again”; permanent auth/permission → “Cloud credentials/permissions error — contact operator.” Do **not** clear the panel or pretend Apply succeeded. |
 | Panel times out (5 min, unchanged from legacy) | View `timeout=300` fires | Staged-but-unapplied changes are lost, matches legacy exactly |
 
 ## 13. Dependencies
@@ -142,6 +142,7 @@ Per-action tags: `guild_id`, `command: "config"`, plus command-specific: which f
 ## 14. Open Items / Future Work
 
 - **Apply-time key re-validation may be redundant** with the model-listing call already performed in step 3 (§6) — both hit Google's API; one lists models, one generates content. Worth collapsing into a single check once implemented; not decided here.
-- **Discord Select's 25-option cap** — if Google's `gemini` + `generateContent` catalog ever exceeds 25 entries, `ModelSelect` would need pagination/truncation. Not an issue today, unhandled if it changes.
-- **Cosmos DB failure handling on Apply** has no command-specific recovery defined (§12) — inherits `azure.md` §9's generic gap.
+- **Discord Select's 25-option cap** — if Google's `gemini` + `generateContent` catalog ever exceeds 25 entries, `ModelSelect` would need pagination/truncation. Still P1.3 (command-owned), not required for shared Azure clients.
+- **Apply atomicity when staged API key/model is invalid** (which fields commit, whether invalid key is stored) — still P1.3.
 - **`StagedSettingsView`'s exact shared API** (how a command supplies its own child Sections/buttons into the base container) isn't designed yet — `visuals.md` §4 already flags the component catalog as candidate-only; this command is simply its first concrete consumer.
+- ~~Cosmos DB failure handling on Apply~~ — **resolved (P1.7):** §12 + `azure.md` §6/§9.

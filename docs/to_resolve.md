@@ -13,11 +13,11 @@
 
 ## Current verdict
 
-**No remaining P0 global blockers.** A full-tree cross-read confirms that leadership control, Head ↔ Launcher reachability, drain/update completion, RabbitMQ/Celery wire design, cross-service data contracts (P0.5), live PubSub topology (P0.6), Web admin auth (P0.7), and end-to-end scenarios (P0.8) are specified consistently enough to begin independent foundation work. Remaining work is **P1 subsystem blockers** and **P2 deferred** items, plus mechanical cleanup in the "Required documentation cleanup" section.
+**No remaining P0 global blockers.** Phase 0 foundation prerequisites that were documentation-blocked are now closed: **P1.5** (brokers + Compose skeleton), **P1.7** (Azure client failure/RBAC/retry), **P1.9** (locale value contract), and the **P1.3 subset required by shared `guilds.py` clients** (field-scoped Patch + ETag, soft-delete/rejoin/list filters).
 
-This does **not** mean every subsystem is ready to implement. In particular, `/quick-battle`, the real LangGraph graphs, guild configuration writes, production broker behavior, and several Web endpoints still require the P1 decisions below. None of those gaps changes the global service topology, authority model, or an already-resolved cross-service wire contract, so none is a P0 blocker.
+This does **not** mean every subsystem is ready to implement. In particular, `/quick-battle`, the real LangGraph graphs, remaining guild lifecycle edges, suggestion edge cases, Web API schemas, and observability payloads still require the open P1 items below. None of those gaps changes the global service topology or already-resolved cross-service wire contracts.
 
-The previous version of this queue mixed critical architecture gaps, optional product ideas, ordinary implementation work, and stale cleanup notes at one priority level. This revision separates them and adds missing failure paths found by cross-reading the full docs tree.
+**Phase 0 implementation-ready now:** scaffold/Compose skeleton, shared typed models from contracts (including `language` enum + mapping), shared Azure credential/client layer, RabbitMQ + Mosquitto configuration. **Still deferred for later phases:** remaining P1.3 command/lifecycle items, P1.1–P1.2, P1.4 leftovers, P1.6, P1.8, and all P2 items.
 
 ---
 
@@ -97,6 +97,36 @@ The previous version of this queue mixed critical architecture gaps, optional pr
 - Architecture acceptance cases (not test-code prescriptions): preconditions, ordered steps, durable writes, timeouts, user-visible result, invariant checked.
 - Coverage includes cold boot, follower failover, leader Head crash, Mosquitto/RabbitMQ/Azure partial outages, planned update happy path / drain timeout / rollback, Bot or AI Worker restart mid-task, Quick Battle success/abort/timeout (P1.1 product rules apply where numbers are open), suggestion duplicate/lost Queue, Web auth + all-guild broadcast.
 - Each scenario references existing contracts (`leadership_control`, `drain_status`, `ai_task`, `suggestion`, `web_auth`, `launcher_ipc`, `pubsub_live`, etc.) rather than inventing new behavior.
+- S05 updated with concrete Bot/AI Worker reconnect and user-visible publish-failure outcomes (P1.5).
+
+## P1.5 — Broker configuration and outage behavior (resolved)
+
+- Canonical: `containers/rabbitmq.md`, `containers/mosquitto.md`, `architecture.md` → Target Compose skeleton; S05.
+- **RabbitMQ:** Compose-internal plaintext AMQP accepted (no host `5672`/`15672` in prod); target `infra/rabbitmq/`; plugins `rabbitmq_event_exchange` + internal `rabbitmq_management`; image `rabbitmq:3.13-management`; healthcheck `rabbitmq-diagnostics check_running`; client reconnect 1s→×2→60s+jitter; confirm wait 5s; Bot publish failure → no TaskRecord + localized error; AI Worker reconnects and never acks without result; queue-depth metrics **not** v1 telemetry; manual image-pin upgrades.
+- **Mosquitto:** target `infra/mosquitto/mosquitto.conf` (anonymous, persistence false, no host publish); image `eclipse-mosquitto:2.0`; QoS 0 for logs/progress/heartbeats, QoS 1 for control/drain; heartbeats never retained; Head republishes retained desired modes on reconnect (no grant backlog); healthcheck via `mosquitto_sub`; broker self-logs = `docker logs` only; broker metrics not v1.
+- Propagated to `discord_bot.md`, `ai_worker.md`, `head.md`, S05.
+
+## P1.7 — Azure client failure classification and provisioning (resolved)
+
+- Canonical: `containers/azure.md` §3a/§6/§6a/§9/§11.
+- Exact RBAC roles/scopes per Head/Bot/Web SP; provisioning instructions live in this contract, target IaC `infra/azure/` when created (live apply remains P2 ops).
+- Permanent auth/permission vs transient classification; SDK `max_retries = 0` so only application backoff retries; Head must not infinitely back off permanent auth failures.
+- Per-client timeouts + ≤3 transient attempts (PubSub ≤2); Bot Queue poll skip + degraded after 3 consecutive failures; `/config` Apply keeps staged state (`config.md` §12).
+- Per-resource health flags preferred over a single `azure_connected`.
+- Propagated to `config.md`, `discord_bot.md`, cleanup note on Queue enqueue recovery already aligned with `suggestion.md`.
+
+## P1.9 — Localization value contract (resolved)
+
+- Canonical: `contracts/localization.md` §3–§4; `contracts/guild_config.md` `language` field; `config.md` LanguageSelect; graph input notes in `environment.md` / `battle.md`; Bot publish mapping in `discord_bot.md` §6.2.
+- Stored enum: `en` \| `es` \| `ua`. `ua` is a legacy UI key (not ISO `uk`).
+- Bot maps to AI `language_locale`: `en`→`en`, `es`→`es`, `ua`→`uk-UA`.
+- UI fallback: exact file → primary subtag → `en`.
+
+## P1.3 (partial) — Guild config decisions needed by shared Azure clients (resolved)
+
+- Canonical: `contracts/guild_config.md` §4a/§7; `azure.md` `guilds.py` note; `discord_bot.md` §6.2; `guilds.md` list filter.
+- Field-scoped Cosmos Patch + ETag (≤5 on 412); soft-delete confirmed unbounded v1; rejoin preserves `created_at` + admin fields; default lists exclude `left_at != null`.
+- **Still open under P1.3:** offline removal sweep, Apply atomicity for invalid key/model, model-catalog pagination/25-cap, command recovery beyond Cosmos Apply already specified.
 
 ---
 
@@ -180,18 +210,22 @@ Prompt file authoring and physical migration remain implementation tasks once th
 
 ## P1.3 Guild configuration lifecycle and concurrency
 
-**Evidence:** `contracts/guild_config.md` §3–§7; `bot/discord_bot.md` §6.2; `bot/commands/config.md` §6/§9/§12.
+**Evidence:** `contracts/guild_config.md` §3–§8; `bot/discord_bot.md` §6.2; `bot/commands/config.md` §6/§9/§12.
 
-Resolve:
+**Resolved for shared Azure clients (this revision):**
 
-1. Field-scoped Cosmos PATCH + ETag/concurrency behavior between `/config`, events, and reconciliation.
-2. Rejoin semantics for an existing soft-deleted document: preserve `created_at` and admin config, clear `left_at`, refresh metadata.
+1. ~~Field-scoped Cosmos PATCH + ETag/concurrency~~ — **resolved:** `guild_config.md` §4a.
+2. ~~Rejoin semantics~~ — **resolved:** `guild_config.md` §7.
+4. ~~Whether lists/counts exclude `left_at != null`~~ — **resolved:** default exclude; `guild_config.md` §7 / `guilds.md`.
+7. ~~Webhook URL validation~~ — **resolved (P0.7).**
+8. ~~Soft-delete policy / retention~~ — **resolved:** soft-delete confirmed, unbounded v1 (`guild_config.md` §7).
+   `/config` Cosmos Apply user-visible recovery — **resolved with P1.7:** `config.md` §12.
+
+**Still resolve before full `/config` + guild lifecycle implementation (not required for Phase 0 Azure clients):**
+
 3. Detection of guild removals missed while Bot was offline; iterating only current `bot.guilds` cannot mark absent documents left.
-4. Whether lists/counts exclude `left_at != null`.
-5. Behavior when guild document creation failed but a command arrives, and the command-specific recovery/response when Cosmos is unavailable during `/config` Apply.
+5. Behavior when guild document creation failed but a command arrives (beyond Apply error already specified).
 6. Apply semantics when a staged API key/model is invalid: which fields commit atomically, whether the invalid key is stored, and what happens to the previously valid model/key.
-7. ~~Webhook URL validation and secret handling~~ — **allowlist + Web redaction resolved (P0.7):** `contracts/web_auth.md` §6–§7, `guild_config.md`, `bot/commands/config.md`. Remaining P1.3 items (concurrency, soft-delete, etc.) unchanged.
-8. Confirm or remove the proposed soft-delete policy and define retention if kept.
 9. Model-catalog timeout/pagination and Discord's 25-option Select limit, without blocking the async Discord event loop.
 
 The exact reconciliation scheduling algorithm is implementation detail after its correctness semantics are fixed.
@@ -215,31 +249,9 @@ Depends on `contracts/suggestion.md` from P0.5.1 — **contract exists**; remain
 
 ---
 
-## P1.5 Broker configuration and outage behavior
+## P1.5 Broker configuration and outage behavior — resolved
 
-### RabbitMQ
-
-**Evidence:** `rabbitmq.md` §2/§3/§8–§12.
-
-- Credentials and vhost are resolved in `rabbitmq.md` §3/§13. Define TLS or explicitly record the local-network-only threat assumption and accepted plaintext scope.
-- Define Dockerfile/config/plugin location and whether the management/event-exchange plugin is enabled.
-- Define client reconnect/backoff behavior for Bot and AI Worker.
-- Define Bot's command-level response when `apply_async` fails and AI Worker's behavior when consume/result-publish connectivity is lost; scenario S05 must link to these concrete recovery and user-visible outcomes.
-- Define healthcheck/startup ordering, queue arguments, resource limits, and image upgrade policy.
-- Add the minimum Compose specification needed by the documented target architecture: services, networks, health dependencies, volumes, prompt mount, broker configs/plugins, ports, and restart policies. If the tree is intentionally docs-ahead-of-code, mark every shown path as a target rather than an existing artifact.
-- Decide queue-depth metric ownership only if it is part of the v1 telemetry contract.
-
-### Mosquitto
-
-**Evidence:** `mosquitto.md` §2/§6–§12.
-
-- Define `mosquitto.conf` location, listener/auth policy, broker persistence, and image pin.
-- Choose QoS for non-control topic classes. Leadership control is fixed at QoS 1 in `contracts/leadership_control.md`; logs/progress/ordinary heartbeats remain undecided.
-- Define Head's retry/republish behavior when the broker was unavailable at state-change time.
-- Decide heartbeat retention only after defining timestamp/staleness semantics; a retained heartbeat is never proof of current liveness by itself.
-- Add a broker healthcheck.
-- Decide how Mosquitto's own connection/auth/drop errors are observed. Either bridge broker logs into Head's archive or explicitly accept host `docker logs` as the only diagnostic path; do not leave the safety-critical control broker silently unobservable.
-- Broker metrics remain optional unless required by the telemetry scope.
+→ See **Resolved decisions → P1.5**. Canonical: `rabbitmq.md`, `mosquitto.md`, Compose skeleton in `architecture.md`, S05.
 
 ---
 
@@ -263,20 +275,9 @@ The charting library, CSS token system, and live-vs-polling choice for compact c
 
 ---
 
-## P1.7 Azure client failure classification and resource provisioning contract
+## P1.7 Azure client failure classification and resource provisioning contract — resolved
 
-**Evidence:** `azure.md` §3/§5–§11; consuming service failure-mode sections.
-
-Document:
-
-1. Exact RBAC roles/scopes per service and where provisioning/IaC instructions live.
-2. Auth/permission failures vs. transient network/throttling failures; permanent failures must not use infinite transient retry behavior.
-3. SDK retry ownership so SDK and application backoff do not multiply unexpectedly.
-4. Queue/Blob/Table/Cosmos timeout and retry defaults that affect user-visible behavior.
-   This includes Bot's Queue-poll skip/backoff/recovery behavior and `/config` Cosmos Apply failure handling; do not leave these only as generic "exception surfaced" statements in `azure.md`.
-5. Status/health fields per required dependency, if readiness checks depend on them.
-
-Exact exception class names and Python package pins are implementation/configuration details unless they change a cross-service contract.
+→ See **Resolved decisions → P1.7**. Canonical: `containers/azure.md` §3a/§6/§6a/§9/§11.
 
 ---
 
@@ -296,18 +297,9 @@ Extra business metrics, Mosquitto broker metrics, and Launcher metrics are optio
 
 ---
 
-## P1.9 Localization value contract
+## P1.9 Localization value contract — resolved
 
-**Evidence:** `contracts/localization.md` §2–§4; `contracts/guild_config.md` §3; `bot/commands/config.md` §5; both graph invocation contracts.
-
-Resolve the current `language` → `language_locale` ambiguity:
-
-1. Define the allowed stored values. Current Bot files/Select use `en`, `es`, `ua`, while the guild contract calls the field BCP-47 and examples use `uk-UA`.
-2. Define whether Bot passes the stored value to AI unchanged or maps UI locale codes to canonical AI-content locale tags.
-3. Define exact UI fallback matching (`de-DE` → `de` if present vs. English only).
-4. Correct `ua` vs. Ukrainian language code `uk`, or explicitly document `ua` as a legacy internal key with a mapping.
-
-Future independent UI/AI locale settings remain P2; the v1 single-value behavior must still be unambiguous.
+→ See **Resolved decisions → P1.9**. Canonical: `contracts/localization.md` §3–§4.
 
 ---
 
@@ -323,10 +315,11 @@ These items should not prevent the docs from becoming implementation-ready once 
 - future split between Bot UI locale and AI content locale;
 - localized suggestion category labels;
 - exact localization copy/key names;
-- optional metrics with no agreed v1 consumer;
-- exact typed-exception class hierarchy;
-- applying already-documented RBAC to live infrastructure (required for deployment, but not a missing architecture decision once roles/scopes are documented);
+- optional metrics with no agreed v1 consumer (including RabbitMQ queue depth and Mosquitto broker metrics — explicitly deferred in P1.5);
+- exact typed-exception class hierarchy (permanent vs transient classification is enough for Phase 0 — `azure.md` §6);
+- applying already-documented RBAC to live infrastructure (required for deployment, but not a missing architecture decision once roles/scopes are documented in `azure.md` §3a);
 - Entra group-claim **overage** Graph `memberOf` fallback for Web admin authorization (v1 requires emit-groups + small admin group; reject with **403** on overage — `contracts/web_auth.md` §2).
+- Mosquitto broker-log bridging into Head archive (explicitly accepted as `docker logs` only in P1.5).
 
 Move an item back to P1 only if implementation proves it changes a public contract, safety invariant, or persisted data shape.
 
@@ -357,7 +350,7 @@ These edits are mechanical after the decisions above; they should be completed b
 19. Replace `bot/visuals.md`'s stale statement that the suggestion catalog is “moving off” a hardcoded list; `contracts/status_document.md` already owns it.
 20. Reconcile `web/pages/home.md`'s documented `version` response with the canonical status document, which deliberately excludes version. Until P1.6 chooses a source, mark the field unavailable or remove it from the v1 response.
 21. Remove or update stale self-marked “resolved” prose, including the old `task_progress.md` open-item tombstone, after its canonical text is corrected.
-22. Correct `azure.md` and `web.md` Queue-failure wording: a failed Web enqueue after the Cosmos write is recoverable through the canonical pending-ticket sweep in `contracts/suggestion.md`; only poller retry/backoff/health behavior remains open.
+22. ~~Correct `azure.md` and `web.md` Queue-failure wording: a failed Web enqueue after the Cosmos write is recoverable through the canonical pending-ticket sweep~~ — **done with P1.7 / `azure.md` §9**; poller skip/degraded behavior also closed there.
 23. Update `web/pages/template.md`'s stale “eventual authenticated admin” wording; Entra admin authorization is resolved in P0.7 and applies to all `/api/*` routes.
 
 **Verified repository fact:** there are no duplicate slash/backslash variants of docs files in Git; the earlier duplicate-path concern was a Windows path-rendering artifact and is closed.
@@ -370,9 +363,9 @@ These edits are mechanical after the decisions above; they should be completed b
 2. ~~**Suggestion, telemetry, status, archive, and schema-evolution contracts** (P0.5)~~ — **resolved**.
 3. ~~**Web PubSub topology** (P0.6)~~ and ~~**Web security boundary** (P0.7)~~ — **resolved**.
 4. ~~**End-to-end scenarios** (P0.8)~~ — **resolved** (`docs/scenarios/`) + cleanup pass.
-5. **Quick Battle + AI graph bounded behavior + locale mapping** (P1.1–P1.2, P1.9).
-6. **Guild/suggestion concurrency and broker operations** (P1.3–P1.5).
-7. **Web/Azure/observability details** (P1.6–P1.8).
+5. **Quick Battle + AI graph bounded behavior** (P1.1–P1.2). Locale mapping is done (P1.9).
+6. **Remaining guild/suggestion concurrency** (leftover P1.3 items, P1.4).
+7. **Web/observability details** (P1.6, P1.8). Brokers (P1.5) and Azure clients (P1.7) are done.
 
 When all P0 items and the P1 items for a target subsystem are closed, that subsystem's docs can be considered ready for implementation. “All docs ready” requires every P0 and P1 item to be either resolved or explicitly removed from v1 scope with affected fields/endpoints/flows deleted from the specification.
 
@@ -389,7 +382,7 @@ When all P0 items and the P1 items for a target subsystem are closed, that subsy
 3. Build the shared Azure credential/client layer and thin resource services from `containers/azure.md`.
 4. Configure RabbitMQ and Mosquitto, including healthchecks, durable queues/DLX, required plugins, local network exposure, volumes, and restart policy.
 
-**Gate:** close the applicable P1.5 broker decisions before calling the infrastructure production-ready; close P1.7 before production Azure provisioning. Typed models and mock clients can proceed in parallel.
+**Gate:** P1.5 broker decisions and P1.7 Azure client/RBAC/retry contracts are **closed**. Typed models (including P1.9 locale enum/mapping and P1.3 guild Patch helpers) and real Azure/broker wiring can proceed. Remaining leftover P1.3 items do **not** block Phase 0 scaffolding.
 
 ## Phase 1 — Launcher and Head coordination spine
 
@@ -411,7 +404,7 @@ Build these in parallel around a stub graph so the message path can be tested be
 
 ## Phase 3 — Configuration and suggestions vertical slices
 
-1. Close P1.9 and the applicable P1.3 items, then implement `/config`; use it to establish valid guild/key/model data before any real AI command.
+1. Close remaining P1.3 leftovers if needed for production `/config`, plus P1.9 (**done**) before treating config as complete; use `/config` to establish valid guild/key/model data before any real AI command.
 2. Implement `/suggest` ticket creation and Bot delivery claim/sweep together with Web's Suggestions response path; validate S12.
 
 These slices give useful functionality without depending on the unresolved battle graphs. `/config` and suggestion work can proceed in parallel after their shared Cosmos/Queue services exist.
