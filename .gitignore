@@ -1,6 +1,5 @@
 # Environment variables
 .env
-.cursor/*
 .vscode/*
 
 # Generic data
