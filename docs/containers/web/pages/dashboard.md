@@ -2,7 +2,7 @@
 
 ## 1. Purpose & Scope
 
-The at-a-glance operational snapshot: current headline stats, a short live window of CPU/memory/latency, and a live-tailing log console. This is the landing point for "is everything okay right now" — deep historical analysis is `pages/performance.md`'s job instead, not duplicated here. Public/admin distinction: same as every other page, no auth exists yet (`web.md` §3, §13).
+The at-a-glance operational snapshot: current headline stats, a short live window of CPU/memory/latency, and a live-tailing log console. This is the landing point for "is everything okay right now" — deep historical analysis is `pages/performance.md`'s job instead, not duplicated here. All `/api/*` calls (including negotiate) require Entra admin auth (`contracts/web_auth.md`); the static SPA shell is public so login can run.
 
 ## 2. Route & Entry Point
 
@@ -23,18 +23,18 @@ The at-a-glance operational snapshot: current headline stats, a short live windo
 
 | Source | Channel | Format | Trigger |
 |---|---|---|---|
-| This page's own backend (§5) | `GET /api/metrics` | Current snapshot JSON (see §5) | On page load, then every 2s (§7) |
-| This page's own backend (§5) | `GET /api/metrics/history?minutes=2` | Array of `{time, value}` points per metric | Same cadence as above, feeds the three charts |
-| This page's own backend (§5) | `GET /api/pubsub/negotiate` | Client access token (`web.md` §6.1) | Once, on page mount |
-| Azure Web PubSub (direct) | WebSocket | Live telemetry/log batch, per `head.md` §5/§8 | Continuous, once connected |
+| This page's own backend (§5) | `GET /api/metrics` | Current snapshot — Table latest + `status.py` for latency/guilds (`contracts/telemetry.md` §3) | On page load, then every 2s (§7) |
+| This page's own backend (§5) | `GET /api/metrics/history?minutes=2` | Table-only series for cpu/memory/latency | Same cadence as above |
+| This page's own backend (§5) | `GET /api/pubsub/negotiate` | `{ url, expires_at, group }` (`contracts/pubsub_live.md`) | Once, on page mount |
+| Azure Web PubSub (direct, browser) | WebSocket | `telemetry_live` batches (`contracts/telemetry.md` §4) | Continuous after connect; reconnect re-negotiates; `seq` dedup |
 
 ## 5. Backend Endpoints (owned by this page)
 
 | Method | Path | Request | Response | Notes |
 |---|---|---|---|---|
-| `GET` | `/api/metrics` | — | `{cpu, memory: {mb, percent}, latency, uptime, errors, guilds, timestamp}` | Reads current values from the latest Table Storage row(s); see §9 for which fields are actually sourceable today |
-| `GET` | `/api/metrics/history` | Query: `minutes` (default 2) | `{cpu: [...], memory: [...], latency: [...]}`, each a `{time, value}[]` array | Backed by Table Storage (`web.md` §5); the same shape is reused by `pages/performance.md` §5 with a larger `minutes` value — don't redefine this shape there |
-| `GET` | `/api/pubsub/negotiate` | — | Web PubSub client access token/URL | Shared mechanism, defined once in `web.md` §6.1 — this is the first page to use it; `pages/performance.md` reuses it too if it ever adds live data (currently it doesn't, §7) |
+| `GET` | `/api/metrics` | Bearer required | `{cpu, memory: {mb, percent}, latency, uptime, errors, guilds, timestamp}` | Mix Table latest + `status.py` status section — **not** Cosmos guild count (`contracts/telemetry.md` §3) |
+| `GET` | `/api/metrics/history` | Query: `minutes` (default 2); Bearer required | `{cpu: [...], memory: [...], latency: [...]}` | Table only |
+| `GET` | `/api/pubsub/negotiate` | Bearer required | `{ url, expires_at, group: "dashboard-live" }` | Join/leave only; same Entra admin boundary as all `/api/*` (`contracts/web_auth.md`, `contracts/pubsub_live.md`) |
 
 The legacy `GET /api/logs` (reading a local log file) and `WS /ws/logs` (proxied socket) are **not** carried forward — replaced entirely by the direct Web PubSub subscription (§4, `web.md` §6.1).
 
@@ -69,13 +69,14 @@ See `web.md` §9 for the underlying Cosmos/Table/PubSub-unreachable failure mode
 
 | Dependency | Used for | Notes |
 |---|---|---|
-| Azure Table Storage | `/api/metrics`, `/api/metrics/history` | Via `table.py`, per `azure.md`'s Addition note in §4/§5 |
-| Azure Web PubSub | Live console + (optionally) live chart updates | Group-naming open item blocks this entirely — `web.md` §3, `head.md` §5 |
-| `Bot` (indirect, resolved) | `latency`, `guilds` count fields on `/api/metrics` | **Both now solvable.** `guilds`: a count of documents in the `GuildConfigs` collection (`contracts/guild_config.md`), computed by this page's own backend — no dependency on `Bot` at all, direct Cosmos DB read. `latency`: **resolved, confirmed decision** — `bot/discord_bot.md` §6.3, `Bot` periodically upserts `{latency_ms, guild_count, updated_at}` into the shared `status.py` cloud document (`azure.md` §2) every `BOT_STATUS_PUSH_INTERVAL_SEC` specifically so `Web` can read it without any Mosquitto access. This page's backend should read `latency` from that document, not fabricate a separate path. |
-| `Head` (indirect) | `uptime`, `errors` fields | **Both remain open items** (`web.md` §6.2) — unaffected by this revision's `Bot`-side resolution. "uptime" is ambiguous across multiple nodes, and no error-count metric exists in `head.md`'s Table Storage schema at all today. |
+| Azure Table Storage | `/api/metrics`, `/api/metrics/history` | `contracts/telemetry.md` |
+| Azure Web PubSub | Live console via browser connection | `contracts/pubsub_live.md` — group naming resolved |
+| `status.py` / Bot (indirect) | Current `latency` + `guilds` on `/api/metrics` | `contracts/status_document.md` `status` section — **not** Cosmos count |
+| Leader `Head` (indirect) | `uptime`, `errors`, cpu/memory history | `contracts/telemetry.md` |
 
 ## 10. Open Items / Future Work
 
-- ~~`latency` and `guilds` fields on `/api/metrics` have no confirmed data source~~ — **resolved** (§9): `guilds` is a direct Cosmos DB count; `latency` reads from the `status.py` document `Bot` now writes to (`bot/discord_bot.md` §6.3). `uptime` and `errors` remain unresolved — the endpoint should still ship *without* those two fields (or with explicit `null`s) rather than fabricate placeholder values, until `web.md` §13's underlying `Head`-side gaps are resolved.
-- Whether the compact charts (§3) should also receive live updates via Web PubSub (instead of 2s polling, once a connection exists anyway) or deliberately stay on the simpler polling path is undecided — not a functional gap, just an unmade simplification-vs-consistency call.
-- Stale-data indication when `/api/metrics` polling fails (§8) is undecided.
+- ~~Metric field sources~~ — **resolved (P0.5.2 / P0.6)** via `contracts/telemetry.md` + `contracts/pubsub_live.md`.
+- Whether compact charts should also take live PubSub updates vs stay on 2s polling — undecided (not blocking).
+- Stale-data indication when `/api/metrics` polling fails (§8) — undecided.
+- ~~Negotiate auth~~ — **resolved (P0.7):** `contracts/web_auth.md`.

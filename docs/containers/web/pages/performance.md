@@ -2,7 +2,7 @@
 
 ## 1. Purpose & Scope
 
-Deep historical analysis of the same three metrics the Dashboard shows live (CPU, memory, latency), over a selectable window up to 24 hours, with current/average/peak readouts per metric. This page intentionally does not duplicate Dashboard's live console or headline metric cards (`pages/dashboard.md` §1) — it exists purely for trend analysis over a longer horizon.
+Deep historical analysis of the same three metrics the Dashboard shows live (CPU, memory, latency), over a selectable window up to 24 hours, with current/average/peak readouts per metric. This page intentionally does not duplicate Dashboard's live console or headline metric cards (`pages/dashboard.md` §1) — it exists purely for trend analysis over a longer horizon. History fetches use the same Entra-protected `/api/metrics/history` as Dashboard (`contracts/web_auth.md`).
 
 ## 2. Route & Entry Point
 
@@ -57,7 +57,7 @@ Underlying Table Storage failure modes are defined once in `web.md` §9 — not 
 |---|---|---|
 | Azure Table Storage | `/api/metrics/history` (shared with `pages/dashboard.md`) | Same dependency, same endpoint — see `pages/dashboard.md` §9, not re-described here |
 
-The `latency` series has the same unresolved-source caveat as Dashboard's (`pages/dashboard.md` §9) — not re-flagged separately here since it's the exact same underlying gap, just viewed over a longer window.
+The `latency` history series is Table-backed (`contracts/telemetry.md` §2/§3) — same source as Dashboard. Current “now” latency for cards remains `status.py`, not this page’s concern.
 
 ## 10. Open Items / Future Work
 

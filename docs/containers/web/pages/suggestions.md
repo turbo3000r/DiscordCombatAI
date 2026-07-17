@@ -14,9 +14,9 @@ Review and respond to user-submitted suggestions/tickets (submitted via the Bot'
 
 ## 3. Layout & Components
 
-`SplitPanelList` (`components.md` §4): left panel is a filterable list of suggestion cards (type indicator dot + label, title/message preview, `StatusBadge` — `components.md` §5 — for Pending/Done, user + guild + created-at meta, category tags); right panel is the selected suggestion's full detail: metadata, conversation thread, and a response form (text area + three action buttons, §6). Filter controls above the list: type, category (multi-select), sort order (new/old), status (all/pending/done), and a "Clear filters" button.
+`SplitPanelList` (`components.md` §4): left panel is a filterable list of suggestion cards (`ticket_uid` as the primary human id, type indicator dot + catalog **label**, title/details preview, `StatusBadge` — `components.md` §5 — for Pending/Done, submitter display name + guild snapshot name + created-at meta, category tags using catalog labels); right panel is the selected suggestion's full detail: metadata (including Cosmos `id` for ops if shown), submitter snapshot, conversation thread (`conversation[]` from `contracts/suggestion.md`), and a response form (text area + three action buttons, §6). Filter controls above the list: type, category (multi-select — options from catalog `{value,label}`, filter by value), sort order (new/old), status (all/pending/done), and a "Clear filters" button.
 
-**Where the type/category options themselves come from (added this revision):** this page no longer has its own hardcoded type/category list. Per `bot/commands/suggest.md` §6/§9, both the type and category values are now sourced from the same shared document `azure.md`'s `services/status.py` already owns (the `bot.json`-style doc, extended with these two new fields) — the single source of truth `Bot`'s `/suggest` command reads to populate its Selects. This page's filter controls and category tags should read from that same document (via this page's own backend, §5) rather than duplicating the 8 category / 5 type values as a second hardcoded list on the `Web` side. Exact endpoint/contract for that read is not designed yet — see §9's note and §10.
+**Where the type/category options themselves come from:** `suggestion_catalog` on the shared status document (`contracts/status_document.md`) as `list[{value, label}]` — **Web** seeds and may edit; Bot/Web both read. Exact list endpoint may be `GET /api/suggestions/categories` or folded into bot-info — still an implementation detail (P1.6), not an ownership gap.
 
 ## 4. Data Sources
 
@@ -29,37 +29,37 @@ Review and respond to user-submitted suggestions/tickets (submitted via the Bot'
 
 | Method | Path | Request | Response | Notes |
 |---|---|---|---|---|
-| `GET` | `/api/suggestions` | Query: `type`, `categories` (comma-separated), `order` (`new`\|`old`) | `{items: [...], total}` | Reads directly from the Cosmos DB Suggestions collection (`web.md` §5); the `status` (pending/done) filter is applied client-side over the already-fetched set, not a query param, matching the legacy implementation |
-| `GET` | `/api/suggestions/{suggestion_id}` | Path: suggestion ID | Single suggestion object | See note in §4 |
-| `POST` | `/api/suggestions/{suggestion_id}/respond` | Body: `{mode: "send" \| "done_no_feedback" \| "done_auto_feedback", response_text?: string}` | Updated suggestion object | The one mutating endpoint on this page — see §6 |
+| `GET` | `/api/suggestions` | Query + Bearer | `{items: [...], total}` | Reads directly from the Cosmos DB Suggestions collection (`web.md` §5); the `status` (pending/done) filter is applied client-side over the already-fetched set, not a query param, matching the legacy implementation. List items expose `ticket_uid`, submitter, catalog values (UI maps labels), and latest `response_text` / status. |
+| `GET` | `/api/suggestions/{suggestion_id}` | Path + Bearer | Single suggestion object | Path key is Cosmos `id` (UUID). See note in §4 |
+| `POST` | `/api/suggestions/{suggestion_id}/respond` | Body: `{mode: "send" \| "done_no_feedback" \| "done_auto_feedback", response_text?: string}`; Bearer required | Updated suggestion object | Mutating endpoint — appends staff `conversation` entry, updates `response_text` / notification fields, persists Entra actor audit (`contracts/suggestion.md` §2, `contracts/web_auth.md`) |
 
 ## 6. User Interactions & Actions
 
 | Action | Effect |
 |---|---|
-| Select a suggestion card | Shows its full detail + conversation thread + response form in the right panel |
-| Type / category / order / status filter change | Re-fetches or re-filters the list (§5); status filter is client-side only |
+| Select a suggestion card | Shows its full detail (`ticket_uid`, submitter, guild snapshot) + conversation thread + response form in the right panel |
+| Type / category / order / status filter change | Re-fetches or re-filters the list (§5); status filter is client-side only; type/category filters use catalog values with labels in the UI |
 | "Clear filters" | Resets all filters to defaults and re-fetches |
-| "Send" (with response text) | `POST /api/suggestions/{id}/respond` with `mode: "send"` — pushes a Cosmos DB update **and** a Queue Storage notification so `Bot` DMs the user (`architecture.md` Scenario 3) |
-| "Mark done, no feedback" | Same endpoint, `mode: "done_no_feedback"` — marks resolved without notifying `Bot` to send anything |
-| "Auto feedback" | Same endpoint, `mode: "done_auto_feedback"` — sends a localized default message; locale resolution logic (user → stored → guild, falling back to `en`) is carried forward unchanged from legacy |
+| "Send" (with response text) | `POST .../respond` `mode: "send"` — Cosmos write sets ticket `status=done`, `notification_status=pending`, appends staff conversation entry (`contracts/suggestion.md`), then enqueues Queue message (`id` + `ticket_uid`). Bot claims via ETag before DM. |
+| "Mark done, no feedback" | `mode: "done_no_feedback"` — `notification_status` stays `null`; no Queue enqueue |
+| "Auto feedback" | `mode: "done_auto_feedback"` — same pending + enqueue path as Send |
 | Refresh button | Re-fetches the current filtered view |
 
-Once a suggestion is marked `responded`, the response form and all three action buttons disable — matches legacy (no "re-open" flow exists).
+Once a suggestion is `status=done`, the response form and all three action buttons disable — no "re-open" flow exists. Do not rely on obsolete legacy booleans (`responded` / `response_given`).
 
 ## 7. State & Refresh Behavior
 
 - No polling and no live updates — list refreshes only on load, filter change, manual refresh, or immediately after a successful response action (to reflect the new status). New incoming suggestions from `/suggest` are not pushed to an already-open page.
 - Filters and current selection are client-side-only state, not persisted across reloads.
-- The conversation thread (§3) is rendered from whatever's embedded in the suggestion document itself — no separate endpoint, no pagination (assumes a bounded number of entries per ticket).
+- The conversation thread (§3) is rendered from `conversation[]` on the suggestion document — no separate endpoint, no pagination (assumes a bounded number of entries per ticket). User modal entry first; staff responses appended on `/respond`.
 
 ## 8. Failure Modes
 
 | Failure | Detection | Recovery |
 |---|---|---|
-| `/api/suggestions` fails | Fetch rejects or non-2xx | List shows an inline error message |
+| `/api/suggestions` fails | Fetch rejects or non-2xx | List shows an inline error message; **401** → MSAL login; **403** → not-authorized page (`contracts/web_auth.md`) |
 | `/respond` fails | Non-2xx response | Response form re-enables, an inline error status message is shown with the server's error detail if available |
-| `/respond` succeeds in Cosmos DB but the Queue Storage notification fails | **Not distinguished today** — per `web.md` §9, this is an inherited gap: the suggestion is saved as responded, but `Bot` may never learn to send the DM, and the UI currently has no way to tell the admin this happened separately from a full failure |
+| `/respond` succeeds in Cosmos DB but the Queue notification fails, is lost, or `Bot` is offline | Self-healing via Bot claim + sweep (`contracts/suggestion.md` §3, `discord_bot.md` §6.6). UI may show "response saved, notification pending/claiming/sent/failed". |
 
 ## 9. Dependencies
 
@@ -68,10 +68,14 @@ Once a suggestion is marked `responded`, the response form and all three action 
 | Azure Cosmos DB | Suggestion reads/updates | Direct `cosmos.py` access, per `web.md` §5 |
 | Azure Queue Storage | Notifying `Bot` to send the response DM | Per `architecture.md` Scenario 3; failure handling gap noted in §8 |
 | `Bot` (indirect) | Actually delivering the DM to the user, and localization lookup for `done_auto_feedback` | `Web` never talks to `Bot` directly (`web.md` §1) — this is entirely mediated through the Queue Storage event; if `Bot` is offline, the notification sits in the queue until it comes back, per `architecture.md`'s Queue Storage polling model |
-| `azure.md`'s `status.py` entry | Reading the shared type/category list (§3) | Second reader of the same document `bot/commands/suggest.md` §9 reads — mediated through Azure only, no direct `Bot` link. Read/write ownership of this document is explicitly undecided (`suggest.md` §14) — not resolved here either |
+| `contracts/suggestion.md` | Ticket + queue + claim state machine | Canonical |
+| `contracts/status_document.md` | Catalog read/write ownership | Web seeds/edits; Bot reads |
 
 ## 10. Open Items / Future Work
 
-- The "responded but notification failed" ambiguity (§8) is a real gap, not a hypothetical — worth a follow-up decision on whether the response record should track queue-delivery status separately from "admin submitted a response."
-- No confirmation step exists before marking a suggestion done (`components.md` §6 flags this as a candidate use for the shared confirmation modal, not yet wired up).
-- **This page's own read path for the shared type/category document is undecided** (§3, §9) — whether it's a new small backend endpoint on this page (`GET /api/suggestions/categories`?) or folded into an existing "bot info" endpoint (`components.md` §1's footer already implies one exists for name/version) isn't designed yet. Cross-referenced from `bot/commands/suggest.md` §14, which leaves the same question open on the `Bot` side.
+- ~~Notification delivery / claim~~ — **resolved (P0.5.1):** `contracts/suggestion.md`.
+- ~~Catalog ownership~~ — **resolved (P0.5.3):** Web seeds/edits.
+- No confirmation step before marking done — candidate for shared modal (optional UX; not a security gap — mutations already require Entra admin).
+- Exact catalog HTTP endpoint shape — P1.6.
+- Remaining delivery edge cases — P1.4.
+- ~~Admin auth for mutations~~ — **resolved (P0.7):** Bearer + admin group; audit fields `acted_by_oid` / `acted_by_upn` / `acted_at` on ticket (`contracts/suggestion.md`, `contracts/web_auth.md`).

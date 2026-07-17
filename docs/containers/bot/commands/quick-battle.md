@@ -56,7 +56,11 @@ commands/battle/
 
 No Discord permission check (`allowed_permissions=[]` in legacy, carried forward) — any guild member can invoke. Guild-only; requires the invoking guild to be configured/enabled (same implicit `ProcessCommand` guild requirement legacy applied to this command, unlike `/suggest` which explicitly opts out of it). **No cooldown exists today** — carried forward as a gap, not a deliberate choice; flagged in §14 as a candidate future addition (spam prevention on a command that triggers real AI Worker cost).
 
-**`blocked_during_drain=True`** (confirmed decision, `bot/discord_bot.md` §6.4) — this is the one command opted into `ProcessCommand`'s drain gate. During a planned update sequence (`control/bot/drain`), new invocations are rejected with a localized "temporarily unavailable" response while any already-in-flight lobby/task is left to finish naturally within `Head`'s own drain window (`head.md` §6). `/config` and `/suggest` are **not** opted in — see `discord_bot.md` §6.4 for why only this command needs the gate.
+**`blocked_during_drain=True`** (confirmed decision, `bot/discord_bot.md` §6.4) — this is the one command opted into `ProcessCommand`'s drain gate. During retained `control/bot/desired_state = draining` or a bounded draining grant, new invocations are rejected with a localized "temporarily unavailable" response while existing work follows the drain-completion policy resolved in `contracts/drain_status.md` (P0.3).
+
+**Which stages count toward `in_flight_workflows` (`contracts/drain_status.md` §1) — resolved this revision:** every open lobby (step 1), the environment description/consensus loop (steps 2–5), fighter collection (step 6), and the in-flight `battle` `ai_tasks` entry (step 7) all count as the **same single unit** for the lifetime of one `/quick-battle` invocation — one lobby counts once, from `LobbyView` creation through final battle display or abort, not once per sub-stage. It is decremented on: battle result posted (step 8), owner Abort at any stage, or any of this doc's own Failure Modes (§12) resolving to an error message.
+
+**What "cancelled for update" looks like to the user:** if a drain timeout escalates to `Head`'s hard-stop sequence while this lobby/collector/vote/task is still open (`contracts/drain_status.md` §2), `Bot` edits whichever message currently holds the active view (`LobbyView`, `SequentialCollector`, `EnvironmentApprovalView`, or the `TaskProgressContainer`) to a localized "update in progress, please retry" notice and disables its components, before Gateway disconnect — no partial result is synthesized or shown.
 
 ## 5. Visuals Used
 
@@ -159,7 +163,7 @@ Two distinct graphs, invoked as separate `ai_tasks` (confirmed cross-graph relat
 | `RabbitMQ` (`ai_tasks`) | Publish | `environment` or `battle` input contract (§7) | Steps 3, 5 (each revision round), 7 |
 | `RabbitMQ` (`ai_tasks_results`) | Consume | `environment` or `battle` output contract (§7) | Correlated response to each of the above |
 | `Mosquitto` (`progress/ai_worker/<task_id>`) | Consume | `task_progress.md` §4 phase messages | Drives every `TaskProgressContainer` live update |
-| `Azure Blob Storage` | Write | Battle result — `.txt` + JSON metadata, per `architecture.md`'s Data Storage table ("Battle Results") | Step 8, after `ai_tasks_results` lands |
+| `Azure Blob Storage` | Write | Battle result archive — `contracts/battle_archive.md` (`.txt` + `.meta.json`) | Step 8, after Discord delivery is ready; best-effort (Discord not rolled back on archive failure) |
 | Guild config (`Azure Cosmos DB`, via `contracts/localization.md`) | Read | `language_locale` | Steps 3, 5, 7 (every graph invocation) |
 
 ## 10. Localization
@@ -179,6 +183,7 @@ Per-message and per-task tags: `trace_id`, `guild_id`, `command: "quick-battle"`
 | A participant never responds to the approval gate | No timeout mechanism (inherited from legacy's identical gap on `FighterCreator`/`EnvironmentCreator`) | Not handled — owner's Abort button is the only escape hatch. Flagged in §14, not newly introduced by this doc |
 | Discord interaction/follow-up token expires mid-flow | Discord API rejects a stale interaction response | **Not addressed** — this command's total wall-clock time is now human-response-bound (approval votes) on top of LLM latency, materially longer than legacy ever risked. Real, unresolved risk — see §14 |
 | Lobby has zero non-owner participants at timeout | N/A — not actually a failure | Proceeds normally, owner alone is a valid battle (legacy behavior, unchanged) |
+| A drain timeout escalates to hard-stop while this lobby/collector/vote/task is open (**new this revision, P0.3**) | `Head`'s `HEAD_DRAIN_TIMEOUT_SEC` elapses with `in_flight_workflows > 0` (`contracts/drain_status.md` §2) | `Bot` edits the active view's message to a localized "update in progress, please retry" notice and disables its components before Gateway disconnect — see §4. No partial result is synthesized. |
 
 ## 13. Dependencies
 
@@ -190,8 +195,10 @@ Per-message and per-task tags: `trace_id`, `guild_id`, `command: "quick-battle"`
 | `contracts/localization.md` | `language_locale` sourcing | Guild-level, shared with Bot UI locale |
 | `bot/visuals.md` | `LobbyView`, `SequentialCollector`, `TaskProgressContainer`, design system colors | §5, §3.1 |
 | `bot/discord_bot.md` §6.3, §6.4 | Task-tracking plumbing behind `TaskProgressContainer`; the `blocked_during_drain` gate (§4) | Container-level infra, not redefined per-command |
+| `contracts/drain_status.md` | `in_flight_workflows` counting (§4) and drain-timeout cancellation UX (§4) | Canonical drain contract, not redefined per-command |
 | `contracts/guild_config.md` | `enabled` check (§4), `language`/`model` reads | Same document `/config` writes |
-| `azure.md` §3 | Battle result Blob Storage write | Don't redefine variables here |
+| `contracts/battle_archive.md` | Battle result Blob write | Canonical path/metadata/retention |
+| `azure.md` §3 | Azure env vars | Don't redefine variables here |
 
 ## 14. Open Items / Future Work
 

@@ -2,7 +2,7 @@
 
 ## 1. Purpose & Scope
 
-Minimal landing page: bot name/description and quick links into Dashboard and Guilds. Legacy's home page also contained a visible "Auth Placeholder" ("Authentication will be implemented here") — carried forward as an explicit marker of the same still-open gap tracked in `web.md` §3/§13, not as functionality to design around yet.
+Minimal landing page: bot name/description and quick links into Dashboard and Guilds. The SPA shell at `/` is public; data APIs (`GET /api/bot/info`, etc.) require Entra admin auth (`contracts/web_auth.md`). Unauthenticated visitors see the shell and are redirected to login when an API returns **401**; signed-in non-admins see the **403** “not authorized” page.
 
 ## 2. Route & Entry Point
 
@@ -26,7 +26,7 @@ Just the shared app shell/nav (`components.md` §1) plus a centered title/subtit
 
 | Method | Path | Request | Response | Notes |
 |---|---|---|---|---|
-| `GET` | `/api/bot/info` | — | `{name, description, id, invite_link, version}` | Not really "owned" by Home specifically — it's the shared footer/nav's data source (`components.md` §1) and happens to also populate Home's title/subtitle; documented here since Home is the simplest page and this is its only data need. **`name`/`description`/`id`/`invite_link` are now resolved:** read from the shared `status.py` document (`azure.md` §2's `bot.json`-style document), which `bot/discord_bot.md` §6.3 now confirms `Bot` actively keeps alive with periodic writes (previously just a named-but-dormant file in the file tree). **`version` remains open** — same unresolved gap `pages/webhook.md` §9 already flags (the coordinated release tag lives with `Launcher`, which never reaches Azure); not solved by this revision. |
+| `GET` | `/api/bot/info` | Bearer required | `{name, description, id, invite_link, version}` | Reads `identity` from `contracts/status_document.md`. **Web** may edit identity on Home after seed; Bot status pushes do **not** maintain identity. **`version` remains open.** Bootstrap: if blob missing, Web creates defaults on first load (or explicit seed). Actor `oid` logged on identity writes (`contracts/web_auth.md` §7). |
 
 ## 6. User Interactions & Actions
 
@@ -46,10 +46,11 @@ Fetched once on load, no polling, no live data.
 
 | Dependency | Used for | Notes |
 |---|---|---|
-| Azure Blob Storage (`status.py` document) | `name`/`description`/`id`/`invite_link` on `/api/bot/info` | **Resolved** — see §5; `bot/discord_bot.md` §6.3 |
-| Bot/`Launcher` version source | `version` on `/api/bot/info` | Still undecided — see §5; same underlying gap as `pages/webhook.md` §9 |
+| Azure Blob Storage (status document) | `name`/`description`/`id`/`invite_link` | `contracts/status_document.md` — Web owns `identity` after seed |
+| Bot/`Launcher` version source | `version` on `/api/bot/info` | Still undecided |
 
 ## 10. Open Items / Future Work
 
-- ~~Where bot identity data actually lives in this architecture is unresolved~~ — **resolved for `name`/`description`/`id`/`invite_link`**: the shared `status.py` document (§5, §9). **`version` remains unresolved** — same gap noted from `pages/webhook.md`, just the second place it surfaces.
-- Authentication remains an explicit, visible gap (`web.md` §3/§13) — carried forward, not addressed by this page beyond keeping the marker in mind for whoever eventually designs the login flow.
+- ~~Identity storage / ownership~~ — **resolved (P0.5.3):** Web seeds + edits `identity`; Bot writes only `status`.
+- **`version` remains unresolved**.
+- ~~Authentication~~ — **resolved (P0.7):** `contracts/web_auth.md`.

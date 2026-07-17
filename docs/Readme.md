@@ -62,17 +62,38 @@ docs/
 │                              # sides of a communication channel must agree on the same source
 │                              # of truth (e.g. the exact JSON shape of an ai_task message,
 │                              # the structure of a Cosmos DB suggestion document).
+│   ├── ai_task.md            # RabbitMQ ai_tasks/ai_tasks_results envelope + result schema
 │   ├── task_progress.md      # AI task phase-update contract (Mosquitto progress/ai_worker/<task_id>)
-│   ├── localization.md       # Guild locale contract: Bot UI strings + AI-content `language_locale`, sourced via `/config`
-│   └── guild_config.md       # Guild Cosmos DB document schema — Bot writes, Web reads (contracts/guild_config.md)
-│                              # — the ai_task/Environment ai_tasks message schemas are still NOT YET WRITTEN.
+│   ├── leadership_control.md # Blob-Lease-derived Bot grants, desired mode, acknowledgements, leader heartbeat
+│   ├── launcher_ipc.md       # Authenticated cross-host/container Head ↔ Launcher HTTP contract
+│   ├── drain_status.md       # Drain completion, pause_ack, update broadcast dedup, schema evolution
+│   ├── localization.md       # Guild locale contract: Bot UI strings + AI-content `language_locale`
+│   ├── guild_config.md       # Guild Cosmos DB document schema — Bot writes, Web reads
+│   ├── suggestion.md         # Suggestions Cosmos + Queue notification + atomic claim (P0.5.1)
+│   ├── telemetry.md          # Table metrics + live telemetry_live payload (P0.5.2)
+│   ├── status_document.md    # Shared Blob status JSON — section owners + seed (P0.5.3)
+│   ├── battle_archive.md     # Battle story Blob archive (P0.5.4)
+│   ├── log_archive.md        # Structured log format + Blob append archive (P0.5.6)
+│   ├── pubsub_live.md        # dashboard-live group, negotiate, always-stream, Free_F1 (P0.6)
+│   └── web_auth.md           # Entra ID Web admin auth boundary (P0.7)
 │
-└── scenarios/                 # End-to-end usage scenarios that cross multiple services
-                                # (e.g. "user runs /quick-battle", "automatic update flow").
-                                # These describe *what happens across the system*, and should
-                                # link into the relevant container docs for implementation
-                                # detail rather than duplicating it.
-                                # NOT YET WRITTEN — currently empty.
+└── scenarios/                 # End-to-end architecture acceptance cases (P0.8)
+                                # that cross multiple services. Link into contracts/
+                                # and container docs rather than inventing behavior.
+    ├── Readme.md              # Index + purpose
+    ├── 01_cold_boot_no_leader.md
+    ├── 02_follower_race_failover.md
+    ├── 03_leader_head_crash_bot_alive.md
+    ├── 04_mosquitto_partial_outage.md
+    ├── 05_rabbitmq_partial_outage.md
+    ├── 06_azure_partial_outage.md
+    ├── 07_planned_update_happy_path.md
+    ├── 08_planned_update_drain_timeout.md
+    ├── 09_planned_update_rollback.md
+    ├── 10_bot_or_ai_worker_restart_mid_task.md
+    ├── 11_quick_battle_success_abort_timeout.md
+    ├── 12_suggestion_duplicate_or_lost_queue.md
+    └── 13_web_auth_and_all_guild_broadcast.md
 ```
 
 ---
@@ -95,10 +116,20 @@ docs/
 | How a specific internal LangGraph graph is structured (nodes, state, retry loops, diagram)        | `containers/ai_worker/graphs/<name>.md` (see `graphs/template.md` for the schema)            |
 | A LangGraph node/pattern reused by more than one graph (e.g. `Validator`, `Decider`, the `refiner` loop) | `containers/ai_worker/nodes.md` — don't redefine a shared node's contract inside a single graph's own doc |
 | The prompt system: which file a node uses, the injection pattern, the legacy → target rewrite mapping | `containers/ai_worker/prompts.md` — don't re-cite exact prompt filenames inside a single graph's own doc, link here instead |
+| The exact JSON schema of the `ai_tasks`/`ai_tasks_results` RabbitMQ messages, ack/durability/idempotency semantics | `contracts/ai_task.md` |
+| How Head leadership fences Bot activation, including heartbeat/grant/demotion behavior | `contracts/leadership_control.md` |
+| How Head and host Launcher reach/authenticate each other and exchange update/health messages | `contracts/launcher_ipc.md` |
+| Suggestion tickets, Queue notifications, and atomic DM claim | `contracts/suggestion.md` |
+| Table metrics, live `telemetry_live` payload, snapshot vs history | `contracts/telemetry.md` |
+| Shared status Blob (identity / status / suggestion_catalog) | `contracts/status_document.md` |
+| Battle result Blob archive | `contracts/battle_archive.md` |
+| Operational log line format + Blob append archive | `contracts/log_archive.md` |
+| Live dashboard PubSub groups, negotiate, always-stream budget | `contracts/pubsub_live.md` |
+| Web admin authentication (Entra ID, Bearer JWT, admin group, webhook SSRF/audit) | `contracts/web_auth.md` |
 | Where a guild's language/locale setting comes from, and what it drives (Bot UI vs. AI-generated content) | `contracts/localization.md` |
 | The exact Cosmos DB document schema for a guild's config (admin-set fields + Discord-sourced metadata), and who writes which field | `contracts/guild_config.md` |
-| The exact format of a message passed between two services                                        | `contracts/` *(mostly not yet written — check first, flag explicitly if the specific contract you need is missing)* |
-| A full request flow spanning multiple services                                                   | `scenarios/` *(not yet written — flag this explicitly if a scenario is needed but missing)* |
+| The exact format of a message passed between two services | `contracts/` — check first; remaining gaps are tracked in `to_resolve.md` |
+| A full request flow spanning multiple services (architecture acceptance cases) | `scenarios/` — index in `scenarios/Readme.md` |
 
 
 ---
@@ -117,9 +148,13 @@ docs/
   - **RabbitMQ locality wording corrected.** `architecture.md` previously implied a non-leader node's `AI Worker` could "process tasks for the active cluster leader" — this was always wrong given RabbitMQ's node-local design; corrected to state the worker simply has no tasks to pull. Same fix applied to `control/ai_worker/pause`/`resume`, which is node-local, not cluster-wide (`mosquitto.md`, `architecture.md`).
   - **Gemini credentials are per-guild on the task message, not a global `AI Worker` env var.** `ai_worker.md` previously declared one required global `GEMINI_API_KEY`, which contradicted `/config`'s per-guild key/model selection ever reaching the worker. Fixed: `api_key`/`model` now travel on the `ai_tasks` message itself (`ai_worker.md` §1/§3/§4, both graph docs' §2). Plaintext-in-transit/at-rest remains an accepted, documented risk — Key Vault was evaluated and rejected as incompatible with this project's cheap, self-hosted, user-supplied-key cost model.
   - **Per-service Azure identities, not one shared Service Principal.** `azure.md` §3 now issues `Head`/`Bot`/`Web` each their own least-privilege Service Principal instead of one shared identity with system-wide access — a free correction (App Registrations cost nothing) that reduces blast radius independently of the plaintext-key decision above.
-  - **Hard-stop sequencing confirmed.** `control/bot/stop` now has a fully specified sequence: purge `ai_tasks`, terminate any in-flight `AI Worker` execution (Celery `revoke(terminate=True)`), notify each affected Discord thread, **then** disconnect the Gateway — order matters, since `Bot` can't reach Discord after disconnecting. See `rabbitmq.md` §6, `bot/discord_bot.md` §6.5.
+  - **Hard-stop sequencing confirmed.** Retained `control/bot/desired_state = stopped` (or autonomous grant/watchdog expiry) runs: purge `ai_tasks`, terminate in-flight `AI Worker` execution, notify affected Discord threads, then disconnect the Gateway. See `contracts/leadership_control.md` and `bot/discord_bot.md` §6.5.
   - **Update propagation now reaches followers.** Previously only the leader's own `Launcher` ever got the update signal. Since every `Head` is now permanently joined to the same broadcast group used for the leader heartbeat, `update_available` reaches every node, and each follower's `Head` signals its own local `Launcher` directly (no drain needed, since a follower has no active `Bot`) — see `architecture.md` Scenario 5, `head.md` §6/§12.
-  - **`Web` authentication stays explicitly deferred, not assumed either way.** No application-layer auth is planned yet (confirmed, still an open item) — but this doc no longer implies or requires any particular network exposure; that's a deployment-time decision for whoever operates the cluster.
+  - **`Web` authentication is Entra ID + admin group (P0.7).** MSAL.js PKCE in the browser; Bearer JWT on all `/api/*`; static SPA shell public. Web may be internet-reachable — Entra is the security boundary, not private-network-only. Canonical: `contracts/web_auth.md`.
+- **Implementation-readiness pass, round 2 (this revision) — three more resolved findings:**
+  - **`contracts/ai_task.md` is new** — the `ai_tasks`/`ai_tasks_results` RabbitMQ envelope was previously scattered across `rabbitmq.md`, `ai_worker.md`, and both graph docs with no single schema anyone could implement against. It now defines the envelope/result shapes, persistence, acknowledgements, correlation, timeout, and dedup behavior. Each node uses its own local queues, so the contract does not depend on strict cluster-wide single-Bot activity; remaining Celery/wire issues are tracked under P0.4.
+  - **`status.py`'s document is canonical in `contracts/status_document.md` (P0.5.3)** — nested `identity` / `status` / `suggestion_catalog`, Web seeds+edits identity/catalog, Bot owns only `status` via periodic push. ETag RMW + bootstrap defaults are specified there; `azure.md` §2 links rather than duplicating.
+  - **Suggestion notification delivery is self-healing with atomic claim (P0.5.1)** — `contracts/suggestion.md` defines `pending`→`claiming`→`sent`/`failed`, Queue schema, and sweep min-age. Queue delete only after terminal delivery state.
 - When a design decision is already documented somewhere in this tree, treat it as settled — build on top of it rather than re-litigating it, unless the project owner explicitly reopens the question.
 - **"NOT YET WRITTEN" covers two distinct states, both meaning "don't infer content from here":** a path that doesn't exist on disk at all, and a file that exists but is an intentionally empty stub (e.g. `bot/commands/template.md`'s future siblings, `web/pages/performance.md` if it's ever split further). Both are tagged the same way in the tree above — treat either as "not yet written," never as "written but short."
 - **Naming convention: docs vs. source folder names for the battle feature (revised, scoped rule).** This used to be one blanket rule ("docs always match the user-facing name"); it's now split by location, since a single graph doc lives in a folder whose *only* neighbors are other graphs, while a command doc lives in a folder whose *only* neighbors are other commands:
@@ -131,6 +166,8 @@ docs/
 - **`bot/visuals.md` §1 now holds two confirmed, project-wide architecture decisions that ripple elsewhere:** Components V2 (`discord.py`'s `ui.LayoutView`/`Container`) is the default building block for new Bot UI, which is *why* `architecture.md`'s Technology Stack table now pins `discord.py ≥ 2.6` instead of `≥ 2.3`; and reusable UI is a custom internal layer under `bot/modules/UI/`, deliberately not a third-party framework dependency (two candidates — `pycascadeui`/CascadeUI and `dpy-layout-builder` — were evaluated and rejected, reasons recorded there, not repeated here). Don't relitigate either decision inside a command doc; `commands/*.md` §4 should just state which model a given piece uses. `visuals.md`'s design system (§2) and shared component catalog (§3), by contrast, are explicitly *not* confirmed yet — still proposals/candidates, per that file's own status note.
 - **The same "define once, link elsewhere" convention now also applies to `AI_WORKER_LLM_MAX_RETRIES`, in `containers/ai_worker/ai_worker.md` § 3** — the graph-agnostic LLM retry budget shared by every LangGraph node across `environment` and `battle`. Graph-*specific* tunables (`ENVIRONMENT_MAX_ENHANCER_RETRIES`, `BATTLE_MAX_MODIFIER_RETRIES`, etc.) stay in their own graph docs permanently — only the graph-agnostic one lives in `ai_worker.md`.
 - **All three `bot/commands/*.md` docs are now drafted** (`quick-battle.md`, `config.md`, `suggest.md`) — `bot/visuals.md` §3's shared component catalog was updated to match: most rows now point at a real, drafted consumer instead of a stub, and the `WizardView` row was corrected (renamed `SuggestionView`) after drafting `suggest.md` revealed it described a sequential multi-step flow that command doesn't actually implement — it's really one view with simultaneous selects plus a single modal-trigger button. `config.md` also introduces one genuinely new component, `ModelSelect` (a live-populated Select sourced from Google's own model-listing API, replacing legacy's free-text Model field), not present anywhere in `visuals.md`'s pre-existing candidate inventory.
-- **`/suggest`'s type/category list moved off a hardcoded Python list onto `azure.md`'s `status.py` document** (project owner, `bot/commands/suggest.md` §6/§9) — the same `bot.json`-style shared document `status.py` already owns is now also the single source of truth for suggestion types/categories, read by both `Bot` (this command) and `Web` (`web/pages/suggestions.md`, updated to reference this). **Deliberately not resolved further:** exact read/write ownership of that document, and `status.py`'s own missing mention in `architecture.md`/`azure.md`'s file structure, are left as open items on purpose (project owner) — don't try to resolve `status.py`'s broader design gap while reading `suggest.md`, it's flagged, not fixed, in this pass.
-- **`bot/discord_bot.md` is now drafted, closing out the `bot/` container.** New decisions from this pass, all confirmed (project owner) unless noted: guild config now lives in its own cross-service contract, `contracts/guild_config.md` (Cosmos DB schema, Bot writes, Web reads); the guild-metadata sync mechanism is `on_guild_join`+`on_guild_update`+a periodic reconciliation sweep; `api_key` is stored plaintext in v1 (security follow-up flagged, not a regression from legacy); `Bot`'s heartbeat now carries `{latency_ms, guild_count}` and that same snapshot is pushed into `status.py` so `Web` can read it without Mosquitto access; `/suggest`'s response-notification DMs the original suggester (not an "Admin Channel" — corrected `architecture.md` Scenario 3 to match); and drain behavior is a single global flag with a **per-command opt-in** (`ProcessCommand(..., blocked_during_drain=bool)`), with `/quick-battle` as the one opted-in command. **One correction proposed but not yet explicitly signed off** (flagged distinctly in `discord_bot.md` §13, unlike everything else in that list): splitting the previously-overloaded `control/bot/drain` into two actions, `drain` (soft gate) and `stop` (hard disconnect, for `Head`'s loss-of-internet case) — applied across `discord_bot.md`, `head.md`, `mosquitto.md`, and `architecture.md` in this same pass, but still needs review. The task-progress status bar the project owner asked about is split: plumbing in `discord_bot.md` §6.3, concrete checklist rendering (5 fixed phase lines, ✅/🔄/⬜ icons, `Progress: X/5`, `Duration`) in `bot/visuals.md` §3.1.
+- **`/suggest`'s type/category list lives on `contracts/status_document.md`'s `suggestion_catalog`** as `list[{value, label}]` — Web seeds (legacy 5 types / 8 categories with labels) and may edit; Bot and Web both read. Ticket schema (UUID `id`, `SUG-` `ticket_uid`, conversation thread, submitter/locale snapshots): `contracts/suggestion.md`.
+- **`bot/discord_bot.md` is now drafted, closing out the `bot/` container.** New decisions from this pass include guild config in `contracts/guild_config.md`; guild reconciliation; Bot status heartbeat/cloud snapshot; suggestion-response DM behavior; and per-command drain gating. Leadership control is now superseded and canonicalized by `contracts/leadership_control.md`: retained safe mode (`inactive`/`draining`/`stopped`) plus non-retained short-lived activation grants. The task-progress status bar is split between plumbing in `discord_bot.md` §6.3 and rendering in `bot/visuals.md` §3.1.
+- **End-to-end scenarios (P0.8) live under `docs/scenarios/`** — architecture acceptance cases with preconditions, ordered steps, durable writes, timeouts, user-visible results, and invariants. See `scenarios/Readme.md`.
+- **Implementation sequencing lives in `to_resolve.md` → “Suggested implementation sequence.”** It separates documentation-decision prerequisites from the dependency-ordered code phases and explicitly splits `Head`, `Launcher`, `AI Worker`, `Bot`, `/quick-battle`, and `Web` into smaller implementation slices.
 

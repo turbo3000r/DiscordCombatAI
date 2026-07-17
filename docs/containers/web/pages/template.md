@@ -48,7 +48,7 @@ How this page stays up to date: polling interval, live push via Web PubSub, or m
 |---|---|---|
 | | | |
 
-What the user actually sees when a data source (§4) is unreachable or an action (§6) fails. If a failure mode is a known gap inherited from `web.md` (e.g. "no auth" or "Queue Storage failure isn't surfaced distinctly") rather than something newly discovered here, link back to `web.md` §9 instead of re-describing it.
+What the user actually sees when a data source (§4) is unreachable or an action (§6) fails. If a failure mode is a known gap inherited from `web.md` (e.g. "Queue Storage failure isn't surfaced distinctly") rather than something newly discovered here, link back to `web.md` §9 instead of re-describing it. Auth failures (**401**/**403**) follow `contracts/web_auth.md` — do not invent a page-local auth story.
 
 ## 9. Dependencies
 

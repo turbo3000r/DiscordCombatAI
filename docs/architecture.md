@@ -18,7 +18,7 @@
 | **Worker orchestrator**         | **Celery** (background task management)                                      |
 | **Message broker**              | **RabbitMQ** (local task queue for AI generation)                            |
 | **Web server**                  | FastAPI + Uvicorn (independent external container)                           |
-| **Leader Mutual Exclusion**     | **Azure Blob Lease** (the actual split-brain-preventing mutex — cheap, low-frequency renewal) |
+| **Head Leadership Authority**   | **Azure Blob Lease** (claim/renew mutex; Bot fencing is separately time-bounded and best-effort) |
 | **Live Telemetry & Cluster Broadcast** | **Azure Web PubSub** (cheap real-time "who's alive" signal + update broadcast; does **not** itself provide exclusivity — see High-Level Architecture note) |
 | **Cloud Event Queue**           | **Azure Queue Storage** (async messaging from Web to Bot)                    |
 | **Persistence (NoSQL & Blobs)** | **Azure Cosmos DB** (NoSQL), **Azure Blob Storage**, **Azure Table Storage** |
@@ -39,7 +39,7 @@
 ┌─────────────────────────────────────────────────────────────────┐
 │                          AZURE CLOUD                            │
 │                                                                 │
-│  [Azure Web PubSub] <--- Leader Election & Live Metrics Stream  │
+│  [Azure Web PubSub] <--- Leader Heartbeat & Live Metrics Stream │
 │  [Azure Queue Storage] <--- Suggestions (Web -> Bot messaging)  │
 │  [Azure Cosmos DB] <--- Guild Configs, Permanent Suggestions    │
 │  [Azure Table] <--- System Metrics                              │
@@ -75,9 +75,11 @@
 
 ```
 
-*Note: Multiple "LOCAL NODE" setups can run simultaneously on different physical PCs. Update note: The `Launcher` process is not pictured above as it lives outside the Docker Compose boundary, on the host OS itself. It communicates with `Head` via local IPC only — it has no network access to Azure or RabbitMQ.*
+*Note: Multiple "LOCAL NODE" setups can run simultaneously on different physical PCs. `Launcher` lives outside Docker on the host. Head → Launcher uses authenticated host-reachable TCP; Launcher → Head uses a host-loopback-published container port. Exact Linux/Windows mapping, firewall, HMAC, and schemas are in `contracts/launcher_ipc.md`. Launcher has no Azure or RabbitMQ access.*
 
-*Leader election, corrected: Azure Web PubSub group membership is **additive, not exclusive** — the service allows any number of clients to join the same group, so group presence alone cannot guarantee only one `Bot` is ever active (confirmed against Microsoft's own Web PubSub documentation, which states plainly that "a group can contain multiple clients"). The actual mutual-exclusion primitive is an **Azure Blob Lease** on a single fixed blob (`head.md` §3/§6). Web PubSub keeps its original job — a cheap, real-time, push-based broadcast that every `Head` (leader or follower) stays joined to for its entire lifetime — but it now carries a leader heartbeat message rather than being the source of truth for who holds leadership. Sequence: a follower that stops receiving the leader's heartbeat over PubSub attempts to acquire the Blob lease (one HTTP call, `409` if it loses the race); only the winner activates its local `Bot` and starts publishing the heartbeat. The leader renews the lease on the same cadence it already uses for the PubSub heartbeat (`HEAD_ELECTION_HEARTBEAT_SEC`), so this closes the split-brain window without adding request volume in steady state — Blob is only touched during an actual claim attempt, not on every check.*
+*Leader election and Bot fencing: Web PubSub group membership is additive and its canonical `leader_heartbeat` is informational only. A fixed Azure Blob Lease is Head's leadership authority. The lease winner generates an opaque leadership-term UUID and may issue its local Bot short-lived, non-retained activation grants. Retained desired mode can contain only `inactive`, `draining`, or `stopped`; Head publishes `inactive` before election, and Bot defaults inactive whenever control/grant is absent. Grant and heartbeat timers use elapsed local monotonic time. The full schemas and failure/demotion protocol are in `contracts/leadership_control.md`. These safeguards reduce overlap but do **not** prove strict at-most-one Gateway-connected Bot in every partition/delay; bounded dual-active overlap is an accepted availability/safety limitation.*
+
+*Mixed-version compatibility (P0.3 + P0.5.5, resolved): every durable/shared contract carries `schema_version` (see `contracts/drain_status.md` §5, extended to suggestion/telemetry/status/battle archive/logs/queue/pubsub). Receivers reject unknown versions. `Web` tolerates one prior and one following additive schema for documents it reads. No cluster-wide update barrier.*
 
 ---
 
@@ -88,12 +90,12 @@
 ### `Head` — The Session Coordinator (Watchdog)
 * **Role:** Handles Leader Election, node consensus, and hybrid telemetry gathering.
 * **Behavior:** Joins a single, permanent **Azure Web PubSub** cluster broadcast group on startup — every `Head`, leader or follower, stays in this one group for its entire process lifetime (cheap, push-based). Listens for the current leader's heartbeat message in that group.
-* **Active state:** If no leader heartbeat is observed within timeout, it attempts to acquire the **Azure Blob Lease** that is the actual mutual-exclusion mechanism (see High-Level Architecture note above). Only the node that wins the lease claims leadership, signals the local `Bot` container to "Wake up and connect" (via Mosquitto, §"Service coordination" below — not a raw HTTP/socket call), and begins publishing its own heartbeat into the broadcast group. It also begins caching system logs and hardware metrics in memory.
-* **Telemetry routing:** Every **60 seconds**, it pushes a batch of stored metrics to **Azure Table Storage** and appends logs to **Azure Blob Storage**. If a Web Client connects, it additionally streams live batches of metrics/logs via **Azure Web PubSub** every **10 seconds**.
+* **Active state:** If no heartbeat is observed within timeout, it attempts to acquire the Blob Lease. The winner creates a leadership term and issues renewable short-lived activation grants over Mosquitto; a heartbeat or retained message alone cannot activate Bot.
+* **Telemetry routing:** Every **60 seconds**, the **leader** `Head` pushes a batch of metrics to **Azure Table Storage** and appends logs to **Azure Blob Storage** (`contracts/telemetry.md`, `contracts/log_archive.md`). Followers do not upload dashboard telemetry. While leader, it **always** streams live batches to the `dashboard-live` Web PubSub group every **10 seconds** — no listener detection (`contracts/pubsub_live.md`).
 * **Passive state:** If a leader heartbeat is already present in the broadcast group, it enters standby mode. If the leader's heartbeat stops arriving (e.g., PC crashes), every follower observes the gap and races for the Blob lease; only the winner takes over and activates its local `Bot`.
-* **Not critical crash:** If leader loses connection to internet (Azure), it should immediately stop its local `Bot`. And try to reconnect using exponential time delay for retries, up to 30 minutes. After that it is considered as new follower.
+* **Coordination failures:** PubSub-only, Blob-renew-only, and Mosquitto failures soft-stop Bot (immediate bounded drain, reject new AI work, then hard-stop at timeout unless safely restored). Simultaneous loss of both Azure coordination dependencies, known non-leadership, Head watchdog/grant expiry, or Head crash causes hard-stop.
 * **Log aggregation:** Subscribes to `logs/#` on `Mosquitto`. Parses incoming structured log lines, buffers them in memory, and flushes to **Azure Blob Storage** alongside the existing 60-second telemetry batch.
-* **Service coordination:** Publishes control signals to `control/<service>/<action>` topics to activate, pause, or gracefully drain individual services, replacing the need for internal HTTP endpoints between containers. HTTP is reserved exclusively for the `Head` ↔ `Launcher` channel, which must remain independent of the Compose network's lifecycle.
+* **Service coordination:** Uses retained desired modes plus non-retained Bot grants (`contracts/leadership_control.md`) and retained AI Worker desired state. HTTP is reserved for authenticated Head ↔ Launcher IPC.
 
 ### `Bot` — The Discord Interface
 * **Role:** The only component that connects to the Discord Gateway.
@@ -101,17 +103,17 @@
 * **Inbound data:** Listens to Discord slash commands. Periodically polls **Azure Queue Storage** for new web-submitted `Suggestions`.
 * **Outbound data:** Instead of waiting for AI, it immediately pushes the battle generation prompt to the local **RabbitMQ** queue and tells the user "Battle is generating...". Reads the finished story from RabbitMQ and posts it to Discord.
 * **New Suggestions**: If new suggestion is added via bot command, adds it to `Azure Cosmos DB`
-* **On `Head` termination:** Waits up to `BOT_SHUTDOWN_GRACE_SEC` for all `ai_tasks_results` to be completed and tries to send back at least error response, then is destroyed — see `docs/containers/bot/discord_bot.md` §6.5 for the bounded value and the distinct signal that triggers this (`control/bot/stop`, not `drain`).
-* **Activation signal:** Instead of a direct internal HTTP/socket call from `Head`, `Bot` subscribes to `control/bot/activate`, `control/bot/drain`, and `control/bot/stop` on `Mosquitto` and reacts accordingly — connecting to Discord on activation; ceasing new `/quick-battle` acceptance only (soft gate, other commands unaffected) on `drain`; disconnecting from Discord entirely on `stop`. **Three actions, not two** — corrected in this revision, see `docs/containers/bot/discord_bot.md` §6.5 for why `drain` and `stop` needed to be split.
+* **On `Head` crash/disappearance:** The activation grant/watchdog expires and Bot autonomously runs the hard-stop sequence; no final Head publish is required (`contracts/leadership_control.md` §5).
+* **Activation signal:** `Bot` subscribes to retained `control/bot/desired_state` (safe modes only) and non-retained `control/bot/activation_grant`. A current grant is mandatory to connect; exact behavior is in `contracts/leadership_control.md`.
 * **Full container-level design** (env vars, guild config schema, task-progress plumbing, background services) now lives in `docs/containers/bot/discord_bot.md` — not duplicated here.
 
 ### `RabbitMQ` — Local Message Broker
 * **Role:** Facilitates asynchronous communication strictly between the `Bot` and the `AI Worker(s)`.
-* **Behavior:** Holds queues for `ai_tasks` and `ai_tasks_results`. Ensures no tasks are lost if an AI Worker crashes mid-generation.
-* **Response:** Each message from `ai_tasks` should eventually get its response in `ai_tasks_results` using RabbitMQ's `reply_to` functionality
+* **Behavior:** Holds queues for `ai_tasks` and `ai_tasks_results`, both dead-letter-configured (`contracts/ai_task.md` §9). Manual ack after result-publish ensures no tasks are lost if an AI Worker crashes mid-generation. **Delivery guarantee — corrected, P0.4:** at-least-once delivery, effectively-once outcome, not "exactly-once" — manual ack bounds duplicate generation to the crash window, and `contracts/ai_task.md` §6's discard-by-unknown-`task_id` logic makes the user-visible outcome effectively-once. **Wire protocol — resolved, P0.4:** `ai_tasks` is a real Celery queue (`Bot` dispatches via `apply_async`, `AI Worker` is a real Celery worker); `ai_tasks_results` stays a plain, manually-published queue — Celery's own result backend is never used. `task_id` = the Celery task id = the AMQP `correlation_id` = the domain idempotency key.
+* **Response:** Each message dispatched to `ai_tasks` (via Celery `apply_async`, `contracts/ai_task.md` §2) should eventually get its response manually published to `ai_tasks_results`, correlated by `correlation_id = task_id` — `reply_to` is not used.
 * **Local**: `RabbitMQ` is local and local only — there is no cross-node routing of any kind. A non-leader node's `AI Worker` is not processing work "for" the cluster leader; its local `ai_tasks` queue simply never receives anything, because only the active leader's local `Bot` ever publishes into its own local queue.
-* **Soft stop (`drain`):** stops accepting *new* `/quick-battle` requests only; anything already in `ai_tasks`/in-flight is left to finish normally. Used for planned updates.
-* **Hard stop (`stop`), formerly "`Head` light crash":** In case of internet failure, and `Bot` being terminated, all messages in `ai_tasks`  are purged, and any `AI Worker` execution already claimed and running is actively terminated (Celery `revoke(terminate=True)`, not left to finish) — a new synthetic error result message is added to `ai_tasks_results` for each purged/terminated task. `Bot` delivers that error back to each task's originating Discord thread before disconnecting from the Gateway — see `bot/discord_bot.md` §6.5 for the exact sequencing.
+* **Soft stop (`drain`):** stops accepting *new* `/quick-battle` requests only; anything already in `ai_tasks`/in-flight is left to finish normally, bounded by `contracts/drain_status.md`'s drain protocol (P0.3). Used for planned updates.
+* **Hard stop (`stop`), formerly "`Head` light crash":** In case of internet failure, `Bot` termination, or a drain-timeout escalation (`contracts/drain_status.md` §2), all messages in `ai_tasks`  are purged, and any `AI Worker` execution already claimed and running is actively terminated (`Bot`-issued Celery `revoke(task_id, terminate=True)`, not left to finish, `Bot` is the resolved actor, `contracts/ai_task.md` §8) — an `AiTaskResultFailed` message (`contracts/ai_task.md` §4, `node: "worker_terminated"`) is added to `ai_tasks_results` for each purged/terminated task. `Bot` delivers that error back to each task's originating Discord thread before disconnecting from the Gateway — see `bot/discord_bot.md` §6.5 for the exact sequencing.
 
 ### `Mosquitto` — Internal Pub/Sub Broker
 
@@ -124,8 +126,12 @@
 | `logs/info/<service>` | All services | `Head` | Informational log records |
 | `logs/warning/<service>` | All services | `Head` | Warning-level log records |
 | `logs/errors/<service>` | All services | `Head` | Error/critical log records |
-| `control/bot/<action>` | `Head` | `Bot` | `activate` \| `drain` (soft — stop new `/quick-battle` acceptance only) \| `stop` (hard — full immediate Gateway disconnect). See `mosquitto.md` §4 and `docs/containers/bot/discord_bot.md` §6.5 for the corrected three-action split. |
-| `control/ai_worker/<action>` | `Head` | `AI Worker` | Pause/resume task consumption |
+| `control/bot/desired_state` | `Head` | `Bot` | QoS 1 retained safe mode: `inactive \| draining \| stopped`; never active. |
+| `control/bot/activation_grant` | `Head` | `Bot` | QoS 1 non-retained short-lived `active \| draining` authorization. |
+| `status/bot/control_ack` | `Bot` | `Head` | Best-effort applied-state acknowledgement for bounded demotion/update waiting. |
+| `control/ai_worker/desired_state` | `Head` | `AI Worker` | QoS 1, retained. `{"state": "running" \| "paused"}` — pause/resume task consumption, node-local. |
+| `status/ai_worker/pause_ack` | `AI Worker` | `Head` (diagnostic only) | QoS 1, not retained. **New this revision (P0.3).** Published once `AI Worker` goes idle after a pause request — informational only, does not gate drain completion. See `contracts/drain_status.md` §3. |
+| `status/bot/drain_progress` | `Bot` | `Head` | QoS 1, not retained. **New this revision (P0.3).** `{in_flight_workflows, ...}` published every `BOT_DRAIN_PROGRESS_INTERVAL_SEC` while draining — gives `Head` real drain-completion visibility instead of inferring it from empty RabbitMQ queues. Canonical: `contracts/drain_status.md` §1. |
 | `status/<service>/heartbeat` | All services | `Head` | Liveness signal, used for internal health tracking |
 | `progress/ai_worker/<task_id>` | `AI Worker` | `Bot` | Best-effort task-phase updates (`queued`/`launching`/`composing`/`refining`/`finishing`) for a running `ai_tasks` job, so `Bot` can render a live status bar in Discord. Deliberately **not** on `RabbitMQ` — a dropped tick is harmless (the next tick or the final `ai_tasks_results` message still lands), which is exactly the tolerance this broker is for. See `docs/contracts/task_progress.md` for the full contract. |
 
@@ -136,20 +142,20 @@
 * **Behavior:** A **Celery** worker running in an infinite loop. It pulls a task from **RabbitMQ**, initializes a **Langgraph** state machine, interacts with the Gemini API to resolve the battle logic, and pushes the final JSON/text back to RabbitMQ.
 * **Credentials are per-guild, not global:** `AI Worker` holds no Gemini credential of its own. Each `ai_tasks` message carries the requesting guild's own `api_key` and `model` (sourced from `contracts/guild_config.md`, staged via `/config`) — confirmed gap closed in this revision, see `ai_worker.md` §3/§4. **Accepted risk, not solved here:** the key travels plaintext on the message and is held plaintext in Cosmos DB (`contracts/guild_config.md` §7) — a per-user-supplied-API-key, cheap/self-hosted deployment model makes an Azure Key Vault indirection impractical for v1; this is a deliberate, documented trade-off to revisit if the project's cost model ever changes, not an oversight.
 * **Scaling:** Can be scaled to multiple instances per PC, and to additional PCs (each running its own local `RabbitMQ` + `AI Worker` pair). Always running, even if the local `Head` is NOT the leader — but a non-leader node's `AI Worker` simply idles, since its local `ai_tasks` queue never receives anything (RabbitMQ is strictly node-local, no cross-node task routing — see the corrected `RabbitMQ` note above).
-* **Coordination signal:** Subscribes to `control/ai_worker/pause` and `control/ai_worker/resume` on `Mosquitto`, allowing the **local** `Head` to halt task consumption on its own node during an update or maintenance window, without touching RabbitMQ queue state directly. This is node-local, not cluster-wide — each node's `Head` only ever controls its own local `AI Worker`.
+* **Coordination signal:** Subscribes to `control/ai_worker/desired_state` (retained `{"state": "running" | "paused"}`) on `Mosquitto`, allowing the **local** `Head` to halt task consumption on its own node during an update or maintenance window, without touching RabbitMQ queue state directly. On `paused`, `AI Worker` finishes any task already claimed, stops claiming new ones, then publishes `status/ai_worker/pause_ack` once idle — informational only, does not gate `Head`'s drain-complete decision (`contracts/drain_status.md` §3, P0.3). This is node-local, not cluster-wide — each node's `Head` only ever controls its own local `AI Worker`.
 
 ### `Web` — The Independent Dashboard (Remote, not included at docker-compose but is container like)
 
 
 * **Role:** FastAPI application serving the dashboard and user suggestions UI.
 * **Behavior:** Completely decoupled from the Bot's local network. It has no direct connection to RabbitMQ or the Bot container.
-* **Integration:** When an admin submits a new message to a suggestion, the `Web` container writes it to **Azure Cosmos DB** and sends a notification payload directly into **Azure Queue Storage**. For live dashboard stats, it listens to Web PubSub.
-* **Authentication — explicitly deferred, not assumed either way:** `Web` has no application-layer authentication/authorization today (`web.md` §3/§9). This is an acknowledged open item, not a silent gap. Network-level exposure (public internet, LAN-only, VPN-only, etc.) is a **deployment-time decision left to whoever operates the cluster** — this doc deliberately does not hardcode an assumption that `Web` either is or isn't publicly reachable. Treat any admin action documented under `pages/suggestions.md`/`pages/webhook.md` as unauthenticated until this is revisited.
+* **Integration:** When an admin submits a response to a suggestion, the `Web` container writes it to **Azure Cosmos DB** and sends a notification payload into **Azure Queue Storage** (`contracts/suggestion.md`). For live dashboard stats, the **browser** connects to Web PubSub (`dashboard-live`); `Web` only negotiates the token (`contracts/pubsub_live.md`) — it does not listen to PubSub itself.
+* **Authentication (P0.7 resolved):** Microsoft Entra ID is the Web admin security boundary — single-tenant SPA (MSAL.js, Authorization Code + PKCE), Bearer JWT on all `/api/*`, authorization via Entra security group (`WEB_ENTRA_ADMIN_GROUP_ID`). Static SPA shell remains public; unauthenticated API → **401**, authenticated non-admin → **403**. Web **may** be internet-reachable; VPN/private network is optional hardening, not the v1 minimum. Canonical: `contracts/web_auth.md`.
 ### `Launcher` — The Update Orchestrator (Host Process, NOT in Docker Compose)
 
 * **Role:** Lives on the host machine as a system service (systemd/Windows Service). Survives container restarts and is the only component capable of pulling new images and recreating containers.
-* **Behavior:** Listens for an update signal from the local `Head` over a local IPC channel (Unix socket / named pipe / loopback HTTP). On signal, it:
-    1. Waits for confirmation that `Head` has relinquished leadership and `Bot` has gracefully drained active tasks.
+* **Behavior:** Listens on host-reachable authenticated HTTP for an idempotent update request from local `Head`. On signal, it:
+    1. Trusts Head's request only after HMAC/replay validation; Head performs Bot stop/ack and lease-release ordering before calling.
     2. Runs `docker compose pull` for the target version tag.
     3. Runs `docker compose up -d --force-recreate`.
     4. Monitors the new `Head` container's health check for a configurable verification window.
@@ -159,7 +165,7 @@
 
 
 *Note: > **Design boundary:** `RabbitMQ` and `Mosquitto` serve fundamentally different communication patterns and must not be merged or substituted for one another:
-> - `RabbitMQ` — exactly-once task delegation requiring acknowledgment, retry, and single-consumer guarantees (AI generation tasks).
+> - `RabbitMQ` — at-least-once, effectively-once task delegation requiring acknowledgment, retry, and single-consumer guarantees (AI generation tasks). **Corrected this revision (P0.4):** previously said "exactly-once" — RabbitMQ's manual-ack/redelivery model is at-least-once at the transport level; `contracts/ai_task.md` §2/§6 defines how the pipeline still produces an effectively-once user-visible outcome.
 > - `Mosquitto` — best-effort broadcast for logs, metrics signals, and coordination commands where occasional message loss is acceptable and multiple subscribers may exist.* 
 
 ---
@@ -174,10 +180,11 @@
 | Cross-System Events          | `Azure Queue Storage`               | JSON (Web -> Bot messaging)     | Check for new messages every 5 minutes          |
 | Guild Configurations         | `Azure Cosmos DB`                   | NoSQL Documents                 | On-demand                                       |
 | User Suggestions             | `Azure Cosmos DB`                   | NoSQL Documents                 | On-demand                                       |
-| Battle Results               | `Azure Blob Storage`                | `.txt` files with JSON metadata | On-demand                                       |
-| Performance Metrics          | `Azure Table Storage`               | Structured NoSQL rows           | Batched (1 minute)                              |
-| Active Logs                  | `Azure Blob Storage`                | Append Blob (Plain text)        | Batched (1 minute)                              |
-| Live Telemetry Stream        | `Azure Web PubSub`                  | Real-time WebSocket payloads    | Batched (10 seconds) *Only if active listeners* |
+| Performance Metrics          | `Azure Table Storage`               | `NodeMetrics` rows (`contracts/telemetry.md`) | Batched 60s, **leader only**                    |
+| Active Logs                  | `Azure Blob Storage`                | Append blob (`contracts/log_archive.md`) | Batched 60s, **leader only**                    |
+| Live Telemetry Stream        | `Azure Web PubSub`                  | `telemetry_live` to `dashboard-live` | Every 10s **while leader** (always-stream)      |
+| Status Document              | `Azure Blob Storage`                | Nested JSON (`contracts/status_document.md`) | Bot pushes `status`; Web owns identity/catalog |
+| Battle Results               | `Azure Blob Storage`                | `.txt` + `.meta.json` (`contracts/battle_archive.md`) | On-demand after Discord-ready |
 | Local AI Task Queue          | `RabbitMQ` (Docker Vol.)            | AMQP format                     | On-demand                                       |
 | Internal Service Logs        | `Mosquitto` (MQTT, in-transit only) | Plain structured text           | Real-time, batched to Blob every 60s by `Head`  |
 | Service Coordination Signals | `Mosquitto` (MQTT, in-transit only) | Plain text / JSON payload       | On-demand (activation, shutdown, pause/resume)  |
@@ -191,11 +198,12 @@
 
 ### Scenario 1: System Boot & Failover
 1. PC turns on → `docker-compose up` starts `Head`, `Bot`, `RabbitMQ`, `Mosquitto`, `AI Worker`.
-2. `Bot` waits. `AI Worker` connects to `RabbitMQ` and waits.
-3. `Head` connects to `Azure Web PubSub` and joins the permanent cluster broadcast group.
-4. If no leader heartbeat is observed in that group within timeout → `Head` attempts to acquire the Blob Lease. If it wins → becomes Leader → publishes its heartbeat into the broadcast group → signals `Bot` to activate (`control/bot/activate` on Mosquitto).
-5. `Bot` connects to Discord WebSocket.
-6. (Failover case) If the leader's heartbeat stops arriving, every follower races for the Blob Lease; only the winner proceeds through step 4/5 — losers observe the lease is held and fall back to standby.
+2. `Bot` starts inactive. No control connection/current grant means no Gateway connection.
+3. `Head` connects to Mosquitto and publishes retained `inactive` before election; inability to do so prevents activation.
+4. `Head` joins Web PubSub. If no leader heartbeat arrives within timeout, it attempts to acquire the Blob Lease.
+5. On successful acquisition, `Head` creates a leadership-term UUID and sends a fresh non-retained activation grant. Only then does `Bot` connect.
+6. The leader renews lease, heartbeat, and grants. Followers use heartbeat receipt time only to decide when to attempt the lease.
+7. If Head crashes, Bot hard-stops autonomously on grant/watchdog expiry. A follower can activate only after acquiring the lease and issuing its own fresh local grant.
 
 ### Scenario 2: Generating a Battle
 1. User types `/quick-battle` in Discord.
@@ -203,7 +211,7 @@
 3. `Bot` instantly returns a "Please wait" message to Discord (no blocking).
 4. `AI Worker` picks up the task, processes it via `Langgraph` & Gemini API.
 5. `AI Worker` pushes the result to `RabbitMQ` (`ai_tasks_results` queue).
-6. `Bot` consumes the result, uploads the log to `Azure Blob Storage`, and sends the final message to the Discord channel.
+6. `Bot` consumes the result, archives the story to **Azure Blob Storage** (`contracts/battle_archive.md`, best-effort), and sends the final message to the Discord channel.
 
 ### Scenario 3: Suggestion Submission
 1. User submits a form using command `/suggest`.
@@ -215,23 +223,23 @@
 7. The active `Bot` (polling the queue) receives the event and sends a **DM to the original suggester** (via the `contact.user_id` field already recorded on the suggestion, `docs/containers/bot/commands/suggest.md` §9). **Corrected in this revision** — this line previously said "sends an Embed to the Discord Admin Channel," which conflicted with `web/pages/suggestions.md` and the suggestion payload's own `contact.method: "dm"` field; see `docs/containers/bot/discord_bot.md` §6.6 for the confirmed resolution.
 
 ### Scenario 4: Telemetry & Log Monitoring (Hybrid Cost-Saving Mode)
-1. The active `Head` continually samples CPU/RAM usage and stores logs temporarily in local memory.
-2. Every **60 seconds**, `Head` performs a single bulk write of the accumulated metrics to **Azure Table Storage** and appends the logs to **Azure Blob Storage** for cold archiving.
-3. A user opens the Web Dashboard. The browser fetches the last 24h of history via a static API call.
-4. The Web Dashboard connects to **Azure Web PubSub**.
-5. The `Head` detects an active listener and begins intercepting the telemetry, pushing a live payload through Web PubSub every **10 seconds**, but keep sending data to **Azure Blob Storage** and **Azure Table Storage** every 60 seconds.
-6. User closes the dashboard. `Head` detects the disconnect, stops the 10-second stream, and falls back exclusively to the 60-second database batching.
+1. The **leader** `Head` continually samples CPU/RAM and ingests Mosquitto logs; it also samples Bot `status/bot/heartbeat` for latency/guild_count (`contracts/telemetry.md`).
+2. Every **60 seconds**, leader `Head` bulk-writes metrics to **Azure Table Storage** and appends logs to **Azure Blob Storage**. Followers do not upload.
+3. A user opens the Web Dashboard. The browser fetches history via REST (`/api/metrics/history`) and current “now” latency/guilds from `status.py`.
+4. The browser calls `GET /api/pubsub/negotiate` on `Web`, then connects **directly** to **Azure Web PubSub** group `dashboard-live` (join/leave only).
+5. Leader `Head` **always** publishes `telemetry_live` every **10 seconds** while leader — no subscribe-event / listener detection. Caps keep Free_F1 budget safe (`contracts/pubsub_live.md`).
+6. Closing the browser does not change Head’s stream behavior; empty-group delivery costs ≈0 outbound messages.
 ### Scenario 5: Automatic Update Flow
 
 **Corrected in this revision:** the previous version of this scenario had only the leader's own `Launcher` ever receiving the update signal, with no mechanism for follower nodes to learn about it at all — they would stay on the old version indefinitely and could later win leader election while incompatible. The fix: every `Head` (leader and follower) is already permanently joined to the same cluster broadcast group used for the leader heartbeat (see High-Level Architecture note), so the `update_available` broadcast reaches everyone over that same cheap channel, and **each node's `Head` acts on it independently**, not just the leader's.
 
 1. The active leader `Head` periodically polls the GitHub Releases API for a newer published version.
 2. On detecting a newer version, the leader `Head` publishes an `update_available` event (`{"version": "vX.Y.Z"}`) into the cluster broadcast group — every `Head` in the cluster, leader or follower, receives it immediately (they're all already members, per the corrected election design).
-3. **Leader's own path:** the current leader `Head` begins a graceful drain — signals `Bot` to stop accepting new `/quick-battle` requests (`control/bot/drain`) and waits for in-flight `ai_tasks` to resolve (or timeout). Once drained, it relinquishes the Blob Lease and signals its local `Launcher` via local IPC: "update to vX.Y.Z".
+3. **Leader's own path:** publish retained `draining`, issue only bounded draining grants, and wait for drain completion/timeout — resolved in `contracts/drain_status.md` (P0.3): `Head` watches `Bot`'s `status/bot/drain_progress` (`in_flight_workflows`) rather than inferring completion from empty RabbitMQ queues, and transitions to `UPDATING` when that count reaches zero or `HEAD_DRAIN_TIMEOUT_SEC` elapses, whichever comes first — timeout escalates to the hard-stop sequence rather than silently abandoning work. Then command the hard-stop sequence, wait boundedly for `gateway_connected: false`, release the lease, and send authenticated idempotent `POST /v1/update` to `http://host.docker.internal:${LAUNCHER_IPC_PORT}`. Missing Bot acknowledgement is logged; update may continue after timeout under the accepted overlap limitation.
 4. **Follower path (new in this revision):** a follower `Head` has no active `Bot` to drain, so on receiving the broadcast it signals its own local `Launcher` directly, without any drain step.
 5. Every node's `Launcher` (leader and followers alike) independently pulls the new image tags from GHCR and recreates its local containers.
 6. New `Head` instances re-enter leader election (rejoin the broadcast group, listen for a heartbeat, race for the Blob Lease if none is heard) as usual.
-7. Each node's own `Launcher` monitors its own `Head` container's health check for a verification window (e.g. 5 minutes).
+7. Each Launcher polls authenticated `GET http://127.0.0.1:${HEAD_IPC_HOST_PORT}/v1/health` for liveness during its verification window.
 8. If the health check fails repeatedly within the window, that node's `Launcher` automatically rolls back to the previous image tag and recreates containers again — independently per node.
 9. An administrator may bypass steps 1–2 entirely via `launcher update --version vX.Y.Z` for manual control, on any node individually.
 
@@ -259,7 +267,7 @@ discord-combat-ai/
 │   │   └── status.go             # `launcher status`
 │   ├── internal/
 │   │   ├── ipc/
-│   │   │   └── listener.go       # Local socket/pipe listener for Head signals
+│   │   │   └── listener.go       # Authenticated host TCP listener for Head signals
 │   │   ├── docker/
 │   │   │   ├── pull.go           # Docker Engine API: image pull
 │   │   │   └── recreate.go       # Docker Engine API: container recreate
@@ -299,7 +307,7 @@ discord-combat-ai/
 │   │   ├── entrypoint.sh
 │   │   ├── main.py              # Entry point: leader election loop
 │   │   └── modules/
-│   │       ├── election.py      # Azure Web PubSub leader election logic
+│   │       ├── election.py      # Blob Lease authority + Web PubSub heartbeat + Bot grants
 │   │       └── telemetry.py     # Metrics sampling, batching and routing
 │   │
 │   ├── bot/                     # Container: Discord Interface

@@ -4,7 +4,7 @@
 
 `Mosquitto` is the internal, best-effort MQTT pub/sub broker facilitating lightweight, fire-and-forget communication between all local containers: structured log aggregation, internal coordination signals, and service-to-service control commands (per `architecture.md`'s Container Breakdown).
 
-It operates independently from `RabbitMQ`, which remains dedicated exclusively to the AI task request/response queue. Per the explicit design boundary already stated in `architecture.md`: `Mosquitto` is for *best-effort broadcast* where occasional message loss is acceptable and multiple subscribers may exist — the inverse of RabbitMQ's exactly-once, single-consumer guarantees. See `rabbitmq.md` §1 for the same boundary from the other side.
+It operates independently from `RabbitMQ`, which remains dedicated exclusively to the AI task request/response queue. `Mosquitto` is best-effort for logs, heartbeats, and progress, but the leadership-control topics use QoS 1, retained safe mode, short-lived non-retained grants, acknowledgements, and Bot-local deadlines. The complete safety contract is `contracts/leadership_control.md`; this broker does not itself establish leadership.
 
 ---
 
@@ -52,9 +52,13 @@ Reproduced from `architecture.md`'s Mosquitto Topic Structure table — this is 
 | `logs/info/<service>` | All services | Informational log records |
 | `logs/warning/<service>` | All services | Warning-level log records |
 | `logs/errors/<service>` | All services | Error/critical log records |
-| `control/bot/<action>` | `Head` | `activate` \| `drain` (soft — stop *new* `/quick-battle` acceptance, stay connected) \| `stop` (hard — purges `ai_tasks`, terminates any in-flight `AI Worker` execution, notifies affected Discord threads, **then** disconnects the Gateway — exact sequence confirmed in `bot/discord_bot.md` §6.5 this revision). `drain` and `stop` were split from one overloaded action in an earlier revision — `bot/discord_bot.md` §6.5 identified that `drain` was previously being asked to mean two different things (the soft per-command gate `architecture.md`'s Bot section describes, and the "immediately stop `Bot`" case `head.md` §9 describes for loss-of-internet). |
-| `control/ai_worker/<action>` | `Head` | Pause/resume task consumption — **node-local, not cluster-wide** (corrected, `architecture.md`'s `AI Worker` note): each node's `Head` only ever controls its own local `AI Worker`. |
-| `status/<service>/heartbeat` | All services | Liveness signal, used for internal health tracking. **`Bot`'s payload is a confirmed exception, not a bare ping** — `{latency_ms, guild_count}` (`bot/discord_bot.md` §6.3), superset of the bare-ping shape every other service still uses. |
+| `control/bot/desired_state` | `Head` | QoS 1, retained safe mode: `inactive \| draining \| stopped`. It can never contain `active`; exact schema and per-term sequence semantics are in `contracts/leadership_control.md` §3.1. |
+| `control/bot/activation_grant` | `Head` | QoS 1, **not retained**. Short-lived `active` or `draining` grant derived from the current Blob Lease term. This is the only message that can authorize a Gateway connection; see `contracts/leadership_control.md` §3.2. |
+| `status/bot/control_ack` | `Bot` | QoS 1, not retained. Best-effort acknowledgement of applied control state, correlated by leadership term and command sequence (`contracts/leadership_control.md` §3.3). |
+| `control/ai_worker/desired_state` | `Head` | **Same redesign, same reasoning.** Payload `{"state": "running" \| "paused"}`, retained. Node-local, not cluster-wide (corrected, `architecture.md`'s `AI Worker` note): each node's `Head` only ever controls its own local `AI Worker`. |
+| `status/ai_worker/pause_ack` | `AI Worker` | **New this revision (P0.3).** QoS 1, not retained. `{"schema_version": 1, "node_id": ..., "paused_at": ISO8601}`, published once `AI Worker` finishes its current claim and goes idle after a `paused` request. Informational/diagnostic only — does not gate `Head`'s drain-complete decision (`contracts/drain_status.md` §3). |
+| `status/bot/drain_progress` | `Bot` | **New this revision (P0.3).** QoS 1, not retained. `{"schema_version": 1, "node_id": ..., "leadership_term": ..., "in_flight_workflows": N, "observed_at": ISO8601}`, published every `BOT_DRAIN_PROGRESS_INTERVAL_SEC` while `bot.draining` is set. This is the authoritative signal `Head` watches during `DRAINING` (`contracts/drain_status.md` §1), replacing inference from empty RabbitMQ queues. |
+| `status/<service>/heartbeat` | All services | Liveness signal. **`Bot`'s payload is `{latency_ms, guild_count}`** (`bot/discord_bot.md` §6.3); leader `Head` samples those fields into Table telemetry rows (`contracts/telemetry.md` §1). Other services may use a bare ping. |
 | `progress/ai_worker/<task_id>` | `AI Worker` | Best-effort task-phase updates for a running `ai_tasks` job (`queued`/`launching`/`composing`/`refining`/`finishing`) — powers a live Discord status bar. See `docs/contracts/task_progress.md` for the full message contract. |
 
 **Log message format** (applies to all `logs/*` topics, per `architecture.md`, restated verbatim since every subscriber depends on this exact shape):
@@ -71,9 +75,13 @@ Same topic map as Section 4, viewed from the delivery side:
 
 | Topic Pattern | Subscribers | Trigger |
 |---|---|---|
-| `logs/#` (wildcard, all levels/services) | `Head` (sole aggregator, per `head.md` §7) | Real-time, on every log emission |
-| `control/bot/<action>` | `Bot` | On `Head` publishing `activate`/`drain`/`stop` (§4's corrected three-action model) |
-| `control/ai_worker/<action>` | `AI Worker` | On `Head` publishing a pause/resume signal |
+| `logs/#` (wildcard, all levels/services) | `Head` (sole aggregator, per `head.md` §7) | Real-time, on every log emission — **not retained**, logs are a stream, not a state (§6 contrasts this with the control topics below) |
+| `control/bot/desired_state` | `Bot` | On publish and every subscribe; retained delivery restores only a safe mode (`inactive`, `draining`, or `stopped`), never active authorization. |
+| `control/bot/activation_grant` | `Bot` | Live delivery only. An offline/restarting Bot cannot receive a stale grant. |
+| `status/bot/control_ack` | `Head` | After Bot applies a control transition; used for bounded best-effort demotion/update waiting. |
+| `control/ai_worker/desired_state` | `AI Worker` | Same reconnect-safe behavior as above |
+| `status/ai_worker/pause_ack` | `Head` (diagnostic only) | Once, after `AI Worker` finishes its current claim and goes idle post-pause — never blocks `Head`'s drain-complete decision |
+| `status/bot/drain_progress` | `Head` | Every `BOT_DRAIN_PROGRESS_INTERVAL_SEC` while `Bot` is draining — `Head`'s authoritative drain-completion signal (`contracts/drain_status.md` §1) |
 | `status/<service>/heartbeat` | `Head` | Periodic, per originating service's own heartbeat interval |
 | `progress/ai_worker/#` (wildcard) | `Bot` | On every phase change of a task `Bot` itself submitted — `Bot` holds one static wildcard subscription (same pattern `Head` uses for `logs/#`) and filters by `task_id` against the task map it already keeps locally, rather than subscribing/unsubscribing per task. |
 
@@ -84,9 +92,9 @@ Same topic map as Section 4, viewed from the delivery side:
 ## 6. Internal Logic
 
 - **Wildcard subscriptions:** `Head` subscribes to `logs/#` to catch every level/service in one subscription rather than six individual ones (per `head.md` §7).
-- **No persistent sessions:** per `architecture.md`, session persistence is disabled — logs and control signals are transient by nature; a subscriber that's offline when a message is published simply never receives it. This is consistent with the "best-effort, occasional loss acceptable" design boundary.
-- **QoS level:** not specified anywhere in current docs. Flagged as an open item — MQTT QoS (0/1/2) directly affects whether "occasional message loss is acceptable" (Section 1's stated tolerance) is actually QoS 0 by design, or whether it's merely an accepted side effect of not having configured a higher QoS. Worth an explicit decision rather than an implicit default.
-- **Retained messages:** not specified. An open design question worth raising (not decided here): should `status/<service>/heartbeat` use MQTT retained messages, so `Head` can immediately read each service's last-known state on its own reconnect, instead of waiting for the next heartbeat interval? Currently unaddressed.
+- **No persistent sessions:** per `architecture.md`, session persistence is disabled — logs (and, before this revision, control signals) are transient by nature; a subscriber that's offline when a message is published simply never receives it, and must resubscribe fresh on every reconnect (no queued backlog). This is still consistent with the "best-effort, occasional loss acceptable" design boundary for `logs/*` and `status/*/heartbeat`. **Retained messages (below) are a separate broker feature from persistent sessions and are unaffected by this setting** — a retained message is held by the broker per-topic regardless of session persistence, and is delivered to a client immediately upon subscribing (fresh connection or reconnect alike). This is exactly why retain, not persistent sessions, is the right fix for `control/bot/desired_state`/`control/ai_worker/desired_state` below — it doesn't require reversing the "no persistent sessions" decision.
+- **QoS:** leadership-control topics in `contracts/leadership_control.md` use QoS 1. Duplicate delivery is expected and suppressed by `(leadership_term, command_seq)`/`grant_id`. Logs, ordinary service heartbeats, and progress remain best-effort; their exact QoS remains a P1 broker-configuration decision.
+- **Retention:** `control/bot/desired_state` is retained but contains safe modes only. `control/bot/activation_grant` and `status/bot/control_ack` are never retained. `control/ai_worker/desired_state` remains retained. Retained heartbeat policy remains open and can never turn a heartbeat into proof of current liveness.
 - **`progress/ai_worker/<task_id>` is the one topic pattern in this table that is not routed through or aggregated by `Head`** — it goes directly `AI Worker` → `Bot`, bypassing `Head` entirely, since `Head` has no reason to know about individual task phases. This is a deliberate exception to `Head`'s usual "sole aggregator" role (Section 5), not an oversight — see `docs/contracts/task_progress.md` for the full rationale.
 
 ---
@@ -111,8 +119,9 @@ No dedicated metrics are defined for Mosquitto itself (e.g. connected client cou
 
 | Failure | Detection | Recovery |
 |---|---|---|
-| `Mosquitto` unreachable | Publish/subscribe failures | Per `head.md` §9 (restated here for completeness): log aggregation and control signaling halt locally. `Head` continues its own election logic (independent of Mosquitto) but cannot signal `Bot`/`AI Worker` or collect logs until Mosquitto recovers. Logged as `ERROR` only once Mosquitto itself reconnects (the outage itself can't be logged in real time without the broker). |
-| `Bot`/`AI Worker` cannot receive `control/*` signals while Mosquitto is down | No documented detection — this is the flagged gap below | **Not specified.** Both `Bot` and `AI Worker` rely entirely on `control/*` topics for activation, drain, pause, and resume (per `architecture.md`). If Mosquitto is unreachable exactly when `Head` needs to send one of these signals, there is no documented fallback: does `Bot` default to inactive and simply never activate? Does it hang indefinitely waiting for `control/bot/activate`? This is a real, currently-unanswered failure mode worth resolving before implementation, not just a documentation nicety. |
+| `Mosquitto` unreachable | Bot control connection drops | `Bot` soft-stops immediately: bounded drain, reject new AI work, then hard-stop at drain timeout. The activation-grant deadline is an independent hard-stop backstop. `Head` must not issue activation while control is unavailable. |
+| `Bot` misses retained desired mode while disconnected | Re-subscribe | The safe retained mode is delivered on subscribe. It cannot reactivate Bot; a new live grant is still required. |
+| Activation grant is lost or duplicated | Grant deadline / duplicate identifiers | Loss prevents activation or causes deadline hard-stop. Duplicate/lower/equal per-term sequence is ignored idempotently. |
 
 ---
 

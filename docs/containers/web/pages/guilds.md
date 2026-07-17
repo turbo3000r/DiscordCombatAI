@@ -2,7 +2,7 @@
 
 ## 1. Purpose & Scope
 
-Browse every guild the bot is configured for, and view a selected guild's basic info + bot configuration. Legacy scoped this as read-only with a "full guild statistics and management coming soon" placeholder in the detail panel — that scope is carried forward as-is; this page is not where guild configuration gets *edited* (no such flow exists anywhere yet, in legacy or here).
+Browse every guild the bot is configured for, and view a selected guild's basic info + bot configuration. Legacy scoped this as read-only with a "full guild statistics and management coming soon" placeholder in the detail panel — that scope is carried forward as-is; this page is not where guild configuration gets *edited* (no such flow exists anywhere yet, in legacy or here). All `/api/guilds*` calls require Entra admin auth; responses never include raw `webhook_url` or `api_key` (`contracts/web_auth.md` §6).
 
 ## 2. Route & Entry Point
 
@@ -27,8 +27,8 @@ Browse every guild the bot is configured for, and view a selected guild's basic 
 
 | Method | Path | Request | Response | Notes |
 |---|---|---|---|---|
-| `GET` | `/api/guilds` | — | `{guilds: [{id, name, member_count, icon_url, created_at, owner_id, webhook_configured}], count}` | **Source now resolved for every field — see §9.** Every field maps 1:1 onto `contracts/guild_config.md` §3's document; legacy's live `bot.guilds` read is replaced by a plain Cosmos DB read of the same collection `Bot` now keeps in sync. |
-| `GET` | `/api/guilds/{guild_id}` | Path: guild ID | Guild detail (basic info + bot config subset: language, model, enabled) | Same sourcing caveat as above |
+| `GET` | `/api/guilds` | Bearer required | `{guilds: [{id, name, member_count, icon_url, created_at, owner_id, webhook_configured}], count}` | **Never** returns `webhook_url` or `api_key` — only `webhook_configured: bool`. Every other field maps onto `contracts/guild_config.md` §3. |
+| `GET` | `/api/guilds/{guild_id}` | Bearer required | Guild detail (basic info + bot config subset: language, model, enabled, `webhook_configured`) | Same redaction — no raw secrets |
 
 ## 6. User Interactions & Actions
 
@@ -60,7 +60,7 @@ Underlying Cosmos DB failure modes are defined once in `web.md` §9 — not re-d
 | Azure Cosmos DB | `GuildConfigs` collection (`contracts/guild_config.md`) — now the **only** dependency for every field on this page, admin-config and Discord-metadata alike | Direct `cosmos.py` access, per `web.md` §5 |
 | `Bot` (indirect, resolved) | Keeps `name`, `member_count`, `icon_url`, `owner_id` fresh on the same document via `on_guild_join`/`on_guild_update`/a periodic reconciliation sweep | **Resolved, confirmed decision** — `bot/discord_bot.md` §6.2, `contracts/guild_config.md` §4. `Web` never talks to `Bot` or Discord directly; it just reads whatever `Bot` last wrote. Freshness is bounded by `Bot`'s `BOT_GUILD_SYNC_INTERVAL_SEC` (default 1h) between reconciliation sweeps for `member_count` specifically — name/icon/owner changes land immediately via `on_guild_update`. |
 
-**`webhook_configured`** (whether a guild has a webhook URL set) is derivable purely from the Cosmos DB guild-config document already — no `Bot`-write dependency beyond what's already there, since the webhook URL itself is admin-entered config data, not Discord-sourced metadata.
+**`webhook_configured`** (whether a guild has a webhook URL set) is derivable purely from the Cosmos DB guild-config document already — no `Bot`-write dependency beyond what's already there, since the webhook URL itself is admin-entered config data, not Discord-sourced metadata. The raw URL stays server-side only (`contracts/web_auth.md` §6).
 
 ## 10. Open Items / Future Work
 

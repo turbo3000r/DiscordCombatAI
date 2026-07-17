@@ -49,6 +49,10 @@ class GuildConfigDocument(TypedDict):
 
 `webhook_configured` (used by `web/pages/guilds.md` §3) is **not** a stored field — it's derived by whoever reads this document as `bool(webhook_url)`, since storing it separately would just be a second, driftable copy of the same fact.
 
+**Webhook URL allowlist (P0.7):** when Bot `/config` stores `webhook_url`, the value must match the Discord-host allowlist in `contracts/web_auth.md` §7 (`https://discord.com/api/webhooks/...` or `https://discordapp.com/api/webhooks/...` only). Reject non-HTTPS, other hosts, and IP literals on save. Web re-validates the same allowlist before any Discord POST, even if a legacy Cosmos value is bad.
+
+**Web API redaction (P0.7):** Web list/detail endpoints must **never** return raw `webhook_url` or `api_key` — only `webhook_configured: bool` and non-secret config fields. See `contracts/web_auth.md` §6.
+
 ---
 
 ## 4. Field Ownership & Write Triggers
@@ -61,7 +65,7 @@ class GuildConfigDocument(TypedDict):
 | `left_at` | `Bot` | `on_guild_remove` — sets the timestamp; does **not** delete the document (§6). |
 | `updated_at` | `Bot` | Every write to this document, regardless of which fields changed. |
 
-**No field in this document is ever written by `Web`** — `Web`'s Cosmos access to this collection is read-only everywhere it's used (`web/pages/guilds.md`, `web/pages/dashboard.md`'s guild count). If that ever changes (e.g. a future admin-edit-from-Web feature), it needs an explicit decision here first, not an assumed extension.
+**No field in this document is ever written by `Web`** — `Web`'s Cosmos access to this collection is read-only everywhere it's used (`web/pages/guilds.md`). Dashboard current guild count does **not** come from this collection (`contracts/telemetry.md` — uses `status.py`). If Web ever needs to mutate guild config, it needs an explicit decision here first.
 
 ---
 
@@ -89,12 +93,13 @@ Carried forward from legacy's `setup_guild` (`docs/legacy/Old_arch.md`), now tar
 |---|---|---|
 | `Bot` | Full document, on every command needing guild context (`ProcessCommand`'s `Guild` wrapper, `modules/guild.py`) | See §4 |
 | `Web` — `pages/guilds.md` | Full document (guild list + detail panels) | — (read-only) |
-| `Web` — `pages/dashboard.md` | Document count only, for the `guilds` metric card | — (read-only) |
+| `Web` — `pages/dashboard.md` | — (guild count for Dashboard “now” comes from `status.py`, not this collection — `contracts/telemetry.md`) | — |
 
 ---
 
 ## 7. Open Items
 
-- **`api_key` is stored in plaintext (confirmed, v1 scope).** Flagged as a security follow-up, not a decision reversed here — matches legacy's own plaintext local-JSON storage, so this is not a regression, just not yet hardened. Revisit with application-level encryption or an Azure Key Vault secret-reference indirection if this ever needs to harden before a wider release.
+- **`api_key` is stored in plaintext (confirmed, v1 scope).** Flagged as a security follow-up, not a decision reversed here — matches legacy's own plaintext local-JSON storage, so this is not a regression, just not yet hardened. Revisit with application-level encryption or an Azure Key Vault secret-reference indirection if this ever needs to harden before a wider release. **Web APIs already redact it** (`contracts/web_auth.md` §6) — that does not encrypt Cosmos at rest.
+- **Webhook URL allowlist on `/config` save and Web broadcast POST** — **resolved (P0.7):** `contracts/web_auth.md` §7; Bot enforcement detailed in `bot/commands/config.md`.
 - **`left_at` soft-delete is a proposed convention, not an explicit "project owner confirmed" decision** — flagged as the one field in this schema introduced by inference (avoiding data loss on a kick+re-invite cycle) rather than dictated. Revisit if guild churn ever makes stale left-guild documents a real cleanup problem.
 - Whether the periodic reconciliation sweep (§4) should run per-guild on a fixed interval, or be triggered some other way (e.g. only for guilds not touched by an `on_guild_update` recently) is left as an implementation detail — `bot/discord_bot.md` §3 defines the interval env var, not the exact scheduling algorithm.

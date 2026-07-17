@@ -6,7 +6,7 @@
 
 ## 1. Responsibility
 
-`AI Worker` is the Generation Engine (per `architecture.md`'s Container Breakdown): a **Celery** worker running an infinite consume loop against `RabbitMQ`'s `ai_tasks` queue. For each task it claims, it initializes the correct **LangGraph** state machine (`environment` or `battle`, selected by a field on the task payload — see §6), drives it to completion against the **Google Gemini API**, and publishes the finished result onto `ai_tasks_results`.
+`AI Worker` is the Generation Engine (per `architecture.md`'s Container Breakdown): a **real Celery worker process** (`celery -A ai_worker worker -Q ai_tasks`, resolved this revision — P0.4, `contracts/ai_task.md` §2) consuming `RabbitMQ`'s `ai_tasks` queue via Celery's own task protocol, at **prefetch = 1** (one task at a time, matching the single-execution LangGraph model, §6). For each task it claims, it unwraps the `envelope` kwarg (`contracts/ai_task.md` §3), initializes the correct **LangGraph** state machine (`environment` or `battle`, selected by the envelope's `graph` field — see §6), drives it to completion against the **Google Gemini API**, and manually publishes the finished result onto `ai_tasks_results` — **not** via Celery's result backend, which this pipeline never uses (`contracts/ai_task.md` §2).
 
 It is stateless between tasks, has no direct Discord-facing or Azure-facing responsibility (confirmed, `azure.md` §4 — "No direct Azure dependency today"), and can be scaled to multiple instances per PC and across PCs. Unlike `Bot`, it stays active even when the local `Head` is not the cluster leader — task processing is not gated by leader election, only by the `Head`-driven pause/resume signal (§6, node-local). This does **not** mean it's idle only for cluster reasons: since `RabbitMQ` is strictly node-local (`rabbitmq.md` §1, `architecture.md`'s corrected `RabbitMQ` note), a non-leader node's `AI Worker` simply has nothing in its own local `ai_tasks` queue to pull — there is no cross-node task routing anywhere in this system.
 
@@ -46,14 +46,16 @@ ai_worker/
 |---|---|---|---|
 | `AI_WORKER_RABBITMQ_HOST` | No | `rabbitmq` | Hostname of the local RabbitMQ broker. Formalizes the variable `rabbitmq.md` §3 previously flagged as expected-but-open. |
 | `AI_WORKER_RABBITMQ_PORT` | No | `5672` | RabbitMQ broker port. |
+| `AI_WORKER_RABBITMQ_USER` / `AI_WORKER_RABBITMQ_PASS` | Yes | — | **Resolved this revision (P0.4)** — `AI Worker`'s own broker credentials, canonical definition in `rabbitmq.md` §3/§13. Never logged. |
 | `AI_WORKER_MOSQUITTO_HOST` | No | `mosquitto` | Hostname of the local Mosquitto broker. Formalizes the variable `mosquitto.md` §3 previously flagged as expected-but-open. |
 | `AI_WORKER_MOSQUITTO_PORT` | No | `1883` | Mosquitto broker port. |
 | `AI_WORKER_LLM_MAX_RETRIES` | No | `2` | **Canonical home for this variable** (confirmed decision, originally introduced in `graphs/environment.md` §8/§9 and `graphs/battle.md` §8/§9, both of which deferred to this doc once written). Shared retry budget for transient Gemini API failures **and** malformed/unparseable structured LLM output — one unified wrapper around every LLM-backed node call, across every graph. Not graph-specific — see `ai_worker/nodes.md` §5. |
 | `AI_WORKER_CELERY_CONCURRENCY` | No | `1` | Number of tasks a single `AI Worker` instance processes concurrently. Default of `1` is a conservative starting point (each task is already a multi-call LLM pipeline); horizontal scaling (§6, per `architecture.md`) is the primary scaling lever, not per-instance concurrency. |
+| `AI_WORKER_PROGRESS_HEARTBEAT_SEC` | No | `30` | **New this revision** — while a task is in flight, `AI Worker` re-publishes the current `progress/ai_worker/<task_id>` tick on this cadence even if the phase hasn't changed (`contracts/task_progress.md` §3), purely so `Bot`'s stall-detection timer (`contracts/ai_task.md` §5) has something to reset against during a legitimately long phase. Default sized against `BOT_AI_TASK_STALL_TIMEOUT_SEC=120` — see `ai_task.md` §8 for the reasoning and the note that both defaults are proposed, not measured. |
 
 > **`GEMINI_API_KEY` is deliberately NOT listed here (corrected this revision).** A previous revision of this doc listed it as a single required global environment variable — that directly contradicted `/config`'s per-guild key/model selection (`bot/commands/config.md`, `contracts/guild_config.md` §3) ever reaching this container. `AI Worker` is credential-stateless: the key and model it uses for a given task arrive **on that task's own `ai_tasks` message** (§4) — see the Credential model note in §1. Never logged, from any task, at any level (§7).
 
-> **RabbitMQ broker credentials (username/password/vhost) remain an open item inherited from `rabbitmq.md` §3** — not resolved here. This doc only formalizes the host/port variables that follow the existing `HEAD_*`-style per-consumer prefix convention (`head.md` §3); actual authentication config for `AI Worker`'s RabbitMQ connection is still undecided project-wide, not an `ai_worker`-specific gap.
+> **RabbitMQ broker credentials (username/password/vhost) are resolved project-wide this revision** — see `rabbitmq.md` §3/§13, referenced above rather than duplicated.
 >
 > **Graph-specific tunables are NOT listed here, by design** — `ENVIRONMENT_MAX_ENHANCER_RETRIES` (`graphs/environment.md` §8), `BATTLE_MIN_EPISODES`, and `BATTLE_MAX_MODIFIER_RETRIES` (`graphs/battle.md` §8) belong permanently in their own graph docs, per the same "don't duplicate a variable defined elsewhere" convention `azure.md` §3 established. Only `AI_WORKER_LLM_MAX_RETRIES` lives here, because it's graph-agnostic.
 
@@ -63,8 +65,8 @@ ai_worker/
 
 | Source | Channel | Format | Trigger |
 |---|---|---|---|
-| `RabbitMQ` | `ai_tasks` queue (consume) | AI task payload — exact JSON schema not yet formally defined in `contracts/` (still unwritten), but must include at minimum: a `graph: "environment" \| "battle"` discriminator (implied by `docs/contracts/task_progress.md` §4's message schema); each graph's own input contract (`graphs/environment.md` §2 / `graphs/battle.md` §2); and — **added this revision, closing the credential gap in §1** — `api_key: str` and `model: str`, the requesting guild's own Gemini credential/model pair (`contracts/guild_config.md` §3), which `Bot` must read and attach when it publishes the message, since `AI Worker` itself has no other way to obtain them. | Continuous consumption loop, while in `RUNNING` state (§6) |
-| `Mosquitto` | `control/ai_worker/pause` \| `control/ai_worker/resume` | Plain signal | `Head` publishes during update/maintenance windows (`architecture.md`, `mosquitto.md` §4) |
+| `RabbitMQ` (via Celery) | `ai_tasks` queue (consume as a real Celery task, `envelope` kwarg, manual ack, prefetch = 1) | AI task envelope — **schema now fully defined, `contracts/ai_task.md` §3** (was previously undefined; this revision's earlier credential-gap fix (`api_key`/`model` per-task) is now formalized there, not just here) | Continuous consumption loop, while in `RUNNING` state (§6) |
+| `Mosquitto` | `control/ai_worker/desired_state` (**retained**, redesigned this revision) | `{"state": "running" \| "paused"}` | `Head` publishes during update/maintenance windows, **and** immediately on `AI Worker`'s own every (re)connect to Mosquitto, per MQTT's retained-message semantics (`architecture.md`, `mosquitto.md` §4/§6) |
 | Google Gemini API | HTTPS response | Generated text / structured output | Synchronous response to each LLM-backed node's call |
 
 ---
@@ -73,10 +75,11 @@ ai_worker/
 
 | Destination | Channel | Format | Trigger |
 |---|---|---|---|
-| `RabbitMQ` | `ai_tasks_results` queue (publish, correlated via `reply_to`) | Generated result (finished `Environment` or battle `story`+`winners`) — exact JSON schema not yet formally defined in `contracts/` | On graph completion — success (§6) or synthetic error (§9) |
+| `RabbitMQ` (manual publish, not Celery result backend) | `ai_tasks_results` queue (publish, `correlation_id` set manually to `task_id`) | Success or error result — **schema now fully defined, `contracts/ai_task.md` §4** | On graph completion — success (§6) or synthetic error (§9), followed by acking the original `ai_tasks` message (`contracts/ai_task.md` §2) |
 | `Mosquitto` | `progress/ai_worker/<task_id>` | Phase-update message, per `docs/contracts/task_progress.md` §4 | On each phase transition within a running graph — see §6 and each graph's own §11 phase mapping |
 | `Mosquitto` | `logs/<level>/ai_worker` | Structured log string, per §7 | On every log emission |
 | `Mosquitto` | `status/ai_worker/heartbeat` | Liveness ping | Periodic |
+| `Mosquitto` | `status/ai_worker/pause_ack` (QoS 1, not retained) — **new this revision, P0.3** | `{"schema_version": 1, "node_id": ..., "paused_at": ISO8601}` | Once, after receiving `control/ai_worker/desired_state = paused` (§4), finishing any in-flight task claim, and going idle (no new claims picked up) — §6 |
 | Google Gemini API | HTTPS request | Assembled prompt (system prompt + injected elements, per `ai_worker/prompts.md` §2) | On every LLM-backed node's call |
 
 ---
@@ -86,26 +89,28 @@ ai_worker/
 **Consumption state (control loop, driven by `Head` via Mosquitto):**
 
 ```
-        ┌───────────┐   control/ai_worker/pause    ┌───────────┐
+        ┌───────────┐   desired_state = "paused"    ┌───────────┐
    ┌───►│  RUNNING  │ ─────────────────────────────►│  PAUSED   │────┐
    │    │(consuming)│ ◄─────────────────────────────│(idle, no  │    │
-   │    └───────────┘   control/ai_worker/resume    │new claims)│    │
+   │    └───────────┘   desired_state = "running"    │new claims)│    │
    └─────────────────────────────────────────────────────────────────┘
 ```
 
-- **`RUNNING`** (default) — actively consuming from `ai_tasks`.
-- **`PAUSED`** — stops pulling *new* messages from `ai_tasks`. **Does not abort in-flight tasks already claimed** — a graph execution already underway runs to completion regardless of pause state. This is what makes `Head`'s `DRAINING` state (`head.md` §6, waiting up to `HEAD_DRAIN_TIMEOUT_SEC` for in-flight `ai_tasks` to resolve) actually work: `Head` pauses `AI Worker` at the start of an update sequence (`head.md` §5) to stop new work from starting, while whatever's already running is allowed to finish naturally within the drain window.
+- **`RUNNING`** (default) — actively consuming from `ai_tasks` at prefetch = 1 (`contracts/ai_task.md` §2). Entered whenever `control/ai_worker/desired_state` resolves to `running` — including immediately on every (re)connect to Mosquitto, per the retained-message redesign (§4, `mosquitto.md` §6), not just on a live publish.
+- **`PAUSED`** — on receiving `desired_state = paused`, `AI Worker` finishes its current task claim (does not abandon mid-graph — same "let it finish" behavior prefetch = 1 already implies, since there is at most one claim in flight per worker process) and then stops pulling *new* messages from `ai_tasks`. Once idle (no claim in flight), it publishes `status/ai_worker/pause_ack` once (§5, **new this revision, P0.3**). This is what makes `Head`'s `DRAINING` state (`head.md` §6) actually work: `Head` pauses `AI Worker` at the start of an update sequence (`head.md` §5) to stop new work from starting, while whatever's already running is allowed to finish naturally within the drain window defined by `contracts/drain_status.md`.
+  - **`pause_ack` is informational/diagnostic only — it does not gate `Head`'s drain-complete decision.** `Bot`'s own `in_flight_workflows == 0` (`contracts/drain_status.md` §1) already covers whether this node's `AI Worker` claim has finished, since every `ai_tasks` entry is counted there too. Treating `pause_ack` as a second blocking condition would risk stalling drain if the ack itself is lost over best-effort Mosquitto — deliberately avoided.
+  - **Recovery when an update is abandoned/superseded mid-drain:** `Head` simply re-publishes `{"state": "running"}` (resume) — no teardown/unwind needed since nothing was torn down while `PAUSED` (no in-flight task is ever aborted by pausing).
 
 **Per-task flow (while `RUNNING`):**
 
 1. Claim one message from `ai_tasks`.
-2. Publish a `launching` phase update (§5; `docs/contracts/task_progress.md` §4).
+2. Publish a `launching` phase update (§5; `docs/contracts/task_progress.md` §4), and start a background timer that re-publishes the current phase every `AI_WORKER_PROGRESS_HEARTBEAT_SEC` (§3, new this revision) for as long as this task is in flight — independent of whether the phase itself has changed.
 3. Read the message's `graph` discriminator field; initialize the corresponding compiled LangGraph (`environment` or `battle`) with the message body as initial state (per that graph's own Input State contract, `graphs/environment.md` §2 / `graphs/battle.md` §2).
-4. Invoke the graph to completion. As execution crosses each graph's own internal phase boundaries, publish `composing` / `refining` / `finishing` phase updates — the mapping from internal nodes to these phases is defined once per graph in `docs/contracts/task_progress.md` §6.1, not re-derived here.
-5. On success, publish the graph's output state as the `ai_tasks_results` message (correlated via the original message's `reply_to`) and acknowledge the `ai_tasks` message.
-6. On unrecoverable failure (§9), publish a synthetic error result to `ai_tasks_results` instead, following the same "light crash" shape already established in `rabbitmq.md` §6/§9.
+4. Invoke the graph to completion. As execution crosses each graph's own internal phase boundaries, publish `composing` / `refining` / `finishing` phase updates — the mapping from internal nodes to these phases is defined once per graph in `docs/contracts/task_progress.md` §6.1, not re-derived here. Each phase-change publish also resets the heartbeat timer from step 2 (no need to publish twice in quick succession).
+5. On success, manually publish the graph's output state as the `ai_tasks_results` message (correlated via `correlation_id = task_id`, publisher confirms enabled, `contracts/ai_task.md` §2) and, once that publish is confirmed, acknowledge the `ai_tasks` message. Stop the heartbeat timer.
+6. On unrecoverable failure (§9), publish an `AiTaskResultFailed` (`contracts/ai_task.md` §4) instead — `node` set to whichever LangGraph node was actually executing when the failure occurred (not a generic code, corrected this revision). Stop the heartbeat timer.
 
-**Graph selection mechanism — undecided (flagged, §12):** whether `tasks.py` defines one generic Celery task that branches on the `graph` field, or one Celery task per graph bound to its own routing/queue, is not confirmed anywhere. `rabbitmq.md` only documents a single `ai_tasks` queue (not per-graph queues), which is the working assumption this doc uses, but the exact Celery-level dispatch mechanism is an implementation detail not yet decided.
+**Graph selection mechanism — resolved this revision, P0.4:** `tasks.py` defines one generic Celery task, `run_graph` (`ai_worker_tasks.run_graph`, matching `contracts/ai_task.md` §3's `apply_async` call), bound to the single `ai_tasks` queue. It unwraps the `envelope` kwarg and branches internally on the envelope's `graph` field — there is no per-graph Celery task or per-graph queue.
 
 **Statelessness / scaling:** no state survives across tasks within a worker instance — any `AI Worker` instance can claim any `ai_tasks` message. This is the precondition that makes "scale to multiple instances per PC" (`architecture.md`) safe without any coordination between instances beyond RabbitMQ's own single-consumer-per-message delivery guarantee.
 
@@ -136,10 +141,10 @@ ai_worker/
 | Failure | Detection | Recovery |
 |---|---|---|
 | Gemini API call fails/times out, or any LLM node returns structurally invalid output | Exception / schema validation error inside a node | Shared retry-with-backoff wrapper, budget `AI_WORKER_LLM_MAX_RETRIES` (§3, default `2`) — one unified budget for both failure shapes, per `ai_worker/nodes.md` §5. If exhausted, the task fails — see next row. |
-| A graph's LLM retry budget is exhausted, or any other unhandled exception occurs during graph execution | Exception propagates out of the graph invocation (§6 step 4) | Synthetic error result published to `ai_tasks_results` (§6 step 6), the "light crash" pattern already established in `rabbitmq.md` §6/§9. The original `ai_tasks` message is still acknowledged — see next row for the open question this raises. |
-| `AI Worker` process crashes mid-task (before ack) | Depends entirely on whether `ai_tasks` consumption uses manual or automatic RabbitMQ acknowledgment | **Not specified anywhere** — inherited open item from `rabbitmq.md` §9: whether the message gets redelivered to another `AI Worker` instance (manual ack + requeue) or is lost (auto-ack) is undecided. `architecture.md`'s stated intent ("ensures no tasks are lost if an AI Worker crashes mid-generation") implies manual ack, but this is not confirmed as an actual implementation decision. |
+| A graph's LLM retry budget is exhausted, or any other unhandled exception occurs during graph execution | Exception propagates out of the graph invocation (§6 step 4) | `AiTaskResultFailed` published to `ai_tasks_results` (§6 step 6, `contracts/ai_task.md` §4 — renamed and reshaped this revision, `node`/`reason` instead of a `code` enum) with `node` set to whichever node was executing. The original `ai_tasks` message is still acknowledged — see next row for the open question this raises. |
+| `AI Worker` process crashes mid-task (before ack) | RabbitMQ consumer channel closes without an ack | **Resolved this revision, `contracts/ai_task.md` §2:** manual ack only after the corresponding `ai_tasks_results` message is published, so the original message is redelivered to another consumer. Accepted cost: possible duplicate LLM generation on redelivery; `Bot`-side dedup is `contracts/ai_task.md` §6, not this container's concern. |
 | `RabbitMQ` itself unreachable | Connection failure on consume or publish | **Not specified** — same standalone-outage gap already flagged in `rabbitmq.md` §9. Whether `AI Worker` retries its connection, crashes, or idles indefinitely is undecided. |
-| `Mosquitto` unreachable | Publish failure on `progress/*`, `logs/*`, `status/*`, or subscribe failure on `control/*` | **Must never block or fail the task itself** (confirmed, per `docs/contracts/task_progress.md` §7) — log-and-continue for progress/log/heartbeat publishing. For `control/ai_worker/pause`/`resume` specifically: if `Mosquitto` is down exactly when `Head` needs to pause `AI Worker` for an update, there's no fallback — same unresolved gap `mosquitto.md` §9 already flags for `Bot`. |
+| `Mosquitto` unreachable | Publish failure on `progress/*`, `logs/*`, `status/*`, or subscribe failure on `control/*` | **Must never block or fail the task itself** (confirmed, per `docs/contracts/task_progress.md` §7) — log-and-continue for progress/log/heartbeat publishing. For `control/ai_worker/desired_state` specifically: **resolved this revision** via the retained-message redesign (`mosquitto.md` §6) — if `Mosquitto` is down exactly when `Head` needs to pause `AI Worker`, `AI Worker` simply receives the retained `paused` state the instant it next (re)connects/(re)subscribes, rather than never learning about it (the residual case of `Head` itself being unable to publish at all is unchanged, `mosquitto.md` §9). |
 | `AI Worker` container itself restarted (e.g. Docker restart policy) | N/A | No persistent state to recover (§6, stateless-between-tasks) — resumes consuming from `ai_tasks` immediately once reconnected. Any task it had claimed but not finished falls under the "process crashes mid-task" row above. |
 
 ---
@@ -169,7 +174,7 @@ Unlike `Head`, `AI Worker` exposes no HTTP endpoint of its own (no `Launcher`-eq
 ## 12. Versioning & Update Behavior
 
 - `AI Worker` shares the coordinated version tag with `Bot`, `Head`, and `Web` (per `Launcher.md` §12) — it does not version independently.
-- **Update sequence participation:** during `Head`'s `DRAINING` → `UPDATING` transition (`head.md` §6), `Head` publishes `control/ai_worker/pause` at update-sequence start (`head.md` §5) — `AI Worker` stops claiming new `ai_tasks` messages immediately (§6, `PAUSED` state) while any task already in flight continues to completion, within `Head`'s own `HEAD_DRAIN_TIMEOUT_SEC` window. `Head` publishes `control/ai_worker/resume` once the update sequence concludes (or is abandoned).
+- **Update sequence participation:** during `Head`'s `DRAINING` → `UPDATING` transition (`head.md` §6), `Head` publishes `control/ai_worker/desired_state = {"state": "paused"}` (retained) at update-sequence start (`head.md` §5) — `AI Worker` finishes any task already claimed, then stops claiming new `ai_tasks` messages (§6, `PAUSED` state) and publishes `status/ai_worker/pause_ack` once idle (§5/§6, informational only — does not gate `Head`'s drain-complete decision, `contracts/drain_status.md`). `Head` publishes `{"state": "running"}` once the update sequence concludes or is abandoned — no teardown/unwind needed on abandonment since `PAUSED` never aborts an in-flight claim.
 - After `Launcher` recreates the container, a fresh `AI Worker` instance starts directly in `RUNNING` and resumes consuming — no state to restore (§6, §11).
 
 ---
@@ -180,8 +185,10 @@ Unlike `Head`, `AI Worker` exposes no HTTP endpoint of its own (no `Launcher`-eq
 
 - ~~`GEMINI_API_KEY` as a single global required env var contradicted `/config`'s per-guild key/model selection~~ — **resolved this revision** (§1, §3, §4): credentials arrive per-task on the `ai_tasks` message, sourced from `contracts/guild_config.md`. Plaintext-in-transit/at-rest remains an accepted risk (§1), not solved by this fix.
 - **No metrics transport path exists** (§8) — the single most concrete gap: even the metrics both graph docs already floated (`attempts_used`, `forced_selection`) have nowhere to actually go.
-- The Celery-level task/graph dispatch mechanism (one generic task vs. one task per graph) is undecided (§6).
-- RabbitMQ ack semantics (manual vs. automatic) — and therefore whether a mid-task crash loses or redelivers work — remain unresolved, inherited from `rabbitmq.md` §9 (§9).
-- RabbitMQ broker credentials (username/password/vhost) remain undecided project-wide, not just for this service (§3).
-- Whether a more detailed health signal (beyond the existing heartbeat) is worth adding is undecided (§11).
+- ~~The Celery-level task/graph dispatch mechanism (one generic task vs. one task per graph) was undecided~~ — **resolved this revision, P0.4** (§6): one generic `run_graph` task, branching internally on `envelope.graph`.
+- ~~RabbitMQ ack semantics (manual vs. automatic)~~ — **resolved this revision**, `contracts/ai_task.md` §2: manual ack after result publish.
+- ~~RabbitMQ broker credentials (username/password/vhost) were undecided project-wide~~ — **resolved this revision, P0.4**: `rabbitmq.md` §3/§13.
+- Whether a more detailed health signal (beyond the existing heartbeat, and the new `pause_ack`, §5/§6) is worth adding is undecided (§11).
 - Standalone RabbitMQ or Mosquitto outages (independent of any `Head`-internet-loss scenario) have no `AI Worker`-specific documented behavior beyond "the affected channel stops working" — same underlying gap already flagged in both `rabbitmq.md` §9 and `mosquitto.md` §9.
+- **New this revision** — `AI_WORKER_PROGRESS_HEARTBEAT_SEC=30` (§3, §6) is a proposed default, sized only by inference against `Bot`'s `BOT_AI_TASK_STALL_TIMEOUT_SEC=120` (`contracts/ai_task.md` §5), not by measuring real per-node execution time. Revisit once real timing data exists — see `ai_task.md` §8 for the same flag on the `Bot`-side timeout defaults.
+- ~~Whether `Bot` publishes `ai_tasks` via a real Celery client or raw AMQP was undecided, affecting whether hard-stop's `revoke(terminate=True)` is reachable~~ — **resolved this revision, P0.4**: `Bot` publishes via `apply_async`; see `contracts/ai_task.md` §2/§8.

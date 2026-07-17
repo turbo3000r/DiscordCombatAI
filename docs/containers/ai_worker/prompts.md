@@ -10,6 +10,8 @@
 
 **This section documents the TARGET structure (design confirmed, project owner) — not yet migrated on disk.** As of this revision, `prompts/` on disk still reflects the legacy layout (§6 has the full legacy → target mapping). This doc fixes the **file structure and naming only** — actually authoring the ~14 new prompt files' content is a separate, larger, and still-open task (§7).
 
+**Scope note, confirmed this revision (project owner):** the ~14 per-node system prompt files (`graphs/environment/*.txt`, `graphs/battle/*.txt`, `nodes/*_base.txt`) are expected to be almost entirely rewritten during implementation to actually support LangGraph's per-node structure — legacy content is a tone/logic *reference* at most (§6 already says this for `core_simple_battle.txt` specifically), never a dependency to preserve. This doc does not need to specify their content any further than it already does (§4's mapping table) — that's implementation work, not a documentation gap. **What genuinely is load-bearing and must stay nailed down here:** the `elements/` injection wrappers (`setting/*.txt`, `language.txt`, `environment.txt`, `fighters.txt`, §2/§3) — every new per-node system prompt is written *against* these blocks' exact labelled format (`## SETTING:`, `## LANGUAGE-LOCALE:`, etc.), so whoever authors new prompt content is depending on this doc's §2/§3 being accurate, even though the system prompts themselves are free to be rewritten from scratch.
+
 ---
 
 ## 2. Injection Pattern (how a node's final prompt is assembled)

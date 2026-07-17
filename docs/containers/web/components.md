@@ -64,10 +64,10 @@
 
 | | |
 |---|---|
-| **Location** | `components/modals/` |
+| **Location** | `components/modals/` (e.g. `ConfirmDialog.tsx`) |
 | **Responsibility** | Generic "are you sure?" confirmation dialog. |
-| **Used by** | **None yet** — no page's current design (carried over from legacy) actually gates a mutating action behind a confirmation step (e.g. marking a suggestion done, sending an announcement to *all* guilds are both currently one-click). |
-| **Notes** | Listed here as an available shared building block, not because it's in active use — flagged as a candidate if any page's Open Items (`pages/webhook.md` §10 is the most likely candidate, given "send to ALL guilds" is a wide-blast-radius action) later decide a confirmation step is worth adding. |
+| **Used by** | `pages/webhook.md` — **required** before any `destination: "ALL"` announcement or update-to-all broadcast (`contracts/web_auth.md` §7). Optional candidate for suggestion “mark done” UX (not a security requirement). |
+| **Notes** | Confirmed consumer for webhook ALL; implement as a shared modal, not an inline page-only alert. |
 
 ---
 

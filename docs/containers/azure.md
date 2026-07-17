@@ -19,7 +19,7 @@ src/shared/azure/
 ├── services/            # Higher-level, domain-specific wrappers built on top of clients/
 │   ├── suggestions.py   # Suggestion CRUD (Cosmos DB) + notification publish (Queue Storage)
 │   ├── guilds.py        # Guild configs, battle logs
-│   ├── status.py        # Bot status, version, invite link, etc. (`bot.json`-style document)
+│   ├── status.py        # Single shared status document — nested schema resolved this revision, see §2's note below
 │   ├── logging.py       # Log batch send/receive helpers
 │   ├── metrics.py       # Metrics batch load/unload from Table Storage
 │   └── guild_logs.py    # Blob Storage wrapper for battle/log archives
@@ -35,6 +35,8 @@ src/shared/azure/
 
 > **Open item:** the exact file that constructs and caches the shared `ClientSecretCredential` (Section 6) isn't named yet in `architecture.md`'s tree (e.g. a `configs/credential.py`). Flagged here as an implementation detail to fill in when this library is actually built, not decided in this doc.
 
+> **`status.py` — canonical contract is now `contracts/status_document.md` (P0.5.3 resolved).** One Blob JSON document with typed nested sections (`identity` / `status` / `suggestion_catalog`), `schema_version`, ETag RMW, bootstrap/seed defaults, and per-section owners: **Web** writes `identity` + `suggestion_catalog` (after deploy-time / first-load seed); **Bot** writes only `status`. This module remains the sole accessor; do not duplicate the schema here.
+
 ---
 
 ## 3. Environment Variables
@@ -45,15 +47,21 @@ This is the **complete and only** list of Azure-related environment variables in
 |---|---|---|---|
 | `AZURE_TENANT_ID` | Yes | — | Azure AD tenant ID — shared across services (identifying the tenant is not a privilege boundary; the client ID/secret pair is). |
 | `HEAD_AZURE_CLIENT_ID` / `HEAD_AZURE_CLIENT_SECRET` | Yes | — | `Head`'s own Service Principal — **corrected this revision, per-service now** (was one shared `AZURE_CLIENT_ID`/`AZURE_CLIENT_SECRET` for every service). Scoped only to Table Storage, Blob Storage, and Web PubSub (§4). |
-| `BOT_AZURE_CLIENT_ID` / `BOT_AZURE_CLIENT_SECRET` | Yes | — | `Bot`'s own Service Principal. Scoped only to Queue Storage and Cosmos DB (§4). |
-| `WEB_AZURE_CLIENT_ID` / `WEB_AZURE_CLIENT_SECRET` | Yes | — | `Web`'s own Service Principal. Scoped only to Cosmos DB, Queue Storage, Web PubSub, and Table Storage (§4). |
+| `BOT_AZURE_CLIENT_ID` / `BOT_AZURE_CLIENT_SECRET` | Yes | — | `Bot`'s own Service Principal. Scoped to Queue Storage, Cosmos DB, and Blob Storage (status `status` section + battle archive — §4). |
+| `WEB_AZURE_CLIENT_ID` / `WEB_AZURE_CLIENT_SECRET` | Yes | — | `Web`'s own Service Principal. Scoped to Cosmos DB, Queue Storage, Web PubSub, Table Storage, and Blob Storage (status document identity/catalog — §4). |
 | `AZURE_COSMOS_ENDPOINT` | Yes | — | Cosmos DB account endpoint (e.g. `https://<account>.documents.azure.com:443/`). Backs the Guild Configs and Suggestions containers. |
+| `AZURE_COSMOS_DATABASE` | No | `DiscordCombatAI` | Shared Cosmos database name for `GuildConfigs` and `Suggestions` (`contracts/suggestion.md`, `contracts/guild_config.md`). |
 | `AZURE_STORAGE_ACCOUNT_NAME` | Yes | — | Single Storage Account name backing **Blob**, **Table**, and **Queue** Storage. Per-service endpoints (`https://<name>.blob.core.windows.net`, `.table.core.windows.net`, `.queue.core.windows.net`) are derived from this one name — there is deliberately no separate endpoint variable per storage service. |
-| `AZURE_QUEUE_NAME` | Yes | `suggestions` | Name of the queue (within the storage account above) used for Web → Bot suggestion notification events (`architecture.md` Scenario 3). |
-| `AZURE_WEBPUBSUB_ENDPOINT` | Yes | — | Azure Web PubSub resource endpoint, used for leader election presence and live telemetry/log streaming. |
-| `AZURE_WEBPUBSUB_HUB_NAME` | No | `discordcombatai` | Web PubSub hub name under which the `leader` election group and telemetry/log broadcast groups live. |
+| `AZURE_QUEUE_NAME` | Yes | `suggestions` | Name of the queue (within the storage account above) used for Web → Bot suggestion notification events (`contracts/suggestion.md` §4). |
+| `AZURE_METRICS_TABLE` | No | `NodeMetrics` | Table Storage table for leader Head batched metrics (`contracts/telemetry.md` §2). |
+| `AZURE_STATUS_BLOB_CONTAINER` | No | `coordination` | Blob container for the shared status document (`contracts/status_document.md`). |
+| `AZURE_STATUS_BLOB_NAME` | No | `bot_status.json` | Blob name for the shared status document. |
+| `AZURE_BATTLE_ARCHIVE_CONTAINER` | No | `battle-results` | Blob container for battle story + metadata archives (`contracts/battle_archive.md`). |
+| `AZURE_LOG_ARCHIVE_CONTAINER` | No | `service-logs` | Blob container for append-blob operational logs (`contracts/log_archive.md`). |
+| `AZURE_WEBPUBSUB_ENDPOINT` | Yes | — | Azure Web PubSub resource endpoint, used for cluster broadcast and live telemetry/log streaming. |
+| `AZURE_WEBPUBSUB_HUB_NAME` | No | `discordcombatai` | Web PubSub hub name under which `cluster` and `dashboard-live` groups live (`contracts/pubsub_live.md`). |
 
-**Design decision, revised this revision:** the previous version of this doc used one Azure AD Service Principal shared across every resource *and every service* (`Head`, `Bot`, `Web`) — one identity with broad access regardless of which service actually needed which resource. **Corrected:** each Azure-consuming service (`Head`, `Bot`, `Web`) gets its **own** Service Principal, scoped only to the resources that service actually uses per §4's table (`Head`: Table + Blob + Web PubSub; `Bot`: Queue + Cosmos; `Web`: Cosmos + Queue + Web PubSub + Table). This is a **free correction** — creating additional Azure AD App Registrations costs nothing — and is logically independent of the plaintext-Gemini-key decision below; it closes an unnecessary blast-radius gap (a compromised `Web` container no longer has any path to credentials scoped for `Head`/`Bot`, and vice versa) without adding any infrastructure cost or complexity that this project's "cheap, self-hosted" model needs to avoid.
+**Design decision, revised this revision:** the previous version of this doc used one Azure AD Service Principal shared across every resource *and every service* (`Head`, `Bot`, `Web`) — one identity with broad access regardless of which service actually needed which resource. **Corrected:** each Azure-consuming service (`Head`, `Bot`, `Web`) gets its **own** Service Principal, scoped only to the resources that service actually uses per §4's table (`Head`: Table + Blob + Web PubSub; `Bot`: Queue + Cosmos + Blob; `Web`: Cosmos + Queue + Web PubSub + Table + Blob). This is a **free correction** — creating additional Azure AD App Registrations costs nothing — and is logically independent of the plaintext-Gemini-key decision below; it closes an unnecessary blast-radius gap (a compromised `Web` container no longer has any path to credentials scoped for `Head`/`Bot`, and vice versa) without adding any infrastructure cost or complexity that this project's "cheap, self-hosted" model needs to avoid.
 
 Per service, one `ClientSecretCredential` is still constructed once (from the shared `AZURE_TENANT_ID` plus that service's own `<SERVICE>_AZURE_CLIENT_ID`/`<SERVICE>_AZURE_CLIENT_SECRET`) and shared across whichever clients in `clients/` that service actually imports — the "one credential object per process" pattern is unchanged, only the "one identity for the whole system" part is corrected.
 
@@ -69,12 +77,12 @@ Per service, one `ClientSecretCredential` is still constructed once (from the sh
 
 | Consumer | Client(s) Used | Azure Resource(s) | Purpose |
 |---|---|---|---|
-| `Head` | `table.py`, `blob.py`, `pubsub.py` | Table Storage, Blob Storage, Web PubSub | Batched telemetry writes; batched log archival; **leader lease acquire/renew/release on Blob Storage — new use of `blob.py`, this revision** (`head.md` §3/§6, the actual mutex); leader heartbeat + update broadcast + live streaming over Web PubSub (see `head.md` §4/§5). |
-| `Bot` | `queue.py`, `cosmos.py` | Queue Storage, Cosmos DB | Polls for suggestion notifications, reads/writes guild configs and suggestions. |
-| `Web` (remote) | `cosmos.py`, `queue.py`, `pubsub.py`, `table.py` | Cosmos DB, Queue Storage, Web PubSub, Table Storage | Suggestion CRUD, notification publish, live dashboard stats subscription, **and** historical metrics reads for the Dashboard/Performance pages (`web.md` §4/§5). |
+| `Head` | `table.py`, `blob.py`, `pubsub.py` | Table Storage, Blob Storage, Web PubSub | Batched telemetry writes (`contracts/telemetry.md`); log archival (`contracts/log_archive.md`); leader lease acquire/renew/release; cluster heartbeat + **always-on** live stream to `dashboard-live` (`contracts/pubsub_live.md`). |
+| `Bot` | `queue.py`, `cosmos.py`, `blob.py` | Queue Storage, Cosmos DB, Blob Storage | Suggestion notifications + guild/suggestion Cosmos docs; `status` section of status document; battle result archives (`contracts/battle_archive.md`). |
+| `Web` (remote) | `cosmos.py`, `queue.py`, `pubsub.py`, `table.py`, `blob.py` | Cosmos DB, Queue Storage, Web PubSub, Table Storage, Blob Storage | Suggestion CRUD, notification publish, PubSub **negotiate only** (browser connects), historical metrics, status document identity/catalog RMW. |
 | `AI Worker` | — | — | No direct Azure dependency today — all cloud I/O for AI tasks flows through `Bot`/`Head`, per `architecture.md`'s container breakdown. |
 
-> **Addition applied in this revision:** `Web`'s `table.py` dependency was missing here even though `architecture.md`'s own Scenario 4 already implies it ("the browser fetches the last 24h of history via a static API call" — that API call has to read the same Table Storage `Head` writes batched metrics to). Added rather than inventing a second metrics path. **Deliberately not added:** Blob Storage. A historical log-replay feature for the Dashboard's live console would need it, but `web.md`'s current design keeps the console live-only (starts empty, fills from Web PubSub going forward) specifically to avoid taking on this dependency before it's actually needed — see `web.md` §12 Open Items.
+> **Addition applied earlier:** `Web`'s `table.py` dependency. **Updated (P0.5.3):** `Web` also uses Blob Storage for the shared status document (identity/catalog RMW) — not for historical log replay. Dashboard console remains live-only via PubSub (`contracts/pubsub_live.md`); Blob log-read for replay is still deferred.
 
 ---
 
@@ -92,7 +100,9 @@ Per service, one `ClientSecretCredential` is still constructed once (from the sh
 
 > **Open item:** exact SDK package names above are the standard Azure SDK for Python packages for each resource type — reasonable to assume given the "Technology Stack" already commits to these Azure services, but not literally pinned in any requirements file yet, so treat the package names as expected rather than finalized.
 >
-> **Open item, blocking for `web.md`'s live-data design — narrowed this revision:** `get_client_access_token` needs to know *which group* to scope the token to, and that requires `Head`'s telemetry/log broadcast group(s) (`head.md` §5/§8) to actually have a stable, documented name. `head.md` now names its internal cluster-coordination group (`HEAD_PUBSUB_CLUSTER_GROUP`, §3) — but that group is Head-to-Head only (leader heartbeat, update broadcast) and should **not** be the one a browser gets a token for. The dashboard-facing telemetry/log group is a separate, still-unnamed group. Whether that one is a fixed name, derived per-node, or something else is not decided anywhere. Not resolved here — flagged so `head.md` and `web.md` §12 both point at the same open question instead of each guessing independently.
+> **Resolved (P0.6):** dashboard group is fixed — `HEAD_PUBSUB_DASHBOARD_GROUP` default `dashboard-live`. Negotiate issues join/leave-only tokens for that group; TTL/user-id/`oid` and Entra admin auth in `contracts/pubsub_live.md` §4 / `contracts/web_auth.md`. Cluster group remains `HEAD_PUBSUB_CLUSTER_GROUP` / `cluster` (Head-only).
+>
+> **Web human auth ≠ Azure SP auth:** browser Entra login (`WEB_ENTRA_*`, `contracts/web_auth.md`) is separate from the Web container’s Service Principal (`WEB_AZURE_CLIENT_*` in this file). Do not reuse SP secrets in MSAL.
 
 ---
 

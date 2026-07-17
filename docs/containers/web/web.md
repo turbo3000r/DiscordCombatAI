@@ -32,12 +32,21 @@ See `architecture.md`'s Project File Structure for the authoritative on-disk tre
 | `WEB_HOST` | No | `0.0.0.0` | Bind host for the FastAPI/Uvicorn process. |
 | `WEB_PORT` | No | `8000` | Bind port. |
 | `WEB_METRICS_DEFAULT_RANGE_MIN` | No | `1440` | Default look-back window (minutes) for the historical metrics endpoint when a page doesn't specify one (`pages/performance.md` §4). |
+| `WEB_ENTRA_TENANT_ID` | Yes | — | Entra tenant ID for admin login (`contracts/web_auth.md` §3). |
+| `WEB_ENTRA_CLIENT_ID` | Yes | — | SPA / app registration client ID (public; not a secret). |
+| `WEB_ENTRA_API_AUDIENCE` | Yes | — | Expected JWT `aud` (typically `api://{WEB_ENTRA_CLIENT_ID}`). |
+| `WEB_ENTRA_ADMIN_GROUP_ID` | Yes | — | Object ID of the Entra security group authorized as Web admins. |
+| `WEB_ENTRA_AUTHORITY` | No | `https://login.microsoftonline.com/{WEB_ENTRA_TENANT_ID}` | Authority URL override. |
+| `WEB_WEBHOOK_ALL_COOLDOWN_SEC` | No | `60` | Per-admin cooldown between successful ALL-guild webhook broadcasts. |
+| `WEB_WEBHOOK_SELECTED_RATE_PER_MIN` | No | `10` | Per-admin rate limit for SELECTED webhook sends. |
+| `WEB_ADMIN_AUDIT_BLOB_CONTAINER` | No | `admin-audit` | Blob container for durable webhook broadcast audit objects. |
 
-> **Azure configuration lives in `azure.md`, not here.** Per Section 10, `Web` depends on **Cosmos DB**, **Queue Storage**, **Web PubSub**, and **Table Storage**. All Azure authentication and endpoint variables are defined exactly once in `azure.md` §3 — this table only lists variables owned by `Web` itself.
+> **Azure configuration lives in `azure.md`, not here.** Per Section 10, `Web` depends on **Cosmos DB**, **Queue Storage**, **Web PubSub**, **Table Storage**, and **Blob Storage** (status document + admin audit). All Azure **Service Principal** authentication and endpoint variables are defined exactly once in `azure.md` §3 — this table only lists variables owned by `Web` itself. **Human admin auth** (`WEB_ENTRA_*`) is distinct from `WEB_AZURE_CLIENT_*` — see `contracts/web_auth.md` §10.
 >
-> **No authentication/authorization variables exist yet — explicit open item, deliberately deferred, not an oversight.** The legacy home page literally ships an "Auth Placeholder" that was never implemented. Every admin-facing action documented in `pages/suggestions.md` and `pages/webhook.md` is, as of this revision, reachable by anyone who can reach the container's port. **Confirmed this revision (project owner):** this stays deferred for now, but network exposure is explicitly a deployment-time decision, never assumed or hardcoded either way in this doc or in any deployment manifest — `Web` is not documented as "public" or "private," it is documented as "unauthenticated at the application layer, whoever operates the deployment decides what network reaches it." This is being carried forward *as a known gap*, not re-decided here — see §9 and §12.
+> **Authentication — resolved (P0.7):** Microsoft Entra ID (MSAL.js PKCE + Bearer JWT + admin group). Canonical contract: `contracts/web_auth.md`. All `/api/*` require a valid Bearer and admin-group membership; static SPA shell remains public. Unauthenticated → **401**; authenticated non-admin → **403**.
 >
-> **Web PubSub group name(s) for live telemetry — undecided, blocks §6.** `azure.md` §5 and `head.md` §5 both flag that `Head`'s telemetry/log broadcast group(s) have no documented stable name. `Web` needs that name to request a correctly-scoped client access token (§6). No `WEB_*` env var is defined for this yet because it isn't clear whether the value even belongs to `Web` (vs. being a fixed constant shared with `Head`) — resolve the naming question first (`head.md`'s note), then decide where the constant lives.
+> **Web PubSub dashboard group — resolved (P0.6):** `HEAD_PUBSUB_DASHBOARD_GROUP` default `dashboard-live` (shared constant with Head; no separate `WEB_*` override required). Negotiate returns join/leave-only tokens for that group only, under the same Entra boundary (`contracts/pubsub_live.md` §4).
+
 
 ---
 
@@ -45,8 +54,8 @@ See `architecture.md`'s Project File Structure for the authoritative on-disk tre
 
 | Source | Channel | Format | Trigger |
 |---|---|---|---|
-| Browser (own frontend) | HTTPS | REST API calls (JSON), see each `pages/*.md` §5 | User loads or interacts with a page |
-| Browser (own frontend) | HTTPS | `GET /api/pubsub/negotiate` | Dashboard/Performance page mount, before opening the direct Web PubSub connection (§6) |
+| Browser (own frontend) | HTTPS | REST API calls (JSON) with `Authorization: Bearer <access_token>`, see each `pages/*.md` §5 | User loads or interacts with a page (after MSAL login) |
+| Browser (own frontend) | HTTPS | `GET /api/pubsub/negotiate` (same Bearer) | Dashboard/Performance page mount, before opening the direct Web PubSub connection (§6) |
 
 `Web` has no inbound channel from `Bot`, `Head`, `RabbitMQ`, or `Mosquitto` — by design (§1). Suggestions arrive indirectly: `Bot` writes them to Cosmos DB (`architecture.md` Scenario 3), and `Web` simply reads that same collection — there is no message `Web` "receives" from `Bot` directly.
 
@@ -60,7 +69,8 @@ See `architecture.md`'s Project File Structure for the authoritative on-disk tre
 | Azure Queue Storage | HTTPS (`queue.py`) | Suggestion-response notification event | Admin responds to or closes a suggestion (`architecture.md` Scenario 3; `pages/suggestions.md` §5) |
 | Azure Table Storage | HTTPS (`table.py`) | Historical metrics query | Dashboard/Performance page load + periodic refresh (`pages/dashboard.md`, `pages/performance.md`) |
 | Azure Web PubSub | HTTPS (`pubsub.py`) | `get_client_access_token` (negotiate) | Dashboard/Performance page mount (§6) |
-| Discord Webhook URLs (per-guild, external — **not** an Azure resource) | HTTPS, direct POST | Announcement / release-note embed payloads | Admin submits the Webhook page's form (`pages/webhook.md` §5) |
+| Azure Blob Storage | HTTPS (`blob.py`) | Status document identity/catalog RMW; webhook admin audit writes | Home/Suggestions catalog edits; webhook send/update (`contracts/web_auth.md` §7) |
+| Discord Webhook URLs (per-guild, external — **not** an Azure resource) | HTTPS, direct POST (allowlisted hosts only, no redirects) | Announcement / release-note embed payloads | Admin submits the Webhook page's form (`pages/webhook.md` §5) |
 | Browser (own frontend) | HTTPS response | Compiled static assets + REST JSON | Every request |
 
 Sending directly to a guild's Discord webhook URL requires no bot token and no gateway connection — it's a plain HTTPS POST to a public Discord endpoint — which is why this one outbound path bypasses Azure and `Bot` entirely, exactly as it did in the legacy design, without breaking the "no direct connection to `Bot`" rule.
@@ -73,33 +83,41 @@ Sending directly to a guild's Discord webhook URL requires no bot token and no g
 
 The backend is not a passive static file host — it serves two genuinely different kinds of traffic on the same origin:
 
-1. **The compiled app shell and assets** (`GET /`, `GET /assets/*`) — served via FastAPI's `StaticFiles`, no logic involved.
-2. **The REST API** (`/api/*`) — one router per page, each documented in its own `pages/*.md`.
+1. **The compiled app shell and assets** (`GET /`, `GET /assets/*`, other non-API SPA routes) — served via FastAPI's `StaticFiles`, **public** so the SPA can load and redirect to Entra login (`contracts/web_auth.md` §5).
+2. **The REST API** (`/api/*`) — one router per page, each documented in its own `pages/*.md`. **All `/api/*` require** a valid Entra Bearer token **and** admin-group membership (§6.2).
 
 For **live data** (Dashboard's metric graphs and log console), the browser does **not** open a WebSocket to this backend. Instead:
 
-1. The frontend calls `GET /api/pubsub/negotiate` on page mount.
-2. The backend calls `pubsub.py`'s `get_client_access_token` (`azure.md` §5) and returns a short-lived, group-scoped token/URL to the browser.
-3. The browser opens a WebSocket **directly to Azure Web PubSub** using that token and joins the same broadcast group `Head` is already streaming into (`head.md` §5, §8).
+1. The frontend calls `GET /api/pubsub/negotiate` on page mount (with Bearer).
+2. The backend calls `pubsub.py`'s `get_client_access_token` (`azure.md` §5) scoped to `dashboard-live` with **join/leave only** (no send), TTL default 60 minutes, PubSub `user id` = Entra `oid` (`contracts/pubsub_live.md` §4), and returns `{ url, expires_at, group }`.
+3. The **browser** opens a WebSocket **directly to Azure Web PubSub** and joins `dashboard-live`. Leader `Head` always streams while leader — no listener detection. `Web` itself never listens to PubSub.
 
-This was chosen over proxying the connection through this backend (the legacy `/ws/logs` pattern) specifically so the backend stays stateless with respect to live connections — it never holds open WebSocket state per browser tab, it only issues short-lived tokens. The tradeoff: this backend now depends on a Web PubSub group-naming answer it doesn't own (§3, `head.md`'s open item) before this can actually be wired up.
+Historical charts use REST → Table Storage (`contracts/telemetry.md` §3). Reconnect: re-negotiate; use `seq` to drop duplicates; no live backfill.
 
-For **historical data** (initial chart load, the Performance page's full range), the frontend calls this backend's own REST endpoints, which query Table Storage directly (no PubSub involved) — matching `architecture.md`'s Scenario 4 ("the browser fetches the last 24h of history via a static API call").
+### 6.2 Authentication middleware (Entra ID)
 
-### 6.2 What legacy data this design can and can't reproduce
+Canonical: `contracts/web_auth.md`. Summary for implementers:
+
+1. MSAL.js (Authorization Code + PKCE) in the browser; attach `Authorization: Bearer <access_token>` to every `/api/*` call.
+2. FastAPI validates JWT (issuer, audience, JWKS signature, `tid`, `exp`/`nbf`) then requires `WEB_ENTRA_ADMIN_GROUP_ID ∈ token.groups`.
+3. **401** → frontend triggers MSAL login; **403** → “not authorized” page (signed in, not admin).
+4. No cookie session / no BFF / **no CSRF token** for v1 (Bearer-only).
+5. Redact secrets per `web_auth.md` §6; webhook SSRF allowlist + broadcast controls per §7.
+
+### 6.3 What legacy data this design can and can't reproduce
 
 The legacy dashboard read several fields directly off an in-process `discord.py` bot object (`bot.latency`, `len(bot.guilds)`, `bot.guilds_data`). A standalone `Web` has no such object. Rather than inventing a new channel to smuggle that access back in, each field was evaluated on its own:
 
 | Legacy field | New-architecture source | Status |
 |---|---|---|
-| Guild count | Count of documents in Cosmos DB's Guild Configs collection | **Solvable today** — `Web` already has direct Cosmos DB access; no `Bot` involvement needed |
-| Guild metadata (name, icon, member count) | `Bot` writes these into the same Cosmos DB guild-config document on `on_guild_join`/`on_guild_update`/a periodic reconciliation sweep | **Resolved** — confirmed decision in `bot/discord_bot.md` §6.2, schema in `contracts/guild_config.md`; see `pages/guilds.md` §9 |
-| Bot Discord gateway latency | `Bot` periodically writes a status snapshot (extending the `bot.json`-style document `azure.md`'s `services/status.py` already describes) that `Web` reads directly | **Resolved** — confirmed decision in `bot/discord_bot.md` §6.3 (`Bot`'s Mosquitto heartbeat payload is mirrored into `status.py` every `BOT_STATUS_PUSH_INTERVAL_SEC`); see `pages/dashboard.md` §9 |
-| CPU/RAM/uptime | Already flows to Azure Table Storage via `Head` (`head.md` §8) | **Solvable today**, with one caveat below |
-| Error count | Legacy parsed a local `Errors.log` file directly | **Open item** — no metric like this exists in `head.md`'s Table Storage schema today; would need `Head` (or whichever service detects the error) to start emitting it as a counted metric |
-| Live log console | Legacy tailed a local file + in-process WebSocket | **Solvable today** as *live-only* (§6.1) — a historical backlog on page load would additionally require Blob Storage access, deliberately deferred (`azure.md`'s Addition note, §5) |
+| Guild count (current) | `status.py` `status.guild_count` from Bot push — **not** Cosmos document count (soft-delete pollution) | **Resolved** — `contracts/telemetry.md` §1, `contracts/status_document.md` |
+| Guild metadata (name, icon, member count) | Cosmos `GuildConfigs` via `contracts/guild_config.md` | **Resolved** |
+| Bot Discord gateway latency (current) | `status.py` `status.latency_ms` | **Resolved** |
+| CPU/RAM/uptime | Leader Head → Table (`contracts/telemetry.md`); `uptime` = leader Head process uptime | **Resolved** |
+| Error count | Leader Head `errors_in_window` (ERROR log lines per batch window, reset each flush) | **Resolved** |
+| Live log console | Browser ← PubSub `dashboard-live` (`contracts/pubsub_live.md`); live-only, no Blob replay in v1 | **Resolved** |
 
-**The CPU/RAM/uptime caveat:** `Head` (and therefore its metrics) exists per-node, and multiple nodes can run simultaneously (`architecture.md`'s "Multiple LOCAL NODE setups" note). Legacy's single-process model made "the bot's CPU usage" unambiguous; in this architecture it isn't — is the Dashboard showing the current leader's node, a specific node, or an aggregate across nodes? **Not decided anywhere** — flagged as an open item (§12) rather than silently picking one.
+**Multi-node:** only the leader uploads telemetry; Dashboard shows that leader’s node (`contracts/telemetry.md` §1). Finer node pickers remain P1.8.
 
 ---
 
@@ -110,7 +128,7 @@ The legacy dashboard read several fields directly off an in-process `discord.py`
   [%time%][%level%][web][%file/module%]<tags>: [%message%]
   ```
 - **Open item:** `Web` is not on the local Docker Compose network and has no Mosquitto broker to publish to (§1, §10) — so unlike every other container, it has no path into the centralized log-aggregation pipeline `Head` owns (`head.md` §7). Where `Web`'s own logs go (stdout only, for `docker logs`? A direct Blob Storage append, bypassing `Head` entirely?) is not decided anywhere. Flagged, not resolved.
-- **Sensitive data exclusion:** suggestion message bodies and any admin-entered response text may contain arbitrary user-submitted content — treat the same as `ai_worker.md` §7 treats prompt content: safe to log at `DEBUG`, not at `INFO` or above.
+- **Sensitive data exclusion:** suggestion message bodies and any admin-entered response text may contain arbitrary user-submitted content — treat the same as `ai_worker.md` §7 treats prompt content: safe to log at `DEBUG`, not at `INFO` or above. Never log Bearer tokens, guild `api_key`, raw `webhook_url`, Azure secrets, or PubSub connection strings (`contracts/web_auth.md` §6). Admin mutation audit fields (`acted_by_oid`, etc.) are safe at INFO.
 
 ---
 
@@ -129,7 +147,11 @@ The legacy dashboard read several fields directly off an in-process `discord.py`
 | Table Storage unreachable | Exception from `table.py` call | Dashboard/Performance charts fail to load historical data; live data via Web PubSub (§6.1) is unaffected since it's a separate path. |
 | Web PubSub unreachable, or negotiate fails | Exception from `pubsub.py` call, or browser WebSocket connect failure | Dashboard/Performance falls back to historical-only view (no live updates); exact UI treatment (banner? silent?) left to each page doc. |
 | Discord webhook POST fails for a given guild | Non-2xx response from Discord | Per-guild failure, doesn't block sending to other selected guilds — mirrors legacy's own per-guild result tracking (`pages/webhook.md` §5/§8). |
-| No auth layer (§3) | N/A — not a failure, a standing gap | Anyone reaching the container's port can perform admin actions today. Not mitigated at this layer. |
+| Missing/invalid Bearer on `/api/*` | Auth middleware | **401** — frontend triggers MSAL login (`contracts/web_auth.md` §4). |
+| Valid Bearer but not in admin group | Auth middleware | **403** — frontend shows “not authorized” page. |
+| Webhook URL fails allowlist / SSRF checks | Validation before Discord POST | Reject that guild’s send; do not follow redirects (`contracts/web_auth.md` §7). |
+| ALL-broadcast cooldown / SELECTED rate exceeded | Rate limiter keyed by Entra `oid` | **429** (or equivalent) with clear error; no Discord POST. |
+| Duplicate `Idempotency-Key` on webhook send/update | Idempotency store | Return prior result; do not re-POST Discord. |
 
 ---
 
@@ -139,10 +161,12 @@ The legacy dashboard read several fields directly off an in-process `discord.py`
 |---|---|---|
 | Azure Cosmos DB | Guild config reads, suggestion CRUD | See §9. |
 | Azure Queue Storage | Suggestion-response notification to `Bot` | See §9. |
-| Azure Web PubSub | Live dashboard data, via a direct browser connection negotiated by this backend | See §9; also blocked entirely until the group-naming open item (§3, `head.md`) is resolved. |
-| Azure Table Storage | Historical metrics (Dashboard/Performance) | See §9. |
-| `azure.md` | Client construction/auth for all four resources above | Internal documentation dependency, not a runtime one. |
-| Discord Webhook URLs (per-guild) | Announcements/updates | External to Azure entirely; see §9. |
+| Azure Web PubSub | Negotiate-only; browser connects to `dashboard-live` | See §9; `contracts/pubsub_live.md`. |
+| Azure Table Storage | Historical metrics (Dashboard/Performance) | See §9; `contracts/telemetry.md`. |
+| Azure Blob Storage | Status document identity/catalog RMW; webhook admin audit blobs | `contracts/status_document.md`; `contracts/web_auth.md` §7. |
+| `azure.md` | Client construction/auth for Azure resources above | Internal documentation dependency, not a runtime one. Distinct from Entra human auth (`contracts/web_auth.md` §10). |
+| Microsoft Entra ID | Human admin login + JWT validation | `contracts/web_auth.md` — required for all `/api/*`. |
+| Discord Webhook URLs (per-guild) | Announcements/updates | External to Azure entirely; allowlisted hosts only — see §9 / `web_auth.md` §7. |
 | **Not a dependency (explicit):** `Bot`, `Head`, `RabbitMQ`, `Mosquitto` | — | Confirmed by design (§1) — this is what "standalone" means for this container. |
 
 ---
@@ -165,13 +189,12 @@ The legacy dashboard read several fields directly off an in-process `discord.py`
 
 *(Additive section, same convention `ai_worker.md` uses — this doc surfaced enough open questions to warrant collecting them here rather than only inline.)*
 
-- **Web PubSub telemetry/log group naming** — blocks the entire live-data integration (§3, §6.1; also flagged in `azure.md` §5 and `head.md` §5).
-- **No authentication/authorization exists** for any admin action (§3, §9) — carried forward from legacy's unfinished "Auth Placeholder," not re-decided here.
-- ~~Bot-sourced dashboard fields (gateway latency, per-guild live metadata) have no defined write path from `Bot` yet~~ — **resolved** (§6.2): `bot/discord_bot.md` §6.2/§6.3 and `contracts/guild_config.md` now define both write paths.
-- **Error-count metric** has no defined source anywhere in the new architecture (§6.2) — unaffected by the `Bot`-side resolution above, this one is still `Head`'s gap to close.
-- **Multi-node metrics ambiguity** — which node's CPU/RAM/uptime the Dashboard shows is undecided (§6.2).
+- ~~**Web PubSub telemetry/log group naming**~~ — **resolved (P0.6):** `dashboard-live` / `contracts/pubsub_live.md`.
+- ~~**No authentication/authorization**~~ — **resolved (P0.7):** Entra ID + admin group; `contracts/web_auth.md`. Group-claim overage Graph fallback remains P2.
+- ~~Bot-sourced dashboard fields (gateway latency, per-guild live metadata) have no defined write path from `Bot` yet~~ — **resolved** (§6.3): `bot/discord_bot.md` §6.2/§6.3 and `contracts/guild_config.md` now define both write paths.
+- ~~**Error-count metric** / **multi-node metrics ambiguity**~~ — **resolved** at contract level (`contracts/telemetry.md`: leader-only; `errors_in_window`; process `uptime_sec`). UI node picker remains P1.8.
 - **No logging path off this container** — `Web` can't reach `Head`'s aggregation pipeline (§7).
 - **No metrics path for `Web`'s own operational health** (§8).
 - **No health check contract defined** (§11).
 - **`Web`'s own deployment/rollout mechanism** is undefined — it's the one service `Launcher` doesn't manage (§12).
-- **Historical log replay** for the Dashboard console was deliberately deferred rather than designed in, to avoid taking on a Blob Storage dependency before it's justified (§6.2, `azure.md` §5 Addition note).
+- **Historical log replay** for the Dashboard console was deliberately deferred rather than designed in, to avoid taking on a Blob Storage log-read dependency before it's justified.

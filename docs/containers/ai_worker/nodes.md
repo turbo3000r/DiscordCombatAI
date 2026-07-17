@@ -85,7 +85,7 @@ Not a single literal graph class — a documented **control-flow pattern**, para
 |---|---|
 | **Applies to** | Every LLM-backed node in every graph, not specific to `Validator`/`Decider` |
 | **Config** | `AI_WORKER_LLM_MAX_RETRIES` (default `2`) — canonically defined in `ai_worker.md` §3, restated here since it's graph-agnostic and belongs conceptually next to the other shared pieces on this page |
-| **Behavior** | Retries transient Gemini API failures and malformed/unparseable structured output with one unified budget; if exhausted, the whole task fails (synthetic error result via `ai_tasks_results`, per `rabbitmq.md`'s existing "light crash" pattern). |
+| **Behavior** | Retries transient Gemini API failures and malformed/unparseable structured output with one unified budget; if exhausted, the whole task fails (`AiTaskResultFailed` via `ai_tasks_results`, `contracts/ai_task.md` §4 — `node` set to whichever node's call was retried). |
 
 ---
 

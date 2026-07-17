@@ -66,8 +66,8 @@ Per `visuals.md` §1's confirmed decision, this is a multi-field settings panel 
    - **Listing succeeds** → `ModelSelect` is rebuilt, enabled, and populated with the filtered model list, defaulting to the previously-selected model if it's still present, else the first result.
    - **Listing fails** → `ModelSelect` stays disabled, with an inline/footer message telling the admin the key couldn't be verified (e.g. "Could not fetch models — check your API key") — per the confirmed no-fallback decision.
 4. **Model:** if enabled, admin picks a value on `ModelSelect` → staged.
-5. **Webhook:** admin presses "Set Webhook Change" → `webhook_modal.py` (unchanged from legacy) → staged.
-6. **Apply:** admin presses Apply → all staged changes commit to the guild's Cosmos DB config document (§9) in one write. If an API key was staged, legacy's existing "is this key actually usable" check (`enableAI()`/`is_api_key_valid`, `modules/guild.py` / `modules/AIHandler.py`) still re-runs before flipping `enabled: true` — kept as a second check even though a successful model-listing call in step 3 already implies the key works, since listing and generating are technically different API calls (flagged as a possible redundant check to simplify later, §14). On failure, `enabled` stays/becomes `false` and the admin sees an inline warning, mirroring legacy's exact wording.
+5. **Webhook:** admin presses "Set Webhook Change" → `webhook_modal.py` (unchanged from legacy) → staged. **On stage/Apply, validate the URL against the Discord-host allowlist** in `contracts/web_auth.md` §7 (`https://discord.com/api/webhooks/...` or `https://discordapp.com/api/webhooks/...` only). Reject non-HTTPS, other hosts, and IP literals with a localized error — do not persist an invalid URL.
+6. **Apply:** admin presses Apply → all staged changes commit to the guild's Cosmos DB config document (§9) in one write. If an API key was staged, legacy's existing "is this key actually usable" check (`enableAI()`/`is_api_key_valid`, `modules/guild.py` / `modules/AIHandler.py`) still re-runs before flipping `enabled: true` — kept as a second check even though a successful model-listing call in step 3 already implies the key works, since listing and generating are technically different API calls (flagged as a possible redundant check to simplify later, §14). On failure, `enabled` stays/becomes `false` and the admin sees an inline warning, mirroring legacy's exact wording. Webhook URL must pass the allowlist again at Apply if staged.
 7. Panel stays open (ephemeral) after Apply — admin may keep adjusting and re-apply, or dismiss it. 5-minute view timeout, unchanged from legacy.
 
 **Diagram:**
@@ -124,6 +124,7 @@ Per-action tags: `guild_id`, `command: "config"`, plus command-specific: which f
 | Non-admin invokes `/config` | `ProcessCommand`'s permission check (§4) | Explicit ephemeral "you lack permission" message, panel never shown |
 | Model-listing call fails (bad key, network, zero results) | Exception/empty result from `client.models.list()` | `ModelSelect` stays disabled with an inline error (§6) — no fallback list; Apply still works for any other staged fields |
 | Staged API key fails the Apply-time validity check (§6 step 6) | `enableAI()`/`is_api_key_valid` returns `False` | `enabled` set/stays `false`, inline warning shown — same wording as legacy |
+| Staged webhook URL fails Discord-host allowlist (§6 step 5–6) | URL host/scheme not in `contracts/web_auth.md` §7 allowlist | Reject stage/Apply with localized error; do not write invalid `webhook_url` |
 | Cosmos DB unreachable on Apply | Exception from `cosmos.py` | Not specified beyond `azure.md` §9's generic "surfaced to the calling service" note — no command-specific recovery yet, flagged in §14 |
 | Panel times out (5 min, unchanged from legacy) | View `timeout=300` fires | Staged-but-unapplied changes are lost, matches legacy exactly |
 
@@ -136,6 +137,7 @@ Per-action tags: `guild_id`, `command: "config"`, plus command-specific: which f
 | Google Gemini API (`google-genai`) | Model listing (§6) + API key validity check (§6 step 6) | External, not an Azure resource — outside `azure.md`'s scope |
 | `azure.md` §3 | Guild config Cosmos DB read/write | Don't redefine variables here |
 | `contracts/guild_config.md` | The exact document schema this command reads/writes | Shared with `bot/discord_bot.md` §6.2 (Discord-metadata fields) and `Web`'s `pages/guilds.md`/`pages/dashboard.md` (read-only) |
+| `contracts/web_auth.md` §7 | Webhook URL allowlist (same rule Web uses before POST) | Applied on stage/Apply so Cosmos never stores an SSRF-prone URL from `/config` |
 
 ## 14. Open Items / Future Work
 
