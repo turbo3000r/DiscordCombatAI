@@ -131,7 +131,7 @@ ai_worker/
 ## 8. Metrics
 
 - **Candidate `AI Worker`-owned metrics** (not yet formally wired to any storage): `tasks_processed_total`, `tasks_failed_total`, per-graph execution duration, and each graph's own quality signals (`attempts_used`, `forced_selection` — already proposed in `graphs/environment.md` §11 / `graphs/battle.md` §11 as candidates, never assigned a storage destination).
-- **`tasks_in_queue`** (`template.md`'s own illustrative example for this service) is actually a RabbitMQ queue-depth metric, not something `AI Worker` measures about itself — ownership is already flagged as undecided in `rabbitmq.md` §8 (`Head` polling the management API? `AI Worker` self-reporting?). Not resolved here either.
+- **`tasks_in_queue`** is a RabbitMQ queue-depth metric. **Not part of v1 telemetry** (`rabbitmq.md` §8). Do not emit an unrouteable counter from this service.
 - **No transport path exists today.** Unlike `Head` (which writes directly to Azure Table Storage, per `head.md` §8), `AI Worker` has no Azure dependency (§10) and no `metrics/ai_worker/*` Mosquitto topic is defined anywhere in `mosquitto.md`'s topic table. Concretely: even if the candidate metrics above were implemented, **there is currently no way for them to reach any persistent store.** This is a real gap, not just missing detail — flagged in §12.
 
 ---
@@ -143,7 +143,7 @@ ai_worker/
 | Gemini API call fails/times out, or any LLM node returns structurally invalid output | Exception / schema validation error inside a node | Shared retry-with-backoff wrapper, budget `AI_WORKER_LLM_MAX_RETRIES` (§3, default `2`) — one unified budget for both failure shapes, per `ai_worker/nodes.md` §5. If exhausted, the task fails — see next row. |
 | A graph's LLM retry budget is exhausted, or any other unhandled exception occurs during graph execution | Exception propagates out of the graph invocation (§6 step 4) | `AiTaskResultFailed` published to `ai_tasks_results` (§6 step 6, `contracts/ai_task.md` §4 — renamed and reshaped this revision, `node`/`reason` instead of a `code` enum) with `node` set to whichever node was executing. The original `ai_tasks` message is still acknowledged — see next row for the open question this raises. |
 | `AI Worker` process crashes mid-task (before ack) | RabbitMQ consumer channel closes without an ack | **Resolved this revision, `contracts/ai_task.md` §2:** manual ack only after the corresponding `ai_tasks_results` message is published, so the original message is redelivered to another consumer. Accepted cost: possible duplicate LLM generation on redelivery; `Bot`-side dedup is `contracts/ai_task.md` §6, not this container's concern. |
-| `RabbitMQ` itself unreachable | Connection failure on consume or publish | **Not specified** — same standalone-outage gap already flagged in `rabbitmq.md` §9. Whether `AI Worker` retries its connection, crashes, or idles indefinitely is undecided. |
+| `RabbitMQ` itself unreachable | Connection failure on consume or publish | **Resolved (P1.5):** Celery/Kombu reconnect per `rabbitmq.md` §8a (1s → ×2 → cap 60s + jitter). Do not ack until result publish succeeds. Process stays alive and idle until the broker returns. See S05. |
 | `Mosquitto` unreachable | Publish failure on `progress/*`, `logs/*`, `status/*`, or subscribe failure on `control/*` | **Must never block or fail the task itself** (confirmed, per `docs/contracts/task_progress.md` §7) — log-and-continue for progress/log/heartbeat publishing. For `control/ai_worker/desired_state` specifically: **resolved this revision** via the retained-message redesign (`mosquitto.md` §6) — if `Mosquitto` is down exactly when `Head` needs to pause `AI Worker`, `AI Worker` simply receives the retained `paused` state the instant it next (re)connects/(re)subscribes, rather than never learning about it (the residual case of `Head` itself being unable to publish at all is unchanged, `mosquitto.md` §9). |
 | `AI Worker` container itself restarted (e.g. Docker restart policy) | N/A | No persistent state to recover (§6, stateless-between-tasks) — resumes consuming from `ai_tasks` immediately once reconnected. Any task it had claimed but not finished falls under the "process crashes mid-task" row above. |
 
@@ -153,7 +153,7 @@ ai_worker/
 
 | Dependency | Required for | Behavior if unavailable |
 |---|---|---|
-| `RabbitMQ` (local) | Claiming `ai_tasks`, publishing `ai_tasks_results` | Core dependency — see §9's open items on standalone RabbitMQ outages and crash-recovery semantics. |
+| `RabbitMQ` (local) | Claiming `ai_tasks`, publishing `ai_tasks_results` | Core dependency — reconnect per `rabbitmq.md` §8a / §9. |
 | `Mosquitto` (local) | `control/ai_worker/*` signals, `progress/ai_worker/*` updates, logs, heartbeat | Best-effort only — task processing itself never blocks on Mosquitto (§9). |
 | Google Gemini API | Every LLM-backed node, across both graphs | Required — failures handled via `AI_WORKER_LLM_MAX_RETRIES` (§3, §9); exhaustion fails the task. |
 | `ai_worker/nodes.md`, `ai_worker/prompts.md` | Shared `Validator`/`Decider` code and every node's prompt content | Internal documentation dependency, not a runtime one — listed for completeness per this project's "link, don't duplicate" convention. |
@@ -189,6 +189,7 @@ Unlike `Head`, `AI Worker` exposes no HTTP endpoint of its own (no `Launcher`-eq
 - ~~RabbitMQ ack semantics (manual vs. automatic)~~ — **resolved this revision**, `contracts/ai_task.md` §2: manual ack after result publish.
 - ~~RabbitMQ broker credentials (username/password/vhost) were undecided project-wide~~ — **resolved this revision, P0.4**: `rabbitmq.md` §3/§13.
 - Whether a more detailed health signal (beyond the existing heartbeat, and the new `pause_ack`, §5/§6) is worth adding is undecided (§11).
-- Standalone RabbitMQ or Mosquitto outages (independent of any `Head`-internet-loss scenario) have no `AI Worker`-specific documented behavior beyond "the affected channel stops working" — same underlying gap already flagged in both `rabbitmq.md` §9 and `mosquitto.md` §9.
+- ~~Standalone RabbitMQ outage behavior~~ — **resolved (P1.5):** `rabbitmq.md` §8a/§9, this doc §9, S05.
+- Mosquitto control loss remains fail-closed via Head/Bot leadership contracts; AI Worker pause/resume simply cannot be delivered while the broker is down (accepted).
 - **New this revision** — `AI_WORKER_PROGRESS_HEARTBEAT_SEC=30` (§3, §6) is a proposed default, sized only by inference against `Bot`'s `BOT_AI_TASK_STALL_TIMEOUT_SEC=120` (`contracts/ai_task.md` §5), not by measuring real per-node execution time. Revisit once real timing data exists — see `ai_task.md` §8 for the same flag on the `Bot`-side timeout defaults.
 - ~~Whether `Bot` publishes `ai_tasks` via a real Celery client or raw AMQP was undecided, affecting whether hard-stop's `revoke(terminate=True)` is reachable~~ — **resolved this revision, P0.4**: `Bot` publishes via `apply_async`; see `contracts/ai_task.md` §2/§8.

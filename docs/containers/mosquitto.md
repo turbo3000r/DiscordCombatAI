@@ -12,15 +12,34 @@ It operates independently from `RabbitMQ`, which remains dedicated exclusively t
 
 Like `RabbitMQ`, `Mosquitto` runs as a **standard, unmodified container** — per `architecture.md`: *"A standard Mosquitto container with no custom modifications, configured with local-only access (no external port exposure) and persistent session support disabled."* There is no project-owned application code for this container.
 
-Its only project-specific configuration is whatever config file enforces those two properties (no external listener, no persistent sessions).
+Project-owned config lives under the **target** path `infra/mosquitto/mosquitto.conf` (may not exist on disk until Phase 0 scaffolding):
 
-> **Open item:** no `mosquitto/` directory or config file currently appears anywhere in `architecture.md`'s documented project file structure. A mounted `mosquitto.conf` (or equivalent Compose-level config) will be needed to actually enforce "no external port exposure" and "persistent session support disabled" — flagged as a gap to add to the project file structure when the Compose setup is written, not decided in this doc.
+```
+infra/mosquitto/
+└── mosquitto.conf
+```
+
+### 2a. `mosquitto.conf` contract (resolved, P1.5)
+
+Minimum required settings:
+
+```
+listener 1883
+allow_anonymous true
+persistence false
+# No listener on 0.0.0.0 outside Compose — Compose does not publish host ports for 1883 in production.
+# allow_anonymous is acceptable only because the broker is Compose-network-internal (same threat model as RabbitMQ plaintext).
+```
+
+**Image pin:** `eclipse-mosquitto:2.0` (exact patch tag pinned in Compose when scaffolding). Compose mounts `infra/mosquitto/mosquitto.conf` to `/mosquitto/config/mosquitto.conf`.
+
+**Auth:** no username/password in v1 — network isolation is the boundary. Do not expose MQTT on the host in production compose.
 
 ---
 
 ## 3. Environment Variables
 
-**Broker-side:** none. Per Section 1/2, this is a stock image with no custom modifications — configuration (if any beyond the mounted conf file) would be Compose-level, not environment-variable-driven.
+**Broker-side:** none. Configuration is file-mounted (§2a), not env-driven.
 
 **Consumer-side (per-service connection variables):** the only ones formally defined anywhere today belong to `Head`:
 
@@ -38,8 +57,6 @@ Its only project-specific configuration is whatever config file enforces those t
 |---|---|---|---|---|
 | `BOT_MOSQUITTO_HOST` | No | `mosquitto` | Hostname of the local Mosquitto broker. | `bot/discord_bot.md` §3 |
 | `BOT_MOSQUITTO_PORT` | No | `1883` | Mosquitto broker port. | `bot/discord_bot.md` §3 |
-
-> **Resolved in this revision:** the row previously here flagged `BOT_MOSQUITTO_HOST`/`BOT_MOSQUITTO_PORT` as open pending `bot/discord_bot.md`. That doc is now written and formalizes both, following the same `<SERVICE>_MOSQUITTO_HOST/PORT` pattern `Head` and `AI Worker` already use.
 
 ---
 
@@ -92,26 +109,30 @@ Same topic map as Section 4, viewed from the delivery side:
 ## 6. Internal Logic
 
 - **Wildcard subscriptions:** `Head` subscribes to `logs/#` to catch every level/service in one subscription rather than six individual ones (per `head.md` §7).
-- **No persistent sessions:** per `architecture.md`, session persistence is disabled — logs (and, before this revision, control signals) are transient by nature; a subscriber that's offline when a message is published simply never receives it, and must resubscribe fresh on every reconnect (no queued backlog). This is still consistent with the "best-effort, occasional loss acceptable" design boundary for `logs/*` and `status/*/heartbeat`. **Retained messages (below) are a separate broker feature from persistent sessions and are unaffected by this setting** — a retained message is held by the broker per-topic regardless of session persistence, and is delivered to a client immediately upon subscribing (fresh connection or reconnect alike). This is exactly why retain, not persistent sessions, is the right fix for `control/bot/desired_state`/`control/ai_worker/desired_state` below — it doesn't require reversing the "no persistent sessions" decision.
-- **QoS:** leadership-control topics in `contracts/leadership_control.md` use QoS 1. Duplicate delivery is expected and suppressed by `(leadership_term, command_seq)`/`grant_id`. Logs, ordinary service heartbeats, and progress remain best-effort; their exact QoS remains a P1 broker-configuration decision.
-- **Retention:** `control/bot/desired_state` is retained but contains safe modes only. `control/bot/activation_grant` and `status/bot/control_ack` are never retained. `control/ai_worker/desired_state` remains retained. Retained heartbeat policy remains open and can never turn a heartbeat into proof of current liveness.
-- **`progress/ai_worker/<task_id>` is the one topic pattern in this table that is not routed through or aggregated by `Head`** — it goes directly `AI Worker` → `Bot`, bypassing `Head` entirely, since `Head` has no reason to know about individual task phases. This is a deliberate exception to `Head`'s usual "sole aggregator" role (Section 5), not an oversight — see `docs/contracts/task_progress.md` for the full rationale.
+- **No persistent sessions:** per `architecture.md`, session persistence is disabled — logs are transient by nature; a subscriber that's offline when a message is published simply never receives it, and must resubscribe fresh on every reconnect (no queued backlog). This is still consistent with the "best-effort, occasional loss acceptable" design boundary for `logs/*`, `progress/*`, and `status/*/heartbeat`. **Retained messages (below) are a separate broker feature from persistent sessions and are unaffected by this setting.**
+- **QoS (resolved, P1.5):**
+  | Topic class | QoS | Notes |
+  |---|---|---|
+  | Leadership control (`control/bot/*`, `status/bot/control_ack`) | **1** | Fixed in `contracts/leadership_control.md` |
+  | `control/ai_worker/desired_state`, `status/ai_worker/pause_ack`, `status/bot/drain_progress` | **1** | Control / drain correctness |
+  | `logs/*`, `progress/ai_worker/*`, `status/<service>/heartbeat` | **0** | Best-effort; loss is acceptable |
+- **Retention (resolved, P1.5):** `control/bot/desired_state` and `control/ai_worker/desired_state` remain retained. `control/bot/activation_grant`, `status/bot/control_ack`, drain/pause acks, **and all heartbeats** are **never retained**. A heartbeat is never proof of current liveness — subscribers use local monotonic elapsed time since last receipt (same principle as grant deadlines in `leadership_control.md`).
+- **Head republish after Mosquitto outage (resolved, P1.5):** if Head could not publish a state change while the broker was down, on successful reconnect Head **re-publishes the current retained desired modes** (`control/bot/desired_state`, `control/ai_worker/desired_state`) from its in-memory authority. It does **not** replay buffered historical grants. Short-lived `activation_grant` messages resume on the next normal grant cycle only — never flush a backlog of stale grants.
+- **`progress/ai_worker/<task_id>` bypasses Head** — direct `AI Worker` → `Bot`; see `docs/contracts/task_progress.md`.
 
 ---
 
 ## 7. Logging
 
-This container **is** the transport layer for the entire system's logging pipeline (Section 4/5), but it's worth flagging explicitly: **does Mosquitto log about itself?**
+This container **is** the transport layer for the entire system's logging pipeline (Section 4/5). Mosquitto's **own** broker log (connect/disconnect, auth, drops) is **not** bridged into `logs/#` in v1.
 
-- `RabbitMQ`'s own broker-level events are bridged into `logs/warning|errors/rabbitmq` by a subscriber hosted in `Head` (see `rabbitmq.md` §7).
-- **No equivalent bridging is documented for Mosquitto's own broker log** (client connect/disconnect events, authentication failures, dropped-message warnings). `Head`'s log aggregator (per `head.md` §7) only describes subscribing to `logs/#` and bridging RabbitMQ's event exchange — nothing about Mosquitto's own internal log output.
-- **Flagged as a real design gap**, not just missing detail: if the Mosquitto broker itself is misbehaving (e.g. rejecting connections, silently dropping messages under load), there is currently no path for that fact to reach the same centralized log archive everything else uses. An administrator would only find out by reading the raw Mosquitto container's `docker logs` directly.
+**Resolved (P1.5):** operators diagnose Mosquitto via host `docker logs <mosquitto-container>` only. Unlike RabbitMQ (§7 / `rabbitmq.md` §7), there is no Head event-exchange bridge for Mosquitto. This is an accepted observability gap for the safety-critical control broker — mitigated by Head/Bot connection flags (`mosquitto_connected`) and leadership soft-stop on control loss, not by centralized broker-log archival.
 
 ---
 
 ## 8. Metrics
 
-No dedicated metrics are defined for Mosquitto itself (e.g. connected client count, message throughput, dropped-message count). Flagged as an open item — could be a natural addition to `Head`'s existing election-related metrics (per `head.md` §8), since `Head` already owns both the telemetry pipeline and the Mosquitto connection, but this has not been decided or assigned anywhere.
+**Mosquitto broker metrics are not part of v1 telemetry.** Optional later; do not leave unrouteable counters in service docs.
 
 ---
 
@@ -122,6 +143,7 @@ No dedicated metrics are defined for Mosquitto itself (e.g. connected client cou
 | `Mosquitto` unreachable | Bot control connection drops | `Bot` soft-stops immediately: bounded drain, reject new AI work, then hard-stop at drain timeout. The activation-grant deadline is an independent hard-stop backstop. `Head` must not issue activation while control is unavailable. |
 | `Bot` misses retained desired mode while disconnected | Re-subscribe | The safe retained mode is delivered on subscribe. It cannot reactivate Bot; a new live grant is still required. |
 | Activation grant is lost or duplicated | Grant deadline / duplicate identifiers | Loss prevents activation or causes deadline hard-stop. Duplicate/lower/equal per-term sequence is ignored idempotently. |
+| Head missed a state-change publish while broker was down | Publish failure / disconnect | On reconnect, republish current retained desired modes only (§6) — no grant backlog. |
 
 ---
 
@@ -137,10 +159,21 @@ Consumed by: `Head` (log aggregation, RabbitMQ event bridging output), `Bot` (co
 
 ## 11. Health Check
 
-Not specified as a standalone check on the Mosquitto container itself (no documented Docker Compose `healthcheck:` block). The only existing signal of Mosquitto's health today is indirect: `Head`'s own `/status` endpoint already exposes `"mosquitto_connected": true` (per `head.md` §11), reflecting whether `Head`'s own client connection to the broker is currently up — not a check of the broker process itself.
+**Compose `healthcheck` (required, P1.5):**
+
+```yaml
+healthcheck:
+  test: ["CMD-SHELL", "mosquitto_sub -h localhost -t '$$SYS/broker/uptime' -C 1 -W 3 || exit 1"]
+  interval: 10s
+  timeout: 5s
+  retries: 5
+  start_period: 10s
+```
+
+`Head` continues to expose `"mosquitto_connected"` on `/status` for its own client session — that flag is complementary to the container healthcheck, not a substitute.
 
 ---
 
 ## 12. Versioning & Update Behavior
 
-`Mosquitto` is an off-the-shelf broker image, pinned via its tag in `docker-compose.yml` — like `RabbitMQ`, it is **not** part of the coordinated version tag shared by `bot`/`head`/`ai_worker`/`web` (per `Launcher.md` §12). Its own image tag/upgrade policy is a separate, infrastructure-level decision not yet made anywhere.
+`Mosquitto` uses a **pinned** `eclipse-mosquitto:2.0` (patch-pinned in Compose). Like `RabbitMQ`, it is **not** part of the coordinated application tag (`Launcher.md` §12). Operators bump the pin manually; broker upgrades are outside Scenario 5.

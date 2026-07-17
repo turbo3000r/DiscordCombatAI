@@ -33,9 +33,11 @@ src/shared/azure/
 └── models/              # Azure-related Pydantic models
 ```
 
-> **Open item:** the exact file that constructs and caches the shared `ClientSecretCredential` (Section 6) isn't named yet in `architecture.md`'s tree (e.g. a `configs/credential.py`). Flagged here as an implementation detail to fill in when this library is actually built, not decided in this doc.
+> **Credential construction:** `configs/credential.py` constructs and caches the per-process `ClientSecretCredential` (Section 6). Target path under `src/shared/azure/configs/`.
 
 > **`status.py` — canonical contract is now `contracts/status_document.md` (P0.5.3 resolved).** One Blob JSON document with typed nested sections (`identity` / `status` / `suggestion_catalog`), `schema_version`, ETag RMW, bootstrap/seed defaults, and per-section owners: **Web** writes `identity` + `suggestion_catalog` (after deploy-time / first-load seed); **Bot** writes only `status`. This module remains the sole accessor; do not duplicate the schema here.
+
+> **`guilds.py` — write/concurrency contract:** field-scoped Cosmos Patch + ETag, soft-delete/`left_at`, and rejoin semantics are canonical in `contracts/guild_config.md` §4/§7/§8 (P1.3 subset for shared clients, resolved). This module must implement those helpers; it must not whole-document overwrite admin and metadata fields in one blind replace.
 
 ---
 
@@ -65,8 +67,26 @@ This is the **complete and only** list of Azure-related environment variables in
 
 Per service, one `ClientSecretCredential` is still constructed once (from the shared `AZURE_TENANT_ID` plus that service's own `<SERVICE>_AZURE_CLIENT_ID`/`<SERVICE>_AZURE_CLIENT_SECRET`) and shared across whichever clients in `clients/` that service actually imports — the "one credential object per process" pattern is unchanged, only the "one identity for the whole system" part is corrected.
 
-> **Open item, not yet applied to actual infrastructure:** each service's own Service Principal needs RBAC role assignments scoped to only its own resources — e.g. `Head`'s SP gets *Storage Table Data Contributor* + *Storage Blob Data Contributor* + *Web PubSub Service Owner* only, not Cosmos or Queue access at all. Exact role names/scopes per service are to be confirmed at IaC/provisioning time. This doc defines the *application-level* contract (which env vars, which SDK auth flow, which service gets which identity); actually granting those roles on the live Azure resources is a separate infrastructure task outside this doc's scope.
->
+### 3a. RBAC roles and provisioning contract (resolved, P1.7)
+
+**Where instructions live:** this section is the application-level provisioning contract. Target IaC / runbook path (when created): `infra/azure/` (Bicep/Terraform or a checked-in role-assignment script). Applying roles to a live subscription is an ops task (P2), not a missing architecture decision once the table below is followed.
+
+| Service | Service Principal | Azure RBAC role(s) | Scope |
+|---|---|---|---|
+| `Head` | `HEAD_AZURE_CLIENT_*` | `Storage Blob Data Contributor` | Storage account containers used for Blob Lease + log archive (`AZURE_LOG_ARCHIVE_CONTAINER`). Head does **not** write the status document. |
+| `Head` | | `Storage Table Data Contributor` | Storage account / `AZURE_METRICS_TABLE` |
+| `Head` | | `Web PubSub Service Owner` | Web PubSub resource (join/leave/send + group ops for `cluster` and `dashboard-live`) |
+| `Bot` | `BOT_AZURE_CLIENT_*` | `Cosmos DB Built-in Data Contributor` | Cosmos account / database `AZURE_COSMOS_DATABASE` (containers `GuildConfigs`, `Suggestions`) |
+| `Bot` | | `Storage Queue Data Contributor` | Storage account / queue `AZURE_QUEUE_NAME` |
+| `Bot` | | `Storage Blob Data Contributor` | Status blob (status section only) + `AZURE_BATTLE_ARCHIVE_CONTAINER` |
+| `Web` | `WEB_AZURE_CLIENT_*` | `Cosmos DB Built-in Data Contributor` | Same database (read guilds; read/write suggestions) |
+| `Web` | | `Storage Queue Data Contributor` | Suggestion notification queue (send) |
+| `Web` | | `Storage Table Data Reader` | Metrics table (history charts) |
+| `Web` | | `Storage Blob Data Contributor` | Status document identity/catalog RMW + `admin-audit` container (`contracts/web_auth.md`) |
+| `Web` | | `Web PubSub Service Owner` | Negotiate-only: `get_client_access_token` for `dashboard-live` (`contracts/pubsub_live.md`) |
+
+Do **not** grant Head Cosmos/Queue access, or Bot Web PubSub access, in v1.
+
 > **Accepted risk, not solved by the above (per-guild Gemini API keys, plaintext):** per-guild Gemini credentials (`contracts/guild_config.md` §3/§7) are a *separate* secret from anything in this file — they're never touched by the Service Principal/RBAC model above, since they're user-supplied third-party API keys, not Azure resources. They are stored plaintext in Cosmos DB and travel plaintext on RabbitMQ messages (`ai_worker.md` §1). An Azure Key Vault secret-reference indirection was considered and rejected for v1: this project's cost model is "cheap, self-hosted, users bring their own Gemini key" — Key Vault's per-secret pricing and the added latency/complexity of a secret-fetch-per-task don't fit that model. **This is a deliberate, documented trade-off, not an oversight** — revisit only if the project's cost constraints change (e.g. a hosted/managed tier where the operator, not the guild, owns the key).
 
 ---
@@ -96,9 +116,9 @@ Per service, one `ClientSecretCredential` is still constructed once (from the sh
 | `blob.py` | `azure-storage-blob` | Shared `ClientSecretCredential` | Append-blob writes for batched logs; block-blob uploads for battle result archives. |
 | `table.py` | `azure-data-tables` | Shared `ClientSecretCredential` | Batched `upsert_entity` calls for performance metrics rows. |
 | `queue.py` | `azure-storage-queue` | Shared `ClientSecretCredential` | `send_message` (Web → queue) / `receive_messages` (Bot polling, per `architecture.md`'s 5-minute check interval). |
-| `pubsub.py` | `azure-messaging-webpubsubservice` | Shared `ClientSecretCredential` | Group join/leave (leader election presence), `send_to_group` (telemetry/log streaming, dashboard broadcast), **and** `get_client_access_token` (issues a short-lived, group-scoped token so a browser can join a broadcast group directly — see next note). |
+| `pubsub.py` | `azure-messaging-webpubsubservice` | Shared `ClientSecretCredential` | Group join/leave, `send_to_group` (telemetry/log streaming, dashboard broadcast), **and** `get_client_access_token` (short-lived, group-scoped browser token — `contracts/pubsub_live.md`). |
 
-> **Open item:** exact SDK package names above are the standard Azure SDK for Python packages for each resource type — reasonable to assume given the "Technology Stack" already commits to these Azure services, but not literally pinned in any requirements file yet, so treat the package names as expected rather than finalized.
+> **SDK package names** above are the expected Azure SDK for Python packages; exact pins live in `pyproject.toml` at implementation time (P2 / implementation detail).
 >
 > **Resolved (P0.6):** dashboard group is fixed — `HEAD_PUBSUB_DASHBOARD_GROUP` default `dashboard-live`. Negotiate issues join/leave-only tokens for that group; TTL/user-id/`oid` and Entra admin auth in `contracts/pubsub_live.md` §4 / `contracts/web_auth.md`. Cluster group remains `HEAD_PUBSUB_CLUSTER_GROUP` / `cluster` (Head-only).
 >
@@ -108,23 +128,42 @@ Per service, one `ClientSecretCredential` is still constructed once (from the sh
 
 ## 6. Internal Logic
 
-- **Corrected this revision:** one `ClientSecretCredential` is constructed once **per consuming service**, from that service's own `<SERVICE>_AZURE_CLIENT_ID` / `<SERVICE>_AZURE_CLIENT_SECRET` (§3) plus the shared `AZURE_TENANT_ID`, and shared only across the clients that service itself imports (§4). There is no longer one credential object shared system-wide — `Head`, `Bot`, and `Web` each build their own, scoped to their own Service Principal.
-- Each client in `clients/` is lazily instantiated on first use by whichever service imports it (no eager connection to all five resources at library import time, since most services only need a subset — see Section 4).
-- Retry/backoff behavior beyond each Azure SDK's own default retry policy is **not decided** — flagged as an open item. This matters most for `Head`, since `head.md` §6/§9 already defines its own Azure-outage handling (immediate `Bot` stop + exponential backoff up to `HEAD_RECONNECT_BACKOFF_MAX_SEC`) at the *application* level; whether the SDK-level retry policy should be tuned to cooperate with that (e.g. fail fast instead of retrying internally) is unresolved.
+- **Credential:** one `ClientSecretCredential` per consuming service from `configs/credential.py` (§2/§3), shared only across that process's imported clients.
+- **Lazy clients:** each `clients/*` wrapper instantiates on first use.
+- **Failure classification (resolved, P1.7):** every client maps SDK/HTTP failures into one of two library-level categories (exact Python class names are implementation/P2 — behavior is normative):
+  | Class | Typical signals | Retry? |
+  |---|---|---|
+  | **Permanent auth/permission** | HTTP 401/403; AADSTS credential errors; explicit “unauthorized” / RBAC denial | **Never** retry as transient. Fail fast; surface to caller; log at error without secret values. |
+  | **Transient** | Network errors; timeouts; HTTP 408/429/5xx; Cosmos 429; storage throttling | May retry per §6a. |
+- **SDK vs application retry (resolved, P1.7):** configure Azure SDK retry policies to **`max_retries = 0`** (or the minimum the SDK allows that effectively disables stacked retries) on shared clients. **Application-owned** backoff is the only intentional retry layer — this prevents SDK × app double-retry. Head's existing Azure-outage loop (`HEAD_RECONNECT_BACKOFF_MAX_SEC`, `head.md` §6/§9) remains the coordinator for election-critical Azure resources and must treat permanent auth failures as non-retryable (stop the infinite backoff and alarm / stay demoted).
+
+### 6a. Timeouts and transient retry defaults (resolved, P1.7)
+
+| Client | Per-call timeout | Transient retry | Notes |
+|---|---|---|---|
+| `cosmos.py` | `10s` | ≤3 attempts, exponential 0.5s → ×2 → cap 4s + jitter | Includes guild Patch/ETag RMW (`contracts/guild_config.md` §4a) and suggestion claim patches |
+| `blob.py` | `15s` | ≤3 attempts, same backoff | Lease ops: fail fast into Head's election logic; do not hide lease loss behind long SDK waits |
+| `table.py` | `15s` | ≤3 attempts | Head batch upload; Web reads |
+| `queue.py` | `15s` (API); visibility timeout stays **60s** per `contracts/suggestion.md` | Send: ≤3 attempts. **Receive/poll:** no intra-cycle retry storm — see Bot behavior below | |
+| `pubsub.py` | `10s` | ≤2 attempts for send/negotiate | Head soft/hard-stop rules still own “PubSub down” semantics |
+
+**Bot Queue poll (canonical here + `discord_bot.md` §9):** on any receive failure, **skip the cycle** and wait until the next `BOT_QUEUE_POLL_INTERVAL_SEC`. After **3 consecutive** failed poll cycles, mark dependency health `azure_queue` degraded (for whatever health surface Bot exposes — P1.8 may refine the payload). Recovery is automatic on the next successful receive; do not duplicate delivery — claim rules in `contracts/suggestion.md` still apply. Sweep path remains independent of Queue.
+
+**`/config` Cosmos Apply:** see `bot/commands/config.md` §12 — library raises classified errors; command keeps staged UI state and shows a localized error (permanent vs transient wording).
 
 ---
 
 ## 7. Logging
 
-- This library does not publish to the shared Mosquitto logging pipeline itself — it has no "service name" of its own. Errors are expected to propagate as exceptions to the *calling* service, which logs them using its own structured format (`[%time%][%level%][%service%][%file/module%]<tags>: [%message%]`, per `head.md` §7).
-- **Recommended (not yet decided):** this library should raise its own typed exceptions (e.g. `AzureCosmosError`, `AzureBlobError`) instead of leaking raw SDK exceptions, so every consuming service logs Azure failures consistently. The exact exception hierarchy is not designed yet — flagged as an open item for whoever implements `clients/`.
-- **Sensitive data exclusion:** no service's own `<SERVICE>_AZURE_CLIENT_SECRET` (§3, per-service since this revision) must ever appear in any log line, at any level — each service is responsible for its own secret, not just a single shared one.
+- This library does not publish to the shared Mosquitto logging pipeline itself — it has no "service name" of its own. Errors propagate as exceptions to the *calling* service, which logs them using its own structured format (`[%time%][%level%][%service%][%file/module%]<tags>: [%message%]`, per `head.md` §7 / `contracts/log_archive.md`).
+- Prefer wrapping SDK failures in the two classified categories in §6 (permanent vs transient). A finer typed hierarchy (`AzureCosmosError`, …) is **P2** — optional sugar on top of the classification, not required before Phase 0 clients ship.
+- **Sensitive data exclusion:** no service's own `<SERVICE>_AZURE_CLIENT_SECRET` must ever appear in any log line, at any level.
 
 ---
 
 ## 8. Metrics
 
-Not applicable directly — this library does not self-report metrics anywhere. If Azure SDK call latency or error-rate metrics are ever wanted, that responsibility belongs to whichever consuming service uses the client (e.g. `Head` could fold "Azure call failures" into its own election-related metrics per `head.md` §8). Not decided in any current doc — flagged as an open item, not assigned to any service yet.
+Not applicable directly — this library does not self-report metrics. Optional Azure call latency/error counters remain P2 / P1.8 unless a consuming service adopts them.
 
 ---
 
@@ -132,12 +171,13 @@ Not applicable directly — this library does not self-report metrics anywhere. 
 
 | Failure | Detection | Recovery |
 |---|---|---|
-| Cosmos DB unreachable | Exception raised from `cosmos.py` call | Surfaced to the calling service (`Bot`/`Web`); this library defines no retry/fallback of its own — see the calling service's own doc for its reaction. |
-| Blob Storage unreachable | Exception raised from `blob.py` call | Surfaced to `Head`; per `head.md` §9, buffered logs accumulate in memory until capacity, then oldest entries are dropped. |
-| Table Storage unreachable | Exception raised from `table.py` call | Surfaced to `Head` (writer side): same buffering/drop behavior as Blob Storage, per `head.md` §9. Surfaced to `Web` (reader side): Dashboard/Performance historical charts fail to load — see `web.md` §9. Two independent failure paths off the same resource, not one shared reaction. |
-| Queue Storage unreachable | Exception raised from `queue.py` call | Surfaced to `Bot`/`Web`; no documented fallback yet — flagged as an open item (does `Bot` simply skip that polling cycle, like `Head` does for GitHub Releases? Not specified anywhere). |
-| Web PubSub unreachable | Exception raised from `pubsub.py` call | Surfaced to `Head` (publisher side): per `head.md` §6/§9, treated as loss-of-internet — immediate local `Bot` stop, exponential backoff reconnect. Surfaced to `Web` (subscriber side, via `get_client_access_token` or the browser's own connection): live dashboard data falls back to historical-only — see `web.md` §9. |
-| A service's own `<SERVICE>_AZURE_CLIENT_SECRET` expired, revoked, or that service's Service Principal missing a required RBAC role | Every call against the affected resource, from that service only (per-service SPs, §3, mean this is now isolated to one service rather than the whole system), starts failing with an auth error | Not distinguished from a generic "resource unreachable" failure by any consuming service today — flagged as a design gap: an auth failure is permanent until a human rotates that service's secret/fixes its RBAC, whereas a transient network failure resolves itself. Treating them identically (e.g. `Head`'s infinite exponential backoff) risks retrying forever against a failure that will never self-heal. Worth a follow-up decision. |
+| Cosmos DB unreachable (transient) | Transient classification from `cosmos.py` | Caller-specific. Bot `/config`: keep staged changes, localized error (`config.md` §12). Suggestion writes: fail the command/request. Guild sync: skip guild, retry next sweep. |
+| Cosmos DB auth/RBAC permanent | Permanent classification | Fail fast; do not apply Head-style infinite backoff. Operator must rotate secret or fix role assignment (§3a). |
+| Blob Storage unreachable | Exception from `blob.py` | Surfaced to `Head`; per `head.md` §9, buffered logs accumulate then drop oldest. Lease failure follows leadership soft/hard-stop rules. |
+| Table Storage unreachable | Exception from `table.py` | Head writer: buffer/drop per `head.md` §9. Web reader: historical charts fail — `web.md` §9. |
+| Queue Storage unreachable | Exception from `queue.py` | **Bot poll:** skip cycle + consecutive-failure degraded flag (§6a); sweep still delivers pending tickets (`contracts/suggestion.md`). **Web enqueue after Cosmos write:** ticket remains `pending`; Bot sweep recovers — not a lost suggestion (`suggestion.md`). |
+| Web PubSub unreachable | Exception from `pubsub.py` | Head: loss-of-coordination path (`head.md` §6/§9). Web negotiate: fail the API call; browser cannot get a token. |
+| Secret expired / RBAC missing | Permanent auth failures on affected resource only (per-service SPs) | Fail fast for that service; other services' SPs unaffected. |
 
 ---
 
@@ -149,7 +189,7 @@ None of its own — this library sits at the bottom of the dependency graph; eve
 
 ## 11. Health Check
 
-No exposed health endpoint — this is a library, not a process. **Recommended (not yet implemented):** each consuming service that depends on Azure connectivity should fold an `azure_connected`-style flag into its own `/status` endpoint, the same way `head.md` §11 already exposes `pubsub_connected: true`. Whether that should be one combined flag or a per-resource breakdown (`cosmos_connected`, `blob_connected`, ...) is not decided — flagged as an open item.
+No library HTTP endpoint. **Resolved default for consuming services (P1.7):** when a service exposes readiness/dependency health, use **per-resource booleans** for the resources in §4 (e.g. Head: `pubsub_connected`, `blob_lease_ok`; Bot: `cosmos_ok`, `azure_queue`; Web: optional). A single combined `azure_connected` is insufficient when only one resource is down. Exact Bot/AI Worker heartbeat payload enrichment remains P1.8; the classification and per-resource rule here are fixed.
 
 ---
 
