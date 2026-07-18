@@ -31,7 +31,7 @@ persistence false
 # allow_anonymous is acceptable only because the broker is Compose-network-internal (same threat model as RabbitMQ plaintext).
 ```
 
-**Image pin:** `eclipse-mosquitto:2.0` (exact patch tag pinned in Compose when scaffolding). Compose mounts `infra/mosquitto/mosquitto.conf` to `/mosquitto/config/mosquitto.conf`.
+**Image pin:** `eclipse-mosquitto:2.0.20` (exact patch tag pinned in Compose when scaffolding). Compose mounts `infra/mosquitto/mosquitto.conf` to `/mosquitto/config/mosquitto.conf`.
 
 **Auth:** no username/password in v1 — network isolation is the boundary. Do not expose MQTT on the host in production compose.
 
@@ -72,11 +72,11 @@ Reproduced from `architecture.md`'s Mosquitto Topic Structure table — this is 
 | `control/bot/desired_state` | `Head` | QoS 1, retained safe mode: `inactive \| draining \| stopped`. It can never contain `active`; exact schema and per-term sequence semantics are in `contracts/leadership_control.md` §3.1. |
 | `control/bot/activation_grant` | `Head` | QoS 1, **not retained**. Short-lived `active` or `draining` grant derived from the current Blob Lease term. This is the only message that can authorize a Gateway connection; see `contracts/leadership_control.md` §3.2. |
 | `status/bot/control_ack` | `Bot` | QoS 1, not retained. Best-effort acknowledgement of applied control state, correlated by leadership term and command sequence (`contracts/leadership_control.md` §3.3). |
-| `control/ai_worker/desired_state` | `Head` | **Same redesign, same reasoning.** Payload `{"state": "running" \| "paused"}`, retained. Node-local, not cluster-wide (corrected, `architecture.md`'s `AI Worker` note): each node's `Head` only ever controls its own local `AI Worker`. |
+| `control/ai_worker/desired_state` | `Head` | **Same redesign, same reasoning.** Payload `{"schema_version": 1, "state": "running" \| "paused"}`, retained, QoS 1. Node-local, not cluster-wide (corrected, `architecture.md`'s `AI Worker` note): each node's `Head` only ever controls its own local `AI Worker`. Receivers reject unknown `schema_version`. |
 | `status/ai_worker/pause_ack` | `AI Worker` | **New this revision (P0.3).** QoS 1, not retained. `{"schema_version": 1, "node_id": ..., "paused_at": ISO8601}`, published once `AI Worker` finishes its current claim and goes idle after a `paused` request. Informational/diagnostic only — does not gate `Head`'s drain-complete decision (`contracts/drain_status.md` §3). |
 | `status/bot/drain_progress` | `Bot` | **New this revision (P0.3).** QoS 1, not retained. `{"schema_version": 1, "node_id": ..., "leadership_term": ..., "in_flight_workflows": N, "observed_at": ISO8601}`, published every `BOT_DRAIN_PROGRESS_INTERVAL_SEC` while `bot.draining` is set. This is the authoritative signal `Head` watches during `DRAINING` (`contracts/drain_status.md` §1), replacing inference from empty RabbitMQ queues. |
 | `status/<service>/heartbeat` | All services | Liveness signal. **`Bot`'s payload is `{latency_ms, guild_count}`** (`bot/discord_bot.md` §6.3); leader `Head` samples those fields into Table telemetry rows (`contracts/telemetry.md` §1). Other services may use a bare ping. |
-| `progress/ai_worker/<task_id>` | `AI Worker` | Best-effort task-phase updates for a running `ai_tasks` job (`queued`/`launching`/`composing`/`refining`/`finishing`) — powers a live Discord status bar. See `docs/contracts/task_progress.md` for the full message contract. |
+| `progress/ai_worker/<task_id>` | `AI Worker` | Best-effort task-phase updates for a running `ai_tasks` job (`launching`/`composing`/`refining`/`finishing`; Bot creates `queued` locally) — powers a live Discord status bar. QoS 0, not retained. See `docs/contracts/task_progress.md` for the full message contract. |
 
 **Log message format** (applies to all `logs/*` topics, per `architecture.md`, restated verbatim since every subscriber depends on this exact shape):
 
@@ -176,4 +176,4 @@ healthcheck:
 
 ## 12. Versioning & Update Behavior
 
-`Mosquitto` uses a **pinned** `eclipse-mosquitto:2.0` (patch-pinned in Compose). Like `RabbitMQ`, it is **not** part of the coordinated application tag (`Launcher.md` §12). Operators bump the pin manually; broker upgrades are outside Scenario 5.
+`Mosquitto` uses a **pinned** `eclipse-mosquitto:2.0.20` (patch-pinned in Compose). Like `RabbitMQ`, it is **not** part of the coordinated application tag (`Launcher.md` §12). Operators bump the pin manually; broker upgrades are outside Scenario 5.
