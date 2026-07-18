@@ -1,0 +1,89 @@
+{
+  "vhosts": [
+    {
+      "name": "/discordcombatai"
+    }
+  ],
+  "exchanges": [
+    {
+      "name": "ai_tasks",
+      "vhost": "/discordcombatai",
+      "type": "direct",
+      "durable": true,
+      "auto_delete": false,
+      "internal": false,
+      "arguments": {}
+    },
+    {
+      "name": "ai_tasks_results",
+      "vhost": "/discordcombatai",
+      "type": "direct",
+      "durable": true,
+      "auto_delete": false,
+      "internal": false,
+      "arguments": {}
+    },
+    {
+      "name": "dlx",
+      "vhost": "/discordcombatai",
+      "type": "topic",
+      "durable": true,
+      "auto_delete": false,
+      "internal": false,
+      "arguments": {}
+    }
+  ],
+  "queues": [
+    {
+      "name": "ai_tasks",
+      "vhost": "/discordcombatai",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {
+        "x-dead-letter-exchange": "dlx"
+      }
+    },
+    {
+      "name": "ai_tasks_results",
+      "vhost": "/discordcombatai",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {
+        "x-dead-letter-exchange": "dlx"
+      }
+    },
+    {
+      "name": "dead_letter",
+      "vhost": "/discordcombatai",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {}
+    }
+  ],
+  "bindings": [
+    {
+      "source": "ai_tasks",
+      "vhost": "/discordcombatai",
+      "destination": "ai_tasks",
+      "destination_type": "queue",
+      "routing_key": "ai_tasks",
+      "arguments": {}
+    },
+    {
+      "source": "ai_tasks_results",
+      "vhost": "/discordcombatai",
+      "destination": "ai_tasks_results",
+      "destination_type": "queue",
+      "routing_key": "ai_tasks_results",
+      "arguments": {}
+    },
+    {
+      "source": "dlx",
+      "vhost": "/discordcombatai",
+      "destination": "dead_letter",
+      "destination_type": "queue",
+      "routing_key": "#",
+      "arguments": {}
+    }
+  ]
+}

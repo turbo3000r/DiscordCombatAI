@@ -70,6 +70,26 @@ QoS: `1`. Retain: `false`.
 
 ## 4. Release-Broadcast Dedup / Concurrent Initiators
 
+### 4a. `update_available` payload (cluster PubSub)
+
+Published by the leader `Head` into `HEAD_PUBSUB_CLUSTER_GROUP` (`cluster`). Canonical schema:
+
+```json
+{
+  "schema_version": 1,
+  "type": "update_available",
+  "target_version": "v1.5.0"
+}
+```
+
+| Field | Rule |
+|---|---|
+| `schema_version` | Current = `1`. Receivers reject unknown versions. |
+| `type` | Literal `"update_available"` — discriminates from `leader_heartbeat` (`contracts/leadership_control.md` §4). |
+| `target_version` | Release tag string (same format as `contracts/launcher_ipc.md` `target_version`). **Not** a field named `version`. |
+
+### 4b. Dedup / concurrent initiators
+
 `update_available` broadcasts become idempotent by `target_version` string: `Head` tracks the last version string it has already acted on (started draining for) and ignores a repeated broadcast for the same version.
 
 - Manual `launcher update --version` bypasses `Head` entirely and goes straight to `Launcher`'s already-resolved idempotent `POST /v1/update` (`contracts/launcher_ipc.md`) — no new rule is needed for that path.
@@ -79,7 +99,7 @@ QoS: `1`. Retain: `false`.
 
 ## 5. Mixed-Version Compatibility and Web
 
-All wire contracts (`contracts/ai_task.md`, `contracts/leadership_control.md`, `contracts/task_progress.md`, `contracts/launcher_ipc.md`, `contracts/suggestion.md`, `contracts/telemetry.md`, `contracts/status_document.md`, `contracts/battle_archive.md`, `contracts/log_archive.md`, `contracts/pubsub_live.md`, `contracts/web_auth.md`, and this contract) are versioned via their own `schema_version` field (or an equivalent documented format version for plain-text log lines); a receiver must reject/ignore an unknown `schema_version` rather than guess. This rule is stated uniformly and referenced from `architecture.md`'s overview.
+All wire contracts (`contracts/ai_task.md`, `contracts/leadership_control.md`, `contracts/task_progress.md`, `contracts/launcher_ipc.md`, `contracts/suggestion.md`, `contracts/telemetry.md`, `contracts/status_document.md`, `contracts/battle_archive.md`, `contracts/log_archive.md`, `contracts/pubsub_live.md`, `contracts/web_auth.md`, `contracts/guild_config.md`, and this contract — including `update_available` and `control/ai_worker/desired_state`) are versioned via their own `schema_version` field (or an equivalent documented format version for plain-text log lines); a receiver must reject/ignore an unknown `schema_version` rather than guess. This rule is stated uniformly and referenced from `architecture.md`'s overview.
 
 For `Web` specifically — independently deployed, with no direct peer protocol to `Bot`/`Head`, only shared Cosmos/Blob/Table/Queue documents and Web PubSub — it must tolerate reading **one prior and one following** `schema_version`/shape of any document it consumes (`guild_config`, `suggestion`, status document, telemetry entities/payloads, queue messages). Additive-only changes are allowed within that compatibility window; a breaking change must introduce a new field name rather than reusing or retyping an existing one.
 

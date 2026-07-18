@@ -25,6 +25,8 @@ Defines the single Cosmos DB document shape that represents "everything known ab
 
 ```python
 class GuildConfigDocument(TypedDict):
+    schema_version: int          # current = 1. Same reject-unknown-version / Web ±1 additive
+                                  # tolerance rule as other shared documents (`contracts/drain_status.md` §5).
     id: str                      # Discord guild ID (string) — also the partition key, see §2
     guild_id: str                # duplicate of id, kept as a real field so it survives being read out of context (e.g. a query projection)
 
@@ -63,7 +65,7 @@ class GuildConfigDocument(TypedDict):
 |---|---|---|
 | `language`, `api_key`, `model`, `webhook_url`, `enabled` | `Bot` | `/config` → "Apply" (`bot/commands/config.md` §6, §9) |
 | `name`, `icon_url`, `member_count`, `owner_id` | `Bot` | `on_guild_join` / rejoin (§7), `on_guild_update`, and periodic reconciliation (`bot/discord_bot.md` §6.2) |
-| `id`, `guild_id`, `created_at` | `Bot` | First create only — defaults (§5). Never overwritten later (including rejoin). |
+| `schema_version`, `id`, `guild_id`, `created_at` | `Bot` | First create only — defaults (§5). Never overwritten later (including rejoin). Strict writers reject unknown `schema_version`. |
 | `left_at` | `Bot` | `on_guild_remove` sets timestamp; rejoin clears to `null` (§7). Never hard-deletes. |
 | `updated_at` | `Bot` | Every write to this document, regardless of which fields changed. |
 
@@ -89,6 +91,7 @@ Carried forward from legacy's `setup_guild` (`docs/legacy/Old_arch.md`), now tar
 
 ```json
 {
+  "schema_version": 1,
   "language": "en",
   "api_key": "",
   "model": "",
@@ -98,6 +101,10 @@ Carried forward from legacy's `setup_guild` (`docs/legacy/Old_arch.md`), now tar
 ```
 
 `enabled` can never legitimately become `true` before a valid `api_key` is staged and applied — enforced by `/config`'s own flow (`bot/commands/config.md` §9), not by this document itself.
+
+### 5a. Schema evolution
+
+Current `schema_version` is **`1`**. Strict Bot writers/readers that own mutations reject unknown versions. `Web` tolerates **one prior and one following** additive schema version when reading guild documents (`contracts/drain_status.md` §5).
 
 ---
 

@@ -1,53 +1,65 @@
 # DiscordCombatAI
 
-## Setup
+Highly available, distributed AI-powered Discord bot.
 
-1. Create a Discord application and bot, then invite it to your server with the applications.commands scope.
-2. Copy `.env.example` to `.env` and set the following variables:
-   - `API_TOKEN` – Discord bot token (required)
-   - `WEB_ENABLED` – Enable FastAPI dashboard (default `true`)
-   - `WEB_HOST` / `WEB_PORT` – Bind address for dashboard (default `0.0.0.0:20000`)
-   - `METRICS_DB_PATH` – SQLite file for metrics persistence (default `metrics.db`)
-   - `METRICS_COLLECTION_INTERVAL` – Seconds between background samples (default `2`)
-   - `METRICS_RETENTION_DAYS` – Days to keep history in SQLite (default `7`)
-   - `METRICS_COMPRESSION_ENABLED` – Enables additional data compression (default `false`)
-3. Install dependencies:
+This repository currently contains **two layouts**:
 
-```
-pip install -r requirements.txt
-```
+1. **Legacy monolith** (still runnable): `app.py`, `modules/`, root `web/`, `requirements.txt`.
+2. **Target architecture** (Phase 0 foundation in progress): `src/`, `infra/`, `tests/`, `pyproject.toml`, Compose.
 
-## Run
+Do not mix imports between the layouts. New shared code lives under `src/shared/`.
 
-```
-python app.py
-```
+## Target architecture (Phase 0+)
 
+### Prerequisites
 
-## Localization
+- Python **3.11+**
+- [`uv`](https://docs.astral.sh/uv/) (preferred) or an equivalent locked environment
+- Docker Compose (for broker integration tests)
 
-Translations live in `lang/<locale>.json` (e.g., `lang/en.json`). Use nested keys and placeholders.
+### Install
 
-Example `lang/en.json`:
-
-```
-{
-  "common": {
-    "hello": "Hello, {user}!",
-    "pong": "Pong! {ms}ms"
-  }
-}
+```bash
+uv sync --all-extras
 ```
 
-Usage from code via `modules/LocalizationHandler.py`:
+### Checks
 
+```bash
+uv run ruff check .
+uv run mypy src
+uv run pytest tests/unit
 ```
-from modules.LocalizationHandler import LocalizationHandler
 
-l10n = LocalizationHandler()
-text = l10n.t("common.hello", guild_id=interaction.guild_id, user=interaction.user.mention)
+Broker integration tests (requires Docker):
+
+```bash
+uv run pytest tests/integration -m integration
 ```
 
-Notes:
-- Falls back to `en` if a key or locale is missing.
-- Files are cached and automatically reloaded if modified.
+Live Azure tests are **opt-in only** (`-m azure_live`) and must never run by default.
+
+### Configuration
+
+Copy `.env.example` to `.env` and fill secrets. Azure variable definitions are owned by `docs/containers/azure.md`.
+
+### Compose
+
+```bash
+docker compose up -d mosquitto rabbitmq
+```
+
+Application services (`head`, `bot`, `ai_worker`) are behind the `application` Compose profile until their Phase 1/2 images exist.
+
+## Legacy monolith (unchanged)
+
+1. Create a Discord application and bot, then invite it with the `applications.commands` scope.
+2. Copy `.env.example` / set `API_TOKEN` for the legacy app (see historical notes below).
+3. Install legacy deps: `pip install -r requirements.txt`
+4. Run: `python app.py`
+
+Legacy localization lives in `lang/<locale>.json` and is used by `modules/LocalizationHandler.py`. The target Bot localization path is `src/bot/localization/` (not migrated in Phase 0).
+
+## Documentation
+
+Start at [`docs/Readme.md`](docs/Readme.md). Implementation sequencing is in [`docs/to_resolve.md`](docs/to_resolve.md).

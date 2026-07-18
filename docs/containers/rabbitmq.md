@@ -17,6 +17,7 @@
 ```
 infra/rabbitmq/
 ├── enabled_plugins          # Must enable rabbitmq_event_exchange (+ rabbitmq_management, §2a)
+├── rabbitmq.conf            # Loads definitions and management settings for the official image
 └── definitions.json         # Optional import: durable queues/exchanges matching contracts/ai_task.md §9
                              # (dlx + dead_letter). Application declare-on-connect remains authoritative
                              # if definitions are absent; both must agree on queue args.
@@ -33,6 +34,8 @@ Compose mounts those files into the official image (see `architecture.md` → Ta
 |---|---|---|
 | `rabbitmq_event_exchange` | **Yes** | `Head`'s log bridge subscribes here (`architecture.md` Mosquitto section, this doc §7). Without it, bridging is silently dead. |
 | `rabbitmq_management` | **Yes (internal only)** | Diagnostics + Compose health probe convenience. Management UI/API must remain on the Compose network only — **do not** publish host port `15672` in production `docker-compose.yml`. Dev compose may publish it optionally. |
+
+`infra/rabbitmq/rabbitmq.conf` loads `definitions.json` at startup and keeps the management listener internal-only; the official image consumes that file directly, so no custom Dockerfile is required.
 
 ### 2b. Threat model / TLS (resolved, P1.5)
 

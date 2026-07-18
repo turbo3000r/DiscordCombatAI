@@ -339,7 +339,7 @@ These edits are mechanical after the decisions above; they should be completed b
 8. ~~Update `Readme.md` after new contracts~~ — **done for P0.5/P0.6/P0.7 contracts and P0.8 scenarios**.
 9. Ensure source-tree comments match the chosen IPC/config files and service ownership.
 10. Remove resolved/open-item prose from component docs once its canonical decision is recorded, instead of leaving “resolved” tombstones indefinitely.
-11. Reconcile `task_progress.md`'s `queued` publisher: Bot creates that phase locally; an AI Worker cannot report a task while it is still waiting unclaimed in RabbitMQ.
+11. ~~Reconcile `task_progress.md`'s `queued` publisher: Bot creates that phase locally; an AI Worker cannot report a task while it is still waiting unclaimed in RabbitMQ.~~ — **done (Phase 0 Slice 0):** `task_progress.md` §3/§4 and `mosquitto.md` §4.
 12. Remove stale wording that Web PubSub group presence is used for leader election; it is only heartbeat transport after the Blob Lease redesign.
 13. ~~Correct `Readme.md` and `web/pages/home.md` claims that Bot status writes resolve/maintain identity~~ — **done, P0.5.3**.
 14. Correct `bot/commands/suggest.md` §5's claim that the `WizardView` correction is unapplied; its own §14 and `visuals.md` say it was applied.

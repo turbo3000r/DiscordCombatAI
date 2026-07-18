@@ -1,0 +1,22 @@
+services:
+  mosquitto:
+    ports:
+      - "127.0.0.1:1883:1883"
+
+  rabbitmq:
+    ports:
+      - "127.0.0.1:5672:5672"
+      - "127.0.0.1:15672:15672"
+
+  head:
+    volumes:
+      - ./src:/app/src
+
+  bot:
+    volumes:
+      - ./src:/app/src
+
+  ai_worker:
+    volumes:
+      - ./src:/app/src
+      - ./prompts:/app/prompts:ro

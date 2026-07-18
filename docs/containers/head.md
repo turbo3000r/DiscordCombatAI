@@ -105,7 +105,7 @@ head/
 | Azure Blob Storage | HTTPS | Appended log batch (`contracts/log_archive.md`) | Every `HEAD_TELEMETRY_BATCH_INTERVAL_SEC` — **leader only** |
 | `Bot` (local) | Mosquitto, `control/bot/desired_state` (QoS 1, retained) | Safe mode `inactive \| draining \| stopped`; exact schema in `contracts/leadership_control.md` §3.1 | Publish `inactive` before election on every Head start; publish demotion/failure/update modes. Never carries active authorization. |
 | `Bot` (local) | Mosquitto, `control/bot/activation_grant` (QoS 1, not retained) | Time-bounded `active \| draining` grant with term UUID and per-term sequence (`contracts/leadership_control.md` §3.2) | Issued/renewed only from confidently held leadership; stopped on demotion or uncertain authority. |
-| `AI Worker` (local) | Mosquitto, `control/ai_worker/desired_state` (**retained**, same redesign) | `{"state": "running" \| "paused"}` | On this node's own update sequence start/end — **node-local, not cluster-wide** (corrected, `architecture.md`'s `AI Worker` note) |
+| `AI Worker` (local) | Mosquitto, `control/ai_worker/desired_state` (**retained**, QoS 1) | `{"schema_version": 1, "state": "running" \| "paused"}` | On this node's own update sequence start/end — **node-local, not cluster-wide** (corrected, `architecture.md`'s `AI Worker` note) |
 | `Launcher` (host) | Authenticated HTTP, `POST /v1/update` to `HEAD_LAUNCHER_IPC_URL` | Async idempotent request/response contract in `contracts/launcher_ipc.md` §4 | After Bot hard-stop/ack wait and voluntary lease release |
 | `Launcher` (host) | Authenticated HTTP, `GET /v1/status` | Schema in `contracts/launcher_ipc.md` §6 | Optional version/operation reconciliation |
 
