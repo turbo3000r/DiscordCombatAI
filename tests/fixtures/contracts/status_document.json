@@ -1,0 +1,72 @@
+{
+  "schema_version": 1,
+  "identity": {
+    "name": "",
+    "description": "",
+    "id": "",
+    "invite_url": ""
+  },
+  "status": {
+    "latency_ms": 0,
+    "guild_count": 0,
+    "updated_at": "2026-07-15T17:00:00Z"
+  },
+  "suggestion_catalog": {
+    "types": [
+      {
+        "value": "minor_issue",
+        "label": "minor issue"
+      },
+      {
+        "value": "major_issue",
+        "label": "major issue"
+      },
+      {
+        "value": "request",
+        "label": "Request"
+      },
+      {
+        "value": "improvement",
+        "label": "Improvement"
+      },
+      {
+        "value": "feedback",
+        "label": "Feedback"
+      }
+    ],
+    "categories": [
+      {
+        "value": "prompts",
+        "label": "Prompts"
+      },
+      {
+        "value": "gamemodes",
+        "label": "Gamemodes"
+      },
+      {
+        "value": "settings",
+        "label": "Battle settings"
+      },
+      {
+        "value": "generic_environments",
+        "label": "Generic environments"
+      },
+      {
+        "value": "commands",
+        "label": "Commands"
+      },
+      {
+        "value": "functionalities",
+        "label": "Functionalities"
+      },
+      {
+        "value": "localization",
+        "label": "Localization"
+      },
+      {
+        "value": "other",
+        "label": "Other"
+      }
+    ]
+  }
+}

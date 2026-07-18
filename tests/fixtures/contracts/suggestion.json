@@ -1,0 +1,62 @@
+{
+  "schema_version": 2,
+  "id": "550e8400-e29b-41d4-a716-446655440000",
+  "ticket_uid": "SUG-A1B2C3D4",
+  "guild_id": "123456789012345678",
+  "title": "Add new mode",
+  "details": "Please add a new mode.",
+  "type": "request",
+  "categories": ["commands", "functionalities"],
+  "submitter": {
+    "id": "111111111111111111",
+    "name": "alice",
+    "display_name": "Alice",
+    "global_name": null,
+    "discriminator": "0"
+  },
+  "contact": {
+    "method": "dm",
+    "user_id": "111111111111111111"
+  },
+  "locale": {
+    "user": "en-US",
+    "guild": "en",
+    "stored": "en"
+  },
+  "guild_snapshot": {
+    "id": "123456789012345678",
+    "name": "Guild One"
+  },
+  "context": {
+    "interaction_id": "22222222-2222-4222-8222-222222222222",
+    "channel_id": "333333333333333333",
+    "in_guild": true
+  },
+  "status": "pending",
+  "conversation": [
+    {
+      "entry_id": "44444444-4444-4444-8444-444444444444",
+      "author_role": "user",
+      "direction": "incoming",
+      "text": "Please add a new mode.",
+      "created_at": "2026-07-15T17:00:00Z",
+      "source": "suggestion_modal",
+      "metadata": {
+        "title": "Add new mode"
+      },
+      "acted_by_oid": null,
+      "acted_by_upn": null
+    }
+  ],
+  "response_text": null,
+  "acted_by_oid": null,
+  "acted_by_upn": null,
+  "acted_at": null,
+  "notification_status": null,
+  "notification_attempts": 0,
+  "notification_last_error": null,
+  "notification_claimed_at": null,
+  "notification_claimed_by": null,
+  "created_at": "2026-07-15T17:00:00Z",
+  "updated_at": "2026-07-15T17:00:00Z"
+}
