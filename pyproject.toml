@@ -1,0 +1,111 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "discord-combat-ai"
+version = "0.1.0"
+description = "DiscordCombatAI — distributed AI Discord bot foundation"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "Proprietary" }
+dependencies = [
+  "pydantic>=2.7,<3",
+  "pydantic-settings>=2.3,<3",
+]
+
+[project.optional-dependencies]
+azure = [
+  "azure-identity>=1.17,<2",
+  "azure-cosmos>=4.7,<5",
+  "azure-storage-blob>=12.20,<13",
+  "azure-storage-queue>=12.10,<13",
+  "azure-data-tables>=12.5,<13",
+  "azure-messaging-webpubsubservice>=1.1,<2",
+]
+head = [
+  "discord-combat-ai[azure]",
+]
+bot = [
+  "discord-combat-ai[azure]",
+  "celery[redis]>=5.4,<6",
+  "kombu>=5.3,<6",
+  "paho-mqtt>=2.1,<3",
+]
+ai-worker = [
+  "celery>=5.4,<6",
+  "kombu>=5.3,<6",
+  "paho-mqtt>=2.1,<3",
+]
+web = [
+  "discord-combat-ai[azure]",
+  "fastapi>=0.111,<1",
+  "uvicorn[standard]>=0.30,<1",
+]
+dev = [
+  "pytest>=8.2,<9",
+  "pytest-asyncio>=0.23,<1",
+  "ruff>=0.5,<1",
+  "mypy>=1.10,<2",
+  "PyYAML>=6.0.2,<7",
+  "types-paho-mqtt>=1.6,<2",
+]
+integration = [
+  "discord-combat-ai[dev]",
+  "paho-mqtt>=2.1,<3",
+  "kombu>=5.3,<6",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = [
+  "src/shared",
+  "src/head",
+  "src/bot",
+  "src/ai_worker",
+]
+
+[tool.hatch.build.targets.wheel.sources]
+"src/shared" = "shared"
+"src/head" = "head"
+"src/bot" = "bot"
+"src/ai_worker" = "ai_worker"
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+asyncio_mode = "auto"
+testpaths = ["tests"]
+markers = [
+  "integration: requires local Docker Compose brokers",
+  "azure_live: opt-in live Azure resources (never default)",
+  "acceptance: Phase 0 scenario prerequisite coverage",
+]
+filterwarnings = [
+  "ignore::DeprecationWarning",
+]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+packages = ["shared", "head", "bot", "ai_worker"]
+mypy_path = "src"
+warn_unused_configs = true
+disallow_untyped_defs = true
+no_implicit_optional = true
+
+[[tool.mypy.overrides]]
+module = [
+  "azure.*",
+  "celery.*",
+  "kombu.*",
+  "paho.*",
+  "yaml",
+]
+ignore_missing_imports = true
