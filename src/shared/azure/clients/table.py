@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from shared.azure._helpers import maybe_await
+from shared.azure._helpers import collect_async_items, maybe_await
 from shared.azure.configs.credential import get_credential
 from shared.azure.configs.settings import AzureServiceName, AzureSettings, load_azure_settings
 from shared.azure.lifecycle import register_resource
@@ -53,8 +53,7 @@ class TableClient:
         async def _query() -> list[dict[str, Any]]:
             table = self._table(table_name)
             result = table.query_entities(query_filter)
-            entities = await maybe_await(result)
-            return list(entities)
+            return await collect_async_items(result)
 
         return await retry_async(_query, category=RetryCategory.SAFE_READ)
 

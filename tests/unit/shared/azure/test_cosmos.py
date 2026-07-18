@@ -39,6 +39,47 @@ class _Container:
         return [{"id": "a", "guild_id": "g1"}]
 
 
+class _AsyncQueryItems:
+    def __init__(self, items: list[dict]) -> None:
+        self._items = items
+
+    def __aiter__(self):
+        async def _iter():
+            for item in self._items:
+                yield item
+
+        return _iter()
+
+
+@pytest.mark.asyncio()
+async def test_cosmos_client_query_collects_async_pages(azure_settings, fake_credential) -> None:
+    class _AsyncContainer(_Container):
+        def query_items(
+            self, *, query: str, parameters: list[dict], enable_cross_partition_query: bool
+        ):
+            return _AsyncQueryItems([{"id": "async", "guild_id": "g2"}])
+
+    class _AsyncDatabase:
+        def __init__(self) -> None:
+            self.container = _AsyncContainer()
+
+        def get_container_client(self, container_name: str) -> _AsyncContainer:
+            return self.container
+
+    class _AsyncService:
+        def get_database_client(self, database_name: str) -> _AsyncDatabase:
+            return _AsyncDatabase()
+
+    client = CosmosClient(
+        service="web",
+        service_client=_AsyncService(),
+        settings=azure_settings,
+        credential=fake_credential,
+    )
+    rows = await client.query("GuildConfigs", "SELECT * FROM c")
+    assert rows == [{"id": "async", "guild_id": "g2"}]
+
+
 class _Database:
     def __init__(self, container: _Container) -> None:
         self.container = container

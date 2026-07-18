@@ -23,6 +23,44 @@ class _Table:
         return None
 
 
+class _AsyncEntities:
+    def __init__(self, items: list[dict]) -> None:
+        self._items = items
+
+    def __aiter__(self):
+        async def _iter():
+            for item in self._items:
+                yield item
+
+        return _iter()
+
+
+class _AsyncTable(_Table):
+    def query_entities(self, query_filter: str):
+        return _AsyncEntities(
+            [{"PartitionKey": "n2", "RowKey": "20260718125631_0001"}]
+        )
+
+
+@pytest.mark.asyncio()
+async def test_table_client_query_collects_async_pages(azure_settings, fake_credential) -> None:
+    class _AsyncService:
+        def __init__(self) -> None:
+            self.table = _AsyncTable()
+
+        def get_table_client(self, table_name: str) -> _AsyncTable:
+            return self.table
+
+    client = TableClient(
+        service="head",
+        service_client=_AsyncService(),
+        settings=azure_settings,
+        credential=fake_credential,
+    )
+    rows = await client.query_entities("NodeMetrics", "PartitionKey eq 'n2'")
+    assert rows == [{"PartitionKey": "n2", "RowKey": "20260718125631_0001"}]
+
+
 class _Service:
     def __init__(self) -> None:
         self.table = _Table()

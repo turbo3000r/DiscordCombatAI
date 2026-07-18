@@ -114,9 +114,11 @@ async def test_suggestion_claim_race_and_enqueue() -> None:
         "123456789012345678",
         "550e8400-e29b-41d4-a716-446655440000",
         "delivery failed api_key=leak-me",
+        claimed_by="bot-1",
         requeue=False,
     )
     assert failed.notification_status == "failed"
     assert failed.notification_last_error is not None
     assert "leak-me" not in failed.notification_last_error
     assert "[REDACTED]" in failed.notification_last_error
+    assert len(cosmos.patches) == 2

@@ -9,6 +9,14 @@ from shared.azure.lifecycle import register_resource
 from shared.utils.retry import RetryCategory, retry_async
 
 
+def _is_blob_not_found(exc: BaseException) -> bool:
+    status_code = getattr(exc, "status_code", None)
+    if status_code == 404:
+        return True
+    message = str(exc).lower()
+    return "blobnotfound" in message or "not found" in message or "404" in message
+
+
 class BlobClient:
     def __init__(
         self,
@@ -58,12 +66,20 @@ class BlobClient:
         return await retry_async(_read, category=RetryCategory.SAFE_READ)
 
     async def write_text(
-        self, container_name: str, blob_name: str, payload: str, *, etag: str | None = None
+        self,
+        container_name: str,
+        blob_name: str,
+        payload: str,
+        *,
+        etag: str | None = None,
+        create_only: bool = False,
     ) -> None:
         async def _write() -> None:
             blob = self._blob(container_name, blob_name)
-            kwargs: dict[str, Any] = {"overwrite": True}
-            if etag is not None:
+            kwargs: dict[str, Any] = {"overwrite": not create_only}
+            if create_only:
+                kwargs["if_none_match"] = "*"
+            elif etag is not None:
                 try:
                     from azure.core import MatchConditions
 
@@ -74,13 +90,21 @@ class BlobClient:
             result = blob.upload_blob(payload.encode("utf-8"), **kwargs)
             await maybe_await(result)
 
-        await retry_async(_write, category=RetryCategory.ETag_RMW)
+        await _write()
 
     async def append_text(self, container_name: str, blob_name: str, payload: str) -> None:
         async def _append() -> None:
             blob = self._blob(container_name, blob_name)
-            result = blob.append_block(payload.encode("utf-8"))
-            await maybe_await(result)
+            try:
+                result = blob.append_block(payload.encode("utf-8"))
+                await maybe_await(result)
+            except Exception as exc:
+                if not _is_blob_not_found(exc):
+                    raise
+                create_result = blob.create_append_blob()
+                await maybe_await(create_result)
+                result = blob.append_block(payload.encode("utf-8"))
+                await maybe_await(result)
 
         await retry_async(_append, category=RetryCategory.APPEND_BLOB)
 

@@ -7,7 +7,7 @@ from pydantic import ValidationError
 
 from shared.azure._helpers import utc_now
 from shared.azure.clients.blob import BlobClient
-from shared.azure.errors import AzurePermanentError
+from shared.azure.errors import AzurePermanentError, classify_azure_error
 from shared.models.status_document import StatusDocument, build_status_seed
 from shared.utils.retry import RetryCategory, retry_async
 
@@ -46,10 +46,25 @@ class StatusService:
         if document is not None:
             return document
         seed = self._seed()
-        await self.blob_client.write_text(
-            self.container_name, self.blob_name, seed.model_dump_json(), etag=etag
-        )
-        return seed
+        try:
+            await self.blob_client.write_text(
+                self.container_name,
+                self.blob_name,
+                seed.model_dump_json(),
+                create_only=True,
+            )
+        except Exception as exc:
+            classified = classify_azure_error(exc)
+            if classified.status_code != 412 and "already exists" not in str(exc).lower():
+                raise
+            document, _ = await self._read_document()
+            if document is not None:
+                return document
+            raise
+        document, _ = await self._read_document()
+        if document is None:
+            raise AzurePermanentError("failed to seed status document")
+        return document
 
     async def get_identity(self) -> Any:
         document = await self.ensure_seeded()

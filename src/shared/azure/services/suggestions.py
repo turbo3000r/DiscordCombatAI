@@ -13,6 +13,8 @@ from shared.models import SuggestionDocument, SuggestionQueueMessage
 from shared.security.redact import redact_sensitive
 from shared.utils.retry import RetryCategory, retry_async
 
+PatchOperations = list[dict[str, Any]]
+
 
 class SuggestionService:
     def __init__(
@@ -125,29 +127,70 @@ class SuggestionService:
 
         return await retry_async(_claim, category=RetryCategory.ETag_RMW)
 
-    async def mark_sent(self, guild_id: str, suggestion_id: str) -> SuggestionDocument:
-        current = await self.get(guild_id, suggestion_id)
-        updated = current.model_copy(
-            update={"notification_status": "sent", "updated_at": utc_now()}
+    async def mark_sent(
+        self, guild_id: str, suggestion_id: str, *, claimed_by: str
+    ) -> SuggestionDocument:
+        return await self._patch_notification(
+            guild_id,
+            suggestion_id,
+            claimed_by=claimed_by,
+            operations=[
+                {"op": "set", "path": "/notification_status", "value": "sent"},
+                {"op": "set", "path": "/updated_at", "value": utc_now()},
+            ],
         )
-        saved = await self.cosmos_client.upsert(
-            self.container_name, updated.model_dump(mode="python")
-        )
-        return self._validate(saved)
 
     async def mark_failed(
-        self, guild_id: str, suggestion_id: str, error: str, *, requeue: bool
+        self,
+        guild_id: str,
+        suggestion_id: str,
+        error: str,
+        *,
+        claimed_by: str,
+        requeue: bool,
     ) -> SuggestionDocument:
         current = await self.get(guild_id, suggestion_id)
-        updated = current.model_copy(
-            update={
-                "notification_last_error": redact_sensitive(error),
-                "notification_attempts": current.notification_attempts + 1,
-                "notification_status": "pending" if requeue else "failed",
-                "updated_at": utc_now(),
-            }
+        return await self._patch_notification(
+            guild_id,
+            suggestion_id,
+            claimed_by=claimed_by,
+            operations=[
+                {"op": "set", "path": "/notification_last_error", "value": redact_sensitive(error)},
+                {
+                    "op": "set",
+                    "path": "/notification_attempts",
+                    "value": current.notification_attempts + 1,
+                },
+                {
+                    "op": "set",
+                    "path": "/notification_status",
+                    "value": "pending" if requeue else "failed",
+                },
+                {"op": "set", "path": "/updated_at", "value": utc_now()},
+            ],
         )
-        saved = await self.cosmos_client.upsert(
-            self.container_name, updated.model_dump(mode="python")
-        )
-        return self._validate(saved)
+
+    async def _patch_notification(
+        self,
+        guild_id: str,
+        suggestion_id: str,
+        *,
+        claimed_by: str,
+        operations: PatchOperations,
+    ) -> SuggestionDocument:
+        async def _mutate() -> SuggestionDocument:
+            current_raw = await self.cosmos_client.point_read(
+                self.container_name, suggestion_id, guild_id
+            )
+            current = self._validate(current_raw)
+            if current.notification_status != "claiming":
+                raise AzurePermanentError("invalid notification transition")
+            if current.notification_claimed_by != claimed_by:
+                raise AzurePermanentError("notification claim mismatch")
+            etag = str(current_raw.get("_etag", ""))
+            saved = await self.cosmos_client.patch_if_match(
+                self.container_name, suggestion_id, guild_id, operations, etag=etag
+            )
+            return self._validate(saved)
+
+        return await retry_async(_mutate, category=RetryCategory.ETag_RMW)

@@ -32,6 +32,7 @@ class _Blob:
     def __init__(self) -> None:
         self.uploads: list[tuple[bytes, dict]] = []
         self.appends: list[bytes] = []
+        self.created_append = False
         self.download_payload = b"hello"
         self.etag = "etag-1"
         self.lease = _Lease()
@@ -44,7 +45,13 @@ class _Blob:
         self.uploads.append((payload, kwargs))
         return None
 
+    def create_append_blob(self):
+        self.created_append = True
+        return None
+
     def append_block(self, payload: bytes):
+        if not self.created_append and not self.appends:
+            raise RuntimeError("BlobNotFound: the specified blob does not exist")
         self.appends.append(payload)
         return None
 
@@ -82,7 +89,10 @@ async def test_blob_client_round_trips(azure_settings, fake_credential) -> None:
     assert etag == "etag-1"
 
     await client.write_text("container", "blob.txt", "payload", etag="etag-1")
-    await client.append_text("container", "blob.txt", "more")
+    await client.append_text("container", "new.log", "more")
+    blob = service.blobs[("container", "new.log")]
+    assert blob.created_append is True
+    assert blob.appends == [b"more"]
     lease = await client.acquire_lease("container", "blob.txt")
     assert lease.renew() == "renewed"
     assert lease.release() == "released"

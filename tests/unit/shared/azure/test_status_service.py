@@ -19,9 +19,17 @@ class _BlobClient:
         return self.payload, self.etag
 
     async def write_text(
-        self, container_name: str, blob_name: str, payload: str, *, etag: str | None = None
+        self,
+        container_name: str,
+        blob_name: str,
+        payload: str,
+        *,
+        etag: str | None = None,
+        create_only: bool = False,
     ):
         self.write_calls += 1
+        if create_only and self.payload is not None:
+            raise RuntimeError("412 precondition failed")
         if self.write_calls == 1 and etag == "etag-1":
             raise RuntimeError("412 precondition failed")
         self.payload = payload

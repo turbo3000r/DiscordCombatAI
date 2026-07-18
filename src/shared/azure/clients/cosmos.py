@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from shared.azure._helpers import maybe_await
+from shared.azure._helpers import collect_async_items, maybe_await
 from shared.azure.configs.credential import get_credential
 from shared.azure.configs.settings import AzureServiceName, AzureSettings, load_azure_settings
 from shared.azure.lifecycle import register_resource
@@ -77,7 +77,7 @@ class CosmosClient:
             )
             return await maybe_await(result)
 
-        return await retry_async(_patch, category=RetryCategory.ETag_RMW)
+        return await _patch()
 
     async def upsert(self, container_name: str, document: dict[str, Any]) -> dict[str, Any]:
         async def _upsert() -> dict[str, Any]:
@@ -95,8 +95,7 @@ class CosmosClient:
             result = container.query_items(
                 query=query, parameters=parameters or [], enable_cross_partition_query=True
             )
-            items = await maybe_await(result)
-            return list(items)
+            return await collect_async_items(result)
 
         return await retry_async(_query, category=RetryCategory.SAFE_READ)
 

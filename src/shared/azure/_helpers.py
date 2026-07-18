@@ -25,6 +25,19 @@ async def maybe_await(value: T | Awaitable[T]) -> T:
     return value
 
 
+async def collect_async_items(value: Any) -> list[Any]:
+    if isinstance(value, list):
+        return value
+    if hasattr(value, "__aiter__"):
+        return [item async for item in value]
+    resolved = await maybe_await(value)
+    if isinstance(resolved, list):
+        return resolved
+    if hasattr(resolved, "__aiter__"):
+        return [item async for item in resolved]
+    return list(resolved)
+
+
 def json_dumps(value: Any) -> str:
     return json.dumps(value, separators=(",", ":"), ensure_ascii=True)
 

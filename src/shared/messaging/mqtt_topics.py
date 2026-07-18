@@ -48,18 +48,6 @@ MQTT_TOPIC_POLICIES = {
         retain=False,
         owner="AI Worker",
     ),
-    "leader_heartbeat": TopicPolicy(
-        topic="leader_heartbeat",
-        qos=1,
-        retain=False,
-        owner="Head",
-    ),
-    "update_available": TopicPolicy(
-        topic="update_available",
-        qos=1,
-        retain=False,
-        owner="Head",
-    ),
     "progress_ai_worker": TopicPolicy(
         topic="progress/ai_worker/#",
         qos=0,

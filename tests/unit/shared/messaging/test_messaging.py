@@ -16,6 +16,8 @@ def test_mqtt_retain_matrix() -> None:
     assert MQTT_TOPIC_POLICIES["control_bot_activation_grant"].retain is False
     assert MQTT_TOPIC_POLICIES["status_bot_control_ack"].qos == 1
     assert MQTT_TOPIC_POLICIES["progress_ai_worker"].qos == 0
+    assert "leader_heartbeat" not in MQTT_TOPIC_POLICIES
+    assert "update_available" not in MQTT_TOPIC_POLICIES
 
 
 def test_rabbitmq_topology_constants() -> None:
