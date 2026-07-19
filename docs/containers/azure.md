@@ -55,7 +55,7 @@ This is the **complete and only** list of Azure-related environment variables in
 | `AZURE_COSMOS_DATABASE` | No | `DiscordCombatAI` | Shared Cosmos database name for `GuildConfigs` and `Suggestions` (`contracts/suggestion.md`, `contracts/guild_config.md`). |
 | `AZURE_STORAGE_ACCOUNT_NAME` | Yes | — | Single Storage Account name backing **Blob**, **Table**, and **Queue** Storage. Per-service endpoints (`https://<name>.blob.core.windows.net`, `.table.core.windows.net`, `.queue.core.windows.net`) are derived from this one name — there is deliberately no separate endpoint variable per storage service. |
 | `AZURE_QUEUE_NAME` | Yes | `suggestions` | Name of the queue (within the storage account above) used for Web → Bot suggestion notification events (`contracts/suggestion.md` §4). |
-| `AZURE_METRICS_TABLE` | No | `NodeMetrics` | Table Storage table for leader Head batched metrics (`contracts/telemetry.md` §2). |
+| `AZURE_METRICS_TABLE` | No | `NodeMetrics` | Table Storage table for leader Head batched metrics (`contracts/telemetry.md` §3). |
 | `AZURE_STATUS_BLOB_CONTAINER` | No | `coordination` | Blob container for the shared status document (`contracts/status_document.md`). |
 | `AZURE_STATUS_BLOB_NAME` | No | `bot_status.json` | Blob name for the shared status document. |
 | `AZURE_BATTLE_ARCHIVE_CONTAINER` | No | `battle-results` | Blob container for battle story + metadata archives (`contracts/battle_archive.md`). |
@@ -147,7 +147,7 @@ Do **not** grant Head Cosmos/Queue access, or Bot Web PubSub access, in v1.
 | `queue.py` | `15s` (API); visibility timeout stays **60s** per `contracts/suggestion.md` | Send: ≤3 attempts. **Receive/poll:** no intra-cycle retry storm — see Bot behavior below | |
 | `pubsub.py` | `10s` | ≤2 attempts for send/negotiate | Head soft/hard-stop rules still own “PubSub down” semantics |
 
-**Bot Queue poll (canonical here + `discord_bot.md` §9):** on any receive failure, **skip the cycle** and wait until the next `BOT_QUEUE_POLL_INTERVAL_SEC`. After **3 consecutive** failed poll cycles, mark dependency health `azure_queue` degraded (for whatever health surface Bot exposes — P1.8 may refine the payload). Recovery is automatic on the next successful receive; do not duplicate delivery — claim rules in `contracts/suggestion.md` still apply. Sweep path remains independent of Queue.
+**Bot Queue poll (canonical here + `discord_bot.md` §9):** on any receive failure, **skip the cycle** and wait until the next `BOT_QUEUE_POLL_INTERVAL_SEC`. After **3 consecutive** failed poll cycles, set heartbeat dependency health `azure_queue_ok: false` (`contracts/telemetry.md` §2.1). Recovery sets it true on the next successful receive; do not duplicate delivery — claim rules in `contracts/suggestion.md` still apply. Sweep path remains independent of Queue.
 
 **`/config` Cosmos Apply:** see `bot/commands/config.md` §12 — library raises classified errors; command keeps staged UI state and shows a localized error (permanent vs transient wording).
 
@@ -163,7 +163,7 @@ Do **not** grant Head Cosmos/Queue access, or Bot Web PubSub access, in v1.
 
 ## 8. Metrics
 
-Not applicable directly — this library does not self-report metrics. Optional Azure call latency/error counters remain P2 / P1.8 unless a consuming service adopts them.
+Not applicable directly — this library does not self-report metrics. Optional Azure call latency/error counters are deferred; a consuming service must define a real consumer/transport before adding them.
 
 ---
 
@@ -189,7 +189,7 @@ None of its own — this library sits at the bottom of the dependency graph; eve
 
 ## 11. Health Check
 
-No library HTTP endpoint. **Resolved default for consuming services (P1.7):** when a service exposes readiness/dependency health, use **per-resource booleans** for the resources in §4 (e.g. Head: `pubsub_connected`, `blob_lease_ok`; Bot: `cosmos_ok`, `azure_queue`; Web: optional). A single combined `azure_connected` is insufficient when only one resource is down. Exact Bot/AI Worker heartbeat payload enrichment remains P1.8; the classification and per-resource rule here are fixed.
+No library HTTP endpoint. **Resolved default for consuming services (P1.7/P1.8):** when a service exposes dependency health, use **per-resource booleans** for the resources in §4 (e.g. Head: `pubsub_connected`, `blob_lease_ok`; Bot heartbeat: `cosmos_ok`, `azure_queue_ok`, `status_blob_ok`; Web: optional). A single combined `azure_connected` is insufficient when only one resource is down. Exact Bot/AI Worker heartbeat payloads are canonical in `contracts/telemetry.md` §2.
 
 ---
 

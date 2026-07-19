@@ -1,6 +1,6 @@
 # Contract: Operational Log Archive (Blob Append)
 
-> **New this revision — closes P0.5.6.** Canonical structured log line format, sensitive-content policy, and leader Head → Blob append archive. Live dashboard log tails use the same parsed fields inside `telemetry_live` payloads (`contracts/telemetry.md` §4); this file owns durable cold storage.
+> **New this revision — closes P0.5.6.** Canonical structured log line format, sensitive-content policy, and leader Head → Blob append archive. Live dashboard log tails use the same parsed fields inside `telemetry_live` payloads (`contracts/telemetry.md` §5); this file owns durable cold storage.
 
 ---
 
@@ -70,5 +70,5 @@ Log lines are not JSON documents; the **format version** is implicit in parser c
 |---|---|
 | Head aggregation | `containers/head.md` §7 |
 | Mosquitto topics | `containers/mosquitto.md` |
-| Live log batches | `contracts/telemetry.md` §4 |
+| Live log batches | `contracts/telemetry.md` §5 |
 | Azure env | `azure.md` §3 |

@@ -214,7 +214,7 @@ class EnvironmentGraphState(TypedDict):
 
 - Each node logs at `INFO` on entry/exit using the shared structured format from `architecture.md`'s Mosquitto section: `[%time%][%level%][ai_worker][graphs/environment/nodes/<node>]<trace_id, guild_id, attempt_index>: [%message%]`.
 - Recommended minimum tags on every log line in this graph: `trace_id`, `guild_id`, `attempt_index`, `input_type`. Not formally required anywhere yet — proposed here for consistency with the rest of the system's logging convention.
-- `attempts_used` and `forced_selection` (§2) double as lightweight quality metrics — how often `Decider` has to intervene is a useful signal for prompt-quality regressions over time. `ai_worker.md` §8 now lists these as candidate metrics, but flags that **no transport path to any persistent store exists yet** — not resolved by this doc either.
+- `attempts_used` and `forced_selection` (§2) could support future prompt-quality analysis, but P1.8 explicitly defers them from the v1 telemetry surface because no consumer/transport is approved (`ai_worker.md` §8, `contracts/telemetry.md` §2). Do not emit them as ad hoc metrics.
 - **Discord-facing task progress** (confirmed decision, separate from the structured log stream above): this graph's node-level granularity is translated down to the generic `queued`/`launching`/`composing`/`refining`/`finishing` phase vocabulary defined in `docs/contracts/task_progress.md`, published over Mosquitto (`progress/ai_worker/<task_id>`), not RabbitMQ. This graph's specific phase mapping — which nodes count as `composing` vs `refining` vs `finishing` — is defined once in `task_progress.md` §6.1, not duplicated here, to avoid two sources of truth drifting apart.
 
 ---

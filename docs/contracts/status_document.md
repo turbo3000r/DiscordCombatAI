@@ -116,5 +116,5 @@ categories = [
 | Bot status push | `bot/discord_bot.md` §6.3 |
 | Web identity edit / Home | `web/pages/home.md` |
 | Catalog consumers | `bot/commands/suggest.md`, `web/pages/suggestions.md` |
-| Dashboard “now” latency/guilds | `contracts/telemetry.md` §1/§3 |
+| Dashboard “now” latency/guilds | `contracts/telemetry.md` §1/§4 |
 | Web admin auth (who may edit identity/catalog) | `contracts/web_auth.md` |

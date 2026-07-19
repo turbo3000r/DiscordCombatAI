@@ -44,6 +44,7 @@ ai_worker/
 
 | Variable | Required | Default | Description |
 |---|---|---|---|
+| `APPLICATION_VERSION` | Yes | — | Exact coordinated release tag injected by Compose. Included in the canonical heartbeat and required to match `contracts/launcher_ipc.md` §4's grammar. Startup fails if absent/invalid. |
 | `AI_WORKER_RABBITMQ_HOST` | No | `rabbitmq` | Hostname of the local RabbitMQ broker. Formalizes the variable `rabbitmq.md` §3 previously flagged as expected-but-open. |
 | `AI_WORKER_RABBITMQ_PORT` | No | `5672` | RabbitMQ broker port. |
 | `AI_WORKER_RABBITMQ_USER` / `AI_WORKER_RABBITMQ_PASS` | Yes | — | **Resolved this revision (P0.4)** — `AI Worker`'s own broker credentials, canonical definition in `rabbitmq.md` §3/§13. Never logged. |
@@ -52,6 +53,7 @@ ai_worker/
 | `AI_WORKER_LLM_MAX_RETRIES` | No | `2` | **Canonical home for this variable** (confirmed decision, originally introduced in `graphs/environment.md` §8/§9 and `graphs/battle.md` §8/§9, both of which deferred to this doc once written). Shared retry budget for transient Gemini API failures **and** malformed/unparseable structured LLM output — one unified wrapper around every LLM-backed node call, across every graph. Not graph-specific — see `ai_worker/nodes.md` §5. |
 | `AI_WORKER_CELERY_CONCURRENCY` | No | `1` | Number of tasks a single `AI Worker` instance processes concurrently. Default of `1` is a conservative starting point (each task is already a multi-call LLM pipeline); horizontal scaling (§6, per `architecture.md`) is the primary scaling lever, not per-instance concurrency. |
 | `AI_WORKER_PROGRESS_HEARTBEAT_SEC` | No | `30` | **New this revision** — while a task is in flight, `AI Worker` re-publishes the current `progress/ai_worker/<task_id>` tick on this cadence even if the phase hasn't changed (`contracts/task_progress.md` §3), purely so `Bot`'s stall-detection timer (`contracts/ai_task.md` §5) has something to reset against during a legitimately long phase. Default sized against `BOT_AI_TASK_STALL_TIMEOUT_SEC=120` — see `ai_task.md` §8 for the reasoning and the note that both defaults are proposed, not measured. |
+| `AI_WORKER_HEARTBEAT_INTERVAL_SEC` | No | `30` | Cadence of `status/ai_worker/heartbeat`; Head marks it stale after `HEAD_SERVICE_HEARTBEAT_STALE_SEC` (default 90). Canonical schema: `contracts/telemetry.md` §2.2. |
 
 > **`GEMINI_API_KEY` is deliberately NOT listed here (corrected this revision).** A previous revision of this doc listed it as a single required global environment variable — that directly contradicted `/config`'s per-guild key/model selection (`bot/commands/config.md`, `contracts/guild_config.md` §3) ever reaching this container. `AI Worker` is credential-stateless: the key and model it uses for a given task arrive **on that task's own `ai_tasks` message** (§4) — see the Credential model note in §1. Never logged, from any task, at any level (§7).
 
@@ -78,7 +80,7 @@ ai_worker/
 | `RabbitMQ` (manual publish, not Celery result backend) | `ai_tasks_results` queue (publish, `correlation_id` set manually to `task_id`) | Success or error result — **schema now fully defined, `contracts/ai_task.md` §4** | On graph completion — success (§6) or synthetic error (§9), followed by acking the original `ai_tasks` message (`contracts/ai_task.md` §2) |
 | `Mosquitto` | `progress/ai_worker/<task_id>` | Phase-update message, per `docs/contracts/task_progress.md` §4 | On each phase transition within a running graph — see §6 and each graph's own §11 phase mapping |
 | `Mosquitto` | `logs/<level>/ai_worker` | Structured log string, per §7 | On every log emission |
-| `Mosquitto` | `status/ai_worker/heartbeat` | Liveness ping | Periodic |
+| `Mosquitto` | `status/ai_worker/heartbeat` | Canonical versioned worker state/dependency payload (`contracts/telemetry.md` §2.2) | Every `AI_WORKER_HEARTBEAT_INTERVAL_SEC` |
 | `Mosquitto` | `status/ai_worker/pause_ack` (QoS 1, not retained) — **new this revision, P0.3** | `{"schema_version": 1, "node_id": ..., "paused_at": ISO8601}` | Once, after receiving `control/ai_worker/desired_state = paused` (§4), finishing any in-flight task claim, and going idle (no new claims picked up) — §6 |
 | Google Gemini API | HTTPS request | Assembled prompt (system prompt + injected elements, per `ai_worker/prompts.md` §2) | On every LLM-backed node's call |
 
@@ -100,6 +102,8 @@ ai_worker/
 - **`PAUSED`** — on receiving `desired_state = paused`, `AI Worker` finishes its current task claim (does not abandon mid-graph — same "let it finish" behavior prefetch = 1 already implies, since there is at most one claim in flight per worker process) and then stops pulling *new* messages from `ai_tasks`. Once idle (no claim in flight), it publishes `status/ai_worker/pause_ack` once (§5, **new this revision, P0.3**). This is what makes `Head`'s `DRAINING` state (`head.md` §6) actually work: `Head` pauses `AI Worker` at the start of an update sequence (`head.md` §5) to stop new work from starting, while whatever's already running is allowed to finish naturally within the drain window defined by `contracts/drain_status.md`.
   - **`pause_ack` is informational/diagnostic only — it does not gate `Head`'s drain-complete decision.** `Bot`'s own `in_flight_workflows == 0` (`contracts/drain_status.md` §1) already covers whether this node's `AI Worker` claim has finished, since every `ai_tasks` entry is counted there too. Treating `pause_ack` as a second blocking condition would risk stalling drain if the ack itself is lost over best-effort Mosquitto — deliberately avoided.
   - **Recovery when an update is abandoned/superseded mid-drain:** `Head` simply re-publishes `{"state": "running"}` (resume) — no teardown/unwind needed since nothing was torn down while `PAUSED` (no in-flight task is ever aborted by pausing).
+
+Independently of task-progress ticks, the process publishes `status/ai_worker/heartbeat` every `AI_WORKER_HEARTBEAT_INTERVAL_SEC` with required `APPLICATION_VERSION`, `running|paused` state, `active_tasks`, and latest RabbitMQ connection state (`contracts/telemetry.md` §2.2). It does not probe Gemini: credentials and reachability are task/guild-specific. Head uses local receipt time and marks the heartbeat stale after 90 seconds by default; staleness is diagnostic and does not itself change worker consumption state.
 
 **Per-task flow (while `RUNNING`):**
 
@@ -130,9 +134,9 @@ ai_worker/
 
 ## 8. Metrics
 
-- **Candidate `AI Worker`-owned metrics** (not yet formally wired to any storage): `tasks_processed_total`, `tasks_failed_total`, per-graph execution duration, and each graph's own quality signals (`attempts_used`, `forced_selection` — already proposed in `graphs/environment.md` §11 / `graphs/battle.md` §11 as candidates, never assigned a storage destination).
-- **`tasks_in_queue`** is a RabbitMQ queue-depth metric. **Not part of v1 telemetry** (`rabbitmq.md` §8). Do not emit an unrouteable counter from this service.
-- **No transport path exists today.** Unlike `Head` (which writes directly to Azure Table Storage, per `head.md` §8), `AI Worker` has no Azure dependency (§10) and no `metrics/ai_worker/*` Mosquitto topic is defined anywhere in `mosquitto.md`'s topic table. Concretely: even if the candidate metrics above were implemented, **there is currently no way for them to reach any persistent store.** This is a real gap, not just missing detail — flagged in §12.
+The complete v1 AI Worker observability surface is the heartbeat in `contracts/telemetry.md` §2.2 plus task progress/logs. `state`, `active_tasks`, and `rabbitmq_connected` are operational health, not persisted business metrics.
+
+`tasks_processed_total`, `tasks_failed_total`, per-graph duration, `attempts_used`, `forced_selection`, and RabbitMQ queue depth have no agreed v1 consumer/transport and are explicitly deferred. Do not create a `metrics/ai_worker/*` topic or Azure dependency ad hoc.
 
 ---
 
@@ -165,15 +169,14 @@ ai_worker/
 
 ## 11. Health Check
 
-**Not formally specified beyond the existing Mosquitto heartbeat.** `AI Worker` publishes `status/ai_worker/heartbeat` (per `mosquitto.md` §4/§5), consumed by `Head` for basic liveness tracking — the same mechanism every service uses, not `AI Worker`-specific.
-
-Unlike `Head`, `AI Worker` exposes no HTTP endpoint of its own (no `Launcher`-equivalent needs to poll it directly), so there is no `/health`-style check beyond that heartbeat. Whether a more detailed self-check (RabbitMQ connection state, Gemini API reachability) should be folded into the heartbeat payload, or exposed some other way, is undecided — flagged as an open item (§12).
+`AI Worker` publishes the exact `status/ai_worker/heartbeat` schema in `contracts/telemetry.md` §2.2. It exposes no HTTP endpoint. RabbitMQ connection state is included; Gemini is deliberately excluded because a global probe cannot represent per-guild credentials. Head marks the worker stale after the canonical monotonic threshold. No additional worker readiness endpoint is part of v1.
 
 ---
 
 ## 12. Versioning & Update Behavior
 
 - `AI Worker` shares the coordinated version tag with `Bot`, `Head`, and `Web` (per `Launcher.md` §12) — it does not version independently.
+- The local container receives required `APPLICATION_VERSION` from Compose; Launcher recreates it only as part of the fixed `head`/`bot`/`ai_worker` image set.
 - **Update sequence participation:** during `Head`'s `DRAINING` → `UPDATING` transition (`head.md` §6), `Head` publishes `control/ai_worker/desired_state = {"state": "paused"}` (retained) at update-sequence start (`head.md` §5) — `AI Worker` finishes any task already claimed, then stops claiming new `ai_tasks` messages (§6, `PAUSED` state) and publishes `status/ai_worker/pause_ack` once idle (§5/§6, informational only — does not gate `Head`'s drain-complete decision, `contracts/drain_status.md`). `Head` publishes `{"state": "running"}` once the update sequence concludes or is abandoned — no teardown/unwind needed on abandonment since `PAUSED` never aborts an in-flight claim.
 - After `Launcher` recreates the container, a fresh `AI Worker` instance starts directly in `RUNNING` and resumes consuming — no state to restore (§6, §11).
 
@@ -184,11 +187,11 @@ Unlike `Head`, `AI Worker` exposes no HTTP endpoint of its own (no `Launcher`-eq
 *(Deviation from `template.md`'s 12-section schema, noted explicitly: this section is additive, mirroring the "Open Items" section already used in `graphs/*.md` and `nodes.md`, since this doc surfaced enough new gaps to warrant collecting them in one place rather than scattering them across §6/§8/§9/§11 only.)*
 
 - ~~`GEMINI_API_KEY` as a single global required env var contradicted `/config`'s per-guild key/model selection~~ — **resolved this revision** (§1, §3, §4): credentials arrive per-task on the `ai_tasks` message, sourced from `contracts/guild_config.md`. Plaintext-in-transit/at-rest remains an accepted risk (§1), not solved by this fix.
-- **No metrics transport path exists** (§8) — the single most concrete gap: even the metrics both graph docs already floated (`attempts_used`, `forced_selection`) have nowhere to actually go.
+- Metrics without a v1 transport/consumer are explicitly deferred rather than left as an open contract (§8).
 - ~~The Celery-level task/graph dispatch mechanism (one generic task vs. one task per graph) was undecided~~ — **resolved this revision, P0.4** (§6): one generic `run_graph` task, branching internally on `envelope.graph`.
 - ~~RabbitMQ ack semantics (manual vs. automatic)~~ — **resolved this revision**, `contracts/ai_task.md` §2: manual ack after result publish.
 - ~~RabbitMQ broker credentials (username/password/vhost) were undecided project-wide~~ — **resolved this revision, P0.4**: `rabbitmq.md` §3/§13.
-- Whether a more detailed health signal (beyond the existing heartbeat, and the new `pause_ack`, §5/§6) is worth adding is undecided (§11).
+- Heartbeat schema, dependency scope, and staleness are resolved in `contracts/telemetry.md` §2 (§11).
 - ~~Standalone RabbitMQ outage behavior~~ — **resolved (P1.5):** `rabbitmq.md` §8a/§9, this doc §9, S05.
 - Mosquitto control loss remains fail-closed via Head/Bot leadership contracts; AI Worker pause/resume simply cannot be delivered while the broker is down (accepted).
 - **New this revision** — `AI_WORKER_PROGRESS_HEARTBEAT_SEC=30` (§3, §6) is a proposed default, sized only by inference against `Bot`'s `BOT_AI_TASK_STALL_TIMEOUT_SEC=120` (`contracts/ai_task.md` §5), not by measuring real per-node execution time. Revisit once real timing data exists — see `ai_task.md` §8 for the same flag on the `Bot`-side timeout defaults.

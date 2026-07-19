@@ -5,26 +5,39 @@
 
 ## Preconditions
 
-- An update was attempted (automatic `/v1/update` or `launcher update --version`).
-- New version fails verification / health, or operator decides to revert.
-- Launcher retains previous version tag in version history (Launcher tree: `version_history.go` / rollback CLI per `architecture.md`).
+- An update was admitted (automatic `/v1/update` or `launcher update --version`).
+- Either the new version fails exact-version liveness verification, or an operator separately decides to revert a verified/current deployment.
+- Launcher has a verified `current_version`; automatic update admission captures it as this operation's `rollback_version`. Manual rollback additionally requires version history's `previous_version`.
 
 ## Ordered steps
 
-1. Automatic path: after compose recreate, Launcher verification polls Head health (`launcher_ipc.md` `/v1/health` is authenticated liveness-only). Failure is operator-visible via Launcher status/logs — exact readiness depth remains P1.8.
-2. Operator runs `launcher rollback` (or equivalent documented CLI) on the affected host — **bypasses** GitHub poll / `update_available` broadcast initiation (`architecture.md` Scenario 5 step 9 pattern for manual control).
-3. Rollback applies the previous version tag; containers recreate again. No requirement that every peer node rollback simultaneously — each host’s Launcher is independent (followers update independently in S07).
-4. On boot, Heads publish retained `inactive` before election (S01); a leader re-acquires the lease (S02).
-5. If a different `target_version` broadcast arrives mid-cycle, it is queued until the current cycle completes (`drain_status.md` §4) — rollback CLI is unaffected by broadcast dedup (manual path already idempotent via IPC).
+### A — Automatic rollback after failed verification
+
+1. After recreate, Launcher polls authenticated Head `/v1/health`. Success requires schema-valid `200`, `status: "alive"`, and exact `version == target_version`; dependency readiness is not checked (`launcher_ipc.md` §5).
+2. If the verification window expires, Launcher automatically attempts rollback to the operation's captured pre-update `rollback_version` **once**. It pulls the fixed local image set and recreates it through the same coordinator/lock and controlled Compose path.
+3. Launcher verifies authenticated liveness at that exact rollback version. Success records the rollback result, leaves the pre-operation current/previous history unchanged, and returns to `IDLE`. Failure stops automatic recovery and remains operator-visible; it does not recursively rollback or flap.
+
+### B — Separate manual rollback
+
+4. An operator may run `launcher rollback` to target version history's `previous_version`, either to revert a currently deployed/verified version or recover after a stopped/interrupted operation. This is a new manual admission, not the automatic attempt from A and not a continuation of an old operation.
+5. The manual command bypasses GitHub poll / `update_available` initiation but shares the same coordinator, persisted state, and cross-process operation lock as HTTP. Busy/conflicting work is rejected; no concurrent recreate is started.
+
+### Common completion/restart behavior
+
+6. No requirement exists for every peer node to rollback simultaneously — each host's Launcher is independent.
+7. On boot, Heads publish retained `inactive` before election (S01); a leader re-acquires the lease (S02).
+8. If Launcher itself restarts while pull/recreate/verify/rollback was active, it marks that operation `INTERRUPTED`, exposes the last durable phase, and performs no automatic resume. Explicit reconciliation or a new update/rollback admission is required.
+9. If a different `target_version` broadcast arrives mid-cycle, Head queues it until the current cycle completes (`drain_status.md` §4); manual rollback remains a separate Launcher admission.
 
 ## Durable writes
 
 - Launcher version history records current + previous tags.
-- IPC idempotency / busy behavior for `/v1/update` still applies if a concurrent automatic update races — reject or admit per `launcher_ipc.md`.
+- IPC idempotency, interrupted-operation status, and busy behavior apply if automatic/manual initiators race (`launcher_ipc.md`).
 
 ## Timeouts
 
-- Health verify polling bounds are Launcher implementation / P1.8 — scenario requires that a failed verify does not leave Bot active under a dead/unverified Head without S01 fencing.
+- Health verification uses the documented 2s connect / 5s response polls within `LAUNCHER_HEALTHCHECK_TIMEOUT_SEC`.
+- One automatic rollback attempt is the complete automatic recovery budget.
 - Grant/lease rules unchanged after restart.
 
 ## User-visible result

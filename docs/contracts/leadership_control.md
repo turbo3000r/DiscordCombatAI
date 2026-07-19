@@ -140,6 +140,8 @@ Event discriminator: `leader_heartbeat`
 
 Followers use elapsed local monotonic time since receipt to detect heartbeat timeout. `issued_at` and `lease_expires_at` are observability fields only; followers do not infer lease authority from them. On heartbeat timeout, a follower must still acquire the named Blob Lease before creating a new leadership term. A heartbeat never activates `Bot`.
 
+`application_version` is the required Compose-injected `APPLICATION_VERSION` and must match the exact release-tag grammar in `contracts/launcher_ipc.md` §4.
+
 ---
 
 ## 5. State Transitions and Failure Policy
@@ -175,7 +177,7 @@ Hard-stop uses the existing canonical sequence in `containers/bot/discord_bot.md
 | Failure | Required Bot outcome |
 |---|---|
 | `Head` process crash/disappearance | Active grant is no longer renewed; `Bot` hard-stops autonomously at grant/watchdog expiry. |
-| Blob Lease renewal failure while Web PubSub remains available | Soft-stop immediately; retry/confirm authority only within the bounded drain. Hard-stop at timeout unless the same term is safely restored. |
+| Blob Lease renewal failure while Web PubSub remains available | Soft-stop immediately; retry/confirm authority only within the bounded drain. Resume active service only after the **same lease term** is confirmed and a fresh same-term grant is issued. Hard-stop at timeout otherwise; never treat acquisition of a new term as recovery of the old drain. |
 | Web PubSub-only failure while Blob Lease renewal remains confirmed | Soft-stop immediately. Lease renewals may continue during bounded recovery, but no new AI work is accepted. Restore only with same-term confidence and fresh grant; otherwise hard-stop at timeout. |
 | Mosquitto broker/control connection failure | `Bot` detects loss of its control connection and soft-stops immediately; grant expiry is the hard-stop backstop. |
 | Simultaneous loss of Blob Lease coordination and Web PubSub | Immediate hard-stop; no drain allowance. |

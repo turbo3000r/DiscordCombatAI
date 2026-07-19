@@ -1,6 +1,6 @@
 # Contract: Live Dashboard Web PubSub
 
-> **Closes P0.6** (topology/budget) **and completes negotiate auth via P0.7.** Group topology, client vs service SDKs, negotiate response, always-stream policy, Free_F1 budget, and reconnect semantics. Live payload body: `contracts/telemetry.md` §4. Authentication boundary for negotiate: `contracts/web_auth.md`.
+> **Closes P0.6** (topology/budget) **and completes negotiate auth via P0.7.** Group topology, client vs service SDKs, negotiate response, always-stream policy, Free_F1 budget, and reconnect semantics. Live payload body: `contracts/telemetry.md` §5. Authentication boundary for negotiate: `contracts/web_auth.md`.
 
 ---
 
@@ -51,7 +51,7 @@ Approximate daily cost with defaults:
 | + 1 browser viewer receiving 10s live ticks | ≈ **+8.6k** |
 | **Total with 1 viewer** | ≈ **17.2k** — fits under 20k if live payloads stay small |
 
-Cap live metric/log batch size (`telemetry.md` §4) so oversized logs cannot blow the quota. Concurrent connections: 3 Heads + 1 browser ≪ 20.
+Live ticks are capped at 50 newest log lines and 65,536 serialized UTF-8 JSON bytes (`telemetry.md` §5), so oversized logs cannot blow the quota. Concurrent connections: 3 Heads + 1 browser ≪ 20.
 
 ---
 
@@ -82,7 +82,7 @@ The short-lived client access **URL** is returned only to authenticated admins. 
 ## 5. Reconnect and Ordering
 
 1. On disconnect or token expiry, the browser calls negotiate again (with a fresh Bearer if needed) and reconnects.
-2. Use `seq` from `telemetry_live` (`telemetry.md` §4) to ignore older/duplicate messages.
+2. Use `seq` from `telemetry_live` (`telemetry.md` §5) to ignore older/duplicate messages.
 3. **No historical backfill** on the live channel — use `GET /api/metrics/history` for history. The live console starts empty (or from ticks after connect only).
 
 ---
@@ -91,7 +91,7 @@ The short-lived client access **URL** is returned only to authenticated admins. 
 
 | Concern | Canonical doc |
 |---|---|
-| Live payload + caps | `contracts/telemetry.md` §4 |
+| Live payload + caps | `contracts/telemetry.md` §5 |
 | Head env / loops | `containers/head.md` §3/§5/§8 |
 | Web negotiate | `containers/web/web.md` §6.1, `pages/dashboard.md` |
 | Auth boundary | `contracts/web_auth.md` |

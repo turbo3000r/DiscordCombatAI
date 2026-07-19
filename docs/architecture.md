@@ -93,7 +93,7 @@
 * **Active state:** If no heartbeat is observed within timeout, it attempts to acquire the Blob Lease. The winner creates a leadership term and issues renewable short-lived activation grants over Mosquitto; a heartbeat or retained message alone cannot activate Bot.
 * **Telemetry routing:** Every **60 seconds**, the **leader** `Head` pushes a batch of metrics to **Azure Table Storage** and appends logs to **Azure Blob Storage** (`contracts/telemetry.md`, `contracts/log_archive.md`). Followers do not upload dashboard telemetry. While leader, it **always** streams live batches to the `dashboard-live` Web PubSub group every **10 seconds** — no listener detection (`contracts/pubsub_live.md`).
 * **Passive state:** If a leader heartbeat is already present in the broadcast group, it enters standby mode. If the leader's heartbeat stops arriving (e.g., PC crashes), every follower observes the gap and races for the Blob lease; only the winner takes over and activates its local `Bot`.
-* **Coordination failures:** PubSub-only, Blob-renew-only, and Mosquitto failures soft-stop Bot (immediate bounded drain, reject new AI work, then hard-stop at timeout unless safely restored). Simultaneous loss of both Azure coordination dependencies, known non-leadership, Head watchdog/grant expiry, or Head crash causes hard-stop.
+* **Coordination failures:** PubSub-only, Blob-renew-only, and Mosquitto failures soft-stop Bot (immediate bounded drain, reject new AI work, then hard-stop at timeout unless safely restored). Blob-renew-only recovery requires confirmation of the same lease term plus a fresh same-term grant. Simultaneous loss of both Azure coordination dependencies, known non-leadership, Head watchdog/grant expiry, or Head crash causes hard-stop.
 * **Log aggregation:** Subscribes to `logs/#` on `Mosquitto`. Parses incoming structured log lines, buffers them in memory, and flushes to **Azure Blob Storage** alongside the existing 60-second telemetry batch.
 * **Service coordination:** Uses retained desired modes plus non-retained Bot grants (`contracts/leadership_control.md`) and retained AI Worker desired state. HTTP is reserved for authenticated Head ↔ Launcher IPC.
 
@@ -132,7 +132,8 @@
 | `control/ai_worker/desired_state` | `Head` | `AI Worker` | QoS 1, retained. `{"schema_version": 1, "state": "running" \| "paused"}` — pause/resume task consumption, node-local. |
 | `status/ai_worker/pause_ack` | `AI Worker` | `Head` (diagnostic only) | QoS 1, not retained. **New this revision (P0.3).** Published once `AI Worker` goes idle after a pause request — informational only, does not gate drain completion. See `contracts/drain_status.md` §3. |
 | `status/bot/drain_progress` | `Bot` | `Head` | QoS 1, not retained. **New this revision (P0.3).** `{in_flight_workflows, ...}` published every `BOT_DRAIN_PROGRESS_INTERVAL_SEC` while draining — gives `Head` real drain-completion visibility instead of inferring it from empty RabbitMQ queues. Canonical: `contracts/drain_status.md` §1. |
-| `status/<service>/heartbeat` | All services | `Head` | Liveness signal, used for internal health tracking |
+| `status/bot/heartbeat` | `Bot` | `Head` | Versioned Gateway/latency/guild/dependency health; 30s default, stale after 90s (`contracts/telemetry.md` §2). |
+| `status/ai_worker/heartbeat` | `AI Worker` | `Head` | Versioned run/pause, active-task, and RabbitMQ health; 30s default, stale after 90s (`contracts/telemetry.md` §2). |
 | `progress/ai_worker/<task_id>` | `AI Worker` | `Bot` | Best-effort task-phase updates (`queued`/`launching`/`composing`/`refining`/`finishing`) for a running `ai_tasks` job, so `Bot` can render a live status bar in Discord. Deliberately **not** on `RabbitMQ` — a dropped tick is harmless (the next tick or the final `ai_tasks_results` message still lands), which is exactly the tolerance this broker is for. See `docs/contracts/task_progress.md` for the full contract. |
 
 * **Log Message Format:** Every service publishes log records as a single structured string, regardless of topic level:  `[%time%][%level%][%service%][%file/module%]<any additional tags: trace_id, command, guild_id>: [%message%]`
@@ -156,11 +157,12 @@
 * **Role:** Lives on the host machine as a system service (systemd/Windows Service). Survives container restarts and is the only component capable of pulling new images and recreating containers.
 * **Behavior:** Listens on host-reachable authenticated HTTP for an idempotent update request from local `Head`. On signal, it:
     1. Trusts Head's request only after HMAC/replay validation; Head performs Bot stop/ack and lease-release ordering before calling.
-    2. Runs `docker compose pull` for the target version tag.
-    3. Runs `docker compose up -d --force-recreate`.
-    4. Monitors the new `Head` container's health check for a configurable verification window.
-    5. If verification fails, rolls back by re-pulling and recreating with the previous version tag.
-* **Manual mode:** Exposes a CLI (`launcher update --version vX.Y.Z`, `launcher rollback`, `launcher status`) for direct administrator control, bypassing the automatic detection flow.
+    2. Uses the Go Docker API to ping the daemon and pull the fixed local application image map: `head`, `bot`, and `ai_worker` at the admitted tag.
+    3. Uses a controlled, no-shell Docker Compose CLI invocation to recreate only those services, injecting required `APPLICATION_VERSION=<target_version>`.
+    4. Verifies authenticated Head liveness and exact `version == target_version`; it does not wait for leadership, Bot, or dependency readiness.
+    5. If recreate/verification fails, attempts automatic rollback once. A failed rollback stops automatic recovery.
+* **Concurrency/restart safety:** HTTP and CLI share one coordinator, persisted operation state, and a host-wide cross-process lock. A Launcher restart marks active work `INTERRUPTED`; it never blindly resumes Compose and requires explicit reconciliation/new admission.
+* **Manual mode:** Exposes a CLI (`launcher update --version vX.Y.Z`, `launcher rollback`, `launcher status`) for direct administrator control. Manual rollback is a separate admission, not the automatic rollback attempt.
 * **Isolation principle:** The Launcher is intentionally excluded from `docker-compose.yml`. It must never be restarted as a side effect of the update process it itself triggers.
 
 
@@ -233,14 +235,14 @@
 
 **Corrected in this revision:** the previous version of this scenario had only the leader's own `Launcher` ever receiving the update signal, with no mechanism for follower nodes to learn about it at all — they would stay on the old version indefinitely and could later win leader election while incompatible. The fix: every `Head` (leader and follower) is already permanently joined to the same cluster broadcast group used for the leader heartbeat (see High-Level Architecture note), so the `update_available` broadcast reaches everyone over that same cheap channel, and **each node's `Head` acts on it independently**, not just the leader's.
 
-1. The active leader `Head` periodically polls the GitHub Releases API for a newer published version.
+1. The active leader `Head` periodically polls the GitHub Releases API for a newer valid tag using parsed SemVer precedence (`contracts/launcher_ipc.md` §4). Drafts are always ignored and prereleases are ignored by default.
 2. On detecting a newer version, the leader `Head` publishes an `update_available` event (`{"schema_version": 1, "type": "update_available", "target_version": "vX.Y.Z"}` — canonical: `contracts/drain_status.md` §4a) into the cluster broadcast group — every `Head` in the cluster, leader or follower, receives it immediately (they're all already members, per the corrected election design).
 3. **Leader's own path:** publish retained `draining`, issue only bounded draining grants, and wait for drain completion/timeout — resolved in `contracts/drain_status.md` (P0.3): `Head` watches `Bot`'s `status/bot/drain_progress` (`in_flight_workflows`) rather than inferring completion from empty RabbitMQ queues, and transitions to `UPDATING` when that count reaches zero or `HEAD_DRAIN_TIMEOUT_SEC` elapses, whichever comes first — timeout escalates to the hard-stop sequence rather than silently abandoning work. Then command the hard-stop sequence, wait boundedly for `gateway_connected: false`, release the lease, and send authenticated idempotent `POST /v1/update` to `http://host.docker.internal:${LAUNCHER_IPC_PORT}`. Missing Bot acknowledgement is logged; update may continue after timeout under the accepted overlap limitation.
 4. **Follower path (new in this revision):** a follower `Head` has no active `Bot` to drain, so on receiving the broadcast it signals its own local `Launcher` directly, without any drain step.
-5. Every node's `Launcher` (leader and followers alike) independently pulls the new image tags from GHCR and recreates its local containers.
+5. Every node's `Launcher` independently uses the Go Docker API to pull the fixed `head`/`bot`/`ai_worker` images, then uses the controlled Compose CLI to recreate those application services with `APPLICATION_VERSION=target_version`. Broker image pins are untouched.
 6. New `Head` instances re-enter leader election (rejoin the broadcast group, listen for a heartbeat, race for the Blob Lease if none is heard) as usual.
-7. Each Launcher polls authenticated `GET http://127.0.0.1:${HEAD_IPC_HOST_PORT}/v1/health` for liveness during its verification window.
-8. If the health check fails repeatedly within the window, that node's `Launcher` automatically rolls back to the previous image tag and recreates containers again — independently per node.
+7. Each Launcher polls authenticated `GET http://127.0.0.1:${HEAD_IPC_HOST_PORT}/v1/health`; verification requires `status: "alive"` and exact target version, not dependency readiness.
+8. If verification fails within the window, that node's Launcher attempts automatic rollback once. Manual `launcher rollback` remains a distinct operator operation.
 9. An administrator may bypass steps 1–2 entirely via `launcher update --version vX.Y.Z` for manual control, on any node individually.
 
 ---
@@ -266,6 +268,8 @@
 **Restart:** `unless-stopped` for all local services.
 
 **Image pins (brokers):** `eclipse-mosquitto:2.0.20` (patch-pin in real Compose), `rabbitmq:3.13-management`. Application images use the coordinated release tag.
+
+**Application version injection:** Compose requires `APPLICATION_VERSION` (no default) and injects the same value into `head`, `bot`, and `ai_worker`. Their fixed image references are `${LAUNCHER_GHCR_NAMESPACE}/head:${APPLICATION_VERSION}`, `${LAUNCHER_GHCR_NAMESPACE}/bot:${APPLICATION_VERSION}`, and `${LAUNCHER_GHCR_NAMESPACE}/ai_worker:${APPLICATION_VERSION}`. During Launcher operations, the coordinator supplies the admitted target as the child Compose process's `APPLICATION_VERSION`; direct/manual Compose use must set it explicitly. Each application process fails startup if the value is absent or does not match `contracts/launcher_ipc.md` §4.
 
 ---
 
@@ -296,15 +300,21 @@ discord-combat-ai/
 │   │   ├── rollback.go           # `launcher rollback`
 │   │   └── status.go             # `launcher status`
 │   ├── internal/
+│   │   ├── coordinator/
+│   │   │   └── coordinator.go    # Shared HTTP/CLI admission and operation state machine
 │   │   ├── ipc/
 │   │   │   └── listener.go       # Authenticated host TCP listener for Head signals
 │   │   ├── docker/
+│   │   │   ├── ping.go           # Go Docker API: daemon ping
 │   │   │   ├── pull.go           # Docker Engine API: image pull
-│   │   │   └── recreate.go       # Docker Engine API: container recreate
+│   │   │   └── auth.go           # GHCR pull authentication
+│   │   ├── compose/
+│   │   │   └── recreate.go       # Controlled docker compose CLI; fixed services, no shell
 │   │   ├── healthcheck/
 │   │   │   └── verify.go         # Polls Head's health endpoint post-update
 │   │   └── state/
-│   │       └── version_history.go # Tracks current + previous version tags for rollback
+│   │       ├── version_history.go # Tracks current + previous version tags for rollback
+│   │       └── process_lock.go    # Host-wide daemon/CLI operation lock
 │   ├── install/
 │   │   ├── launcher.service       # systemd unit file (Linux)
 │   │   └── launcher.exe.config    # Windows Service wrapper config
@@ -317,7 +327,7 @@ discord-combat-ai/
 │   │   │   ├── services/        # Shared Azure implementations
 │   │   │   │   ├── suggestions.py #  + Azure Queue Storage client wrappers
 │   │   │   │   ├── guilds.py    # Guild configs, and battle logs
-│   │   │   │   ├── status.py    # Bot status, version, invite link, etc. `bot.json`
+│   │   │   │   ├── status.py    # Shared status document sections; version is not stored here
 │   │   │   │   ├── logging.py   # Bot logs, Send And Receive
 │   │   │   │   ├── metrics.py   # Metrics load and unload from Table Storage
 │   │   │   │   └── guild_logs.py # Blob Storage client wrapper
