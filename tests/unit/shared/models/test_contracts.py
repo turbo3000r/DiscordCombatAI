@@ -50,7 +50,7 @@ from shared.models.status_document import (
     SuggestionCatalogSection,
 )
 from shared.models.suggestion import generate_ticket_uid
-from shared.models.telemetry import TelemetryMetrics
+from shared.models.telemetry import ServiceLiveness, TelemetryMetrics
 
 FIXTURES = Path(__file__).resolve().parents[4] / "tests" / "fixtures" / "contracts"
 
@@ -339,6 +339,7 @@ def test_telemetry_and_archive_roundtrip() -> None:
         node_id="node-a",
         leadership_term="cd88086a-fd6d-48d4-8446-39523af2bf70",
         sampled_at="2026-07-15T17:02:10Z",
+        service_liveness=ServiceLiveness(bot="fresh", ai_worker="fresh"),
         metrics=TelemetryMetrics(
             cpu_percent=42.5,
             memory_mb=2048.0,
@@ -349,6 +350,7 @@ def test_telemetry_and_archive_roundtrip() -> None:
             uptime_sec=3600,
         ),
         logs=[],
+        logs_dropped=0,
     )
 
     assert build_row_key(datetime(2026, 7, 15, 17, 2, 30, tzinfo=UTC), 1) == "20260715170230_0001"
