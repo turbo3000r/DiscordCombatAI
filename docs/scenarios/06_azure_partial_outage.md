@@ -25,8 +25,11 @@
 
 ### C — Blob Lease renewal failure while PubSub still works (coordination loss)
 
-1. Head that cannot confirm lease ownership ceases to be authoritative: command hard-stop and cease grants (`§5.4` “Local Head learns it is not leader” / loss of Azure coordination).
-2. Heartbeats without lease authority must not keep followers from racing once the lease is free — heartbeat never authorizes Bot.
+1. Head soft-stops immediately: reject new AI work, issue no new active grants, and enter the bounded failure-drain window (`leadership_control.md` §5.2/§5.4).
+2. During that bound it may retry renewal/confirmation for the **same lease term** while PubSub remains available.
+3. If same-term authority is confirmed before the deadline, Head issues a fresh same-term `active` grant and service may recover. A retained message or heartbeat alone cannot recover activity.
+4. If same-term authority cannot be confirmed by the deadline, Bot hard-stops. Acquiring a new term later follows normal S01/S02 promotion; it is not resumption of the interrupted term.
+5. Heartbeats without lease authority must not keep followers from racing once the lease is free — heartbeat never authorizes Bot.
 
 ## Durable writes
 

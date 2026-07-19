@@ -167,7 +167,7 @@ healthcheck:
   start_period: 30s
 ```
 
-Dependent services (`bot`, `ai_worker`, and Head's event-bridge readiness) use `depends_on: condition: service_healthy`. Application-level `/status` may expose a boolean `rabbitmq_connected` derived from the client connection — optional for Head; Bot/AI Worker should set it when they expose process health (P1.8 may refine payload shape; the broker container check itself is fixed here).
+Dependent services (`bot`, `ai_worker`, and Head's event-bridge readiness) use `depends_on: condition: service_healthy`. Bot and AI Worker expose `rabbitmq_connected` in their exact heartbeat schemas (`contracts/telemetry.md` §2); it is optional for Head's own status. The broker container check remains separate and fixed here.
 
 ---
 

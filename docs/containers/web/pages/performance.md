@@ -57,7 +57,7 @@ Underlying Table Storage failure modes are defined once in `web.md` §9 — not 
 |---|---|---|
 | Azure Table Storage | `/api/metrics/history` (shared with `pages/dashboard.md`) | Same dependency, same endpoint — see `pages/dashboard.md` §9, not re-described here |
 
-The `latency` history series is Table-backed (`contracts/telemetry.md` §2/§3) — same source as Dashboard. Current “now” latency for cards remains `status.py`, not this page’s concern.
+The `latency` history series is Table-backed (`contracts/telemetry.md` §3/§4) — same source as Dashboard. Current “now” latency for cards remains `status.py`, not this page’s concern.
 
 ## 10. Open Items / Future Work
 

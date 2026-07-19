@@ -228,7 +228,7 @@ class BattleGraphState(TypedDict):
 
 - Same structured log format and tagging convention as `environment.md` §11: `[%time%][%level%][ai_worker][graphs/battle/nodes/<node>]<trace_id, guild_id, attempt_index>: [%message%]`.
 - **Discord-facing task progress** (per `docs/contracts/task_progress.md`, now filled in for this graph): `composing` covers the entire `planner` + `storyteller` phases (`Predefine` through `ImplementLastEpisode`) — from a status-bar perspective, "still writing the story" is one bucket, not two. `refining` covers the `Validator ↔ Modifier` loop. `finishing` covers `Decider` (if reached) and `ResolveWinners`.
-- `attempts_used` and `forced_selection` double as the same kind of lightweight quality metrics described in `environment.md` §11.
+- `attempts_used` and `forced_selection` could support the same future quality analysis described in `environment.md` §11, but are explicitly deferred from v1 telemetry; do not emit them as ad hoc metrics (`ai_worker.md` §8).
 
 ---
 

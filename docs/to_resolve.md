@@ -15,9 +15,9 @@
 
 **No remaining P0 global blockers.** Phase 0 foundation prerequisites that were documentation-blocked are now closed: **P1.5** (brokers + Compose skeleton), **P1.7** (Azure client failure/RBAC/retry), **P1.9** (locale value contract), and the **P1.3 subset required by shared `guilds.py` clients** (field-scoped Patch + ETag, soft-delete/rejoin/list filters).
 
-This does **not** mean every subsystem is ready to implement. In particular, `/quick-battle`, the real LangGraph graphs, remaining guild lifecycle edges, suggestion edge cases, Web API schemas, and observability payloads still require the open P1 items below. None of those gaps changes the global service topology or already-resolved cross-service wire contracts.
+This does **not** mean every subsystem is ready to implement. In particular, `/quick-battle`, the real LangGraph graphs, remaining guild lifecycle edges, suggestion edge cases, and Web API schemas still require the open P1 items below. None of those gaps changes the global service topology or already-resolved cross-service wire contracts.
 
-**Phase 0 implementation-ready now:** scaffold/Compose skeleton, shared typed models from contracts (including `language` enum + mapping), shared Azure credential/client layer, RabbitMQ + Mosquitto configuration. **Still deferred for later phases:** remaining P1.3 command/lifecycle items, P1.1–P1.2, P1.4 leftovers, P1.6, P1.8, and all P2 items.
+**Phase 0 implementation-ready now:** scaffold/Compose skeleton, shared typed models from contracts (including `language` enum + mapping), shared Azure credential/client layer, RabbitMQ + Mosquitto configuration. **Phase 1 coordination Slice 0 documentation is reconciled:** Launcher/Head versioning, image/recreate ownership, interrupted-operation recovery, verification/rollback, Blob-renew recovery, and P1.8 heartbeat/buffer/live-cap contracts are closed. **Still deferred for later phases:** remaining P1.3 command/lifecycle items, P1.1–P1.2, P1.4 leftovers, P1.6, and all P2 items.
 
 ---
 
@@ -29,7 +29,7 @@ This does **not** mean every subsystem is ready to implement. In particular, `/q
 - Bot defaults inactive and can activate only from a fresh, non-retained short-lived grant derived from the current Blob Lease term. Retained desired mode contains safe states only.
 - Leadership term is an opaque UUID per successful lease acquisition; per-term command sequence is monotonic. UUID terms are not globally ordered.
 - Grant/heartbeat expiry uses local monotonic elapsed time. Head crash/grant expiry hard-stops Bot autonomously.
-- PubSub-only, Blob-renew-only, and Mosquitto failures soft-stop (bounded drain, reject new AI work, then hard-stop unless restored); total loss of Blob Lease and PubSub hard-stops immediately.
+- PubSub-only, Blob-renew-only, and Mosquitto failures soft-stop (bounded drain, reject new AI work, then hard-stop unless restored); total loss of Blob Lease and PubSub hard-stops immediately. Blob-renew-only recovery is same-term only: confirm the existing lease term and issue a fresh same-term grant within the bound, otherwise hard-stop. S06-C follows this path.
 - Voluntary demotion commands hard-stop and waits boundedly for acknowledgement before lease release. Exact drain-completion contents are `contracts/drain_status.md` (P0.3, resolved).
 - Strict at-most-one Gateway connection is not guaranteed in every partition/delay; bounded dual-active overlap is an explicitly accepted limitation.
 
@@ -39,7 +39,7 @@ This does **not** mean every subsystem is ready to implement. In particular, `/q
 - Head → Launcher uses `host.docker.internal` host-reachable TCP; Linux adds `host-gateway`, Windows Docker Desktop uses the built-in hostname. Launcher binds `0.0.0.0` behind a Docker-network-only host firewall rule.
 - Launcher → Head uses Head's container bind `0.0.0.0:9800`, published as host loopback only.
 - Both directions use HMAC-SHA256 with timestamp, request ID, body hash, skew check, and replay cache; secret-file handling and redaction are specified.
-- `/v1/update` has versioned schemas, asynchronous/idempotent admission, busy behavior, persisted deduplication, 2s/5s timeouts, and bounded jittered retries. `/v1/health` is authenticated liveness-only.
+- `/v1/update` has versioned schemas, asynchronous/idempotent admission, busy behavior, persisted deduplication, 2s/5s timeouts, and bounded jittered retries. `/v1/health` is authenticated liveness-only; post-update success additionally requires its reported version to exactly equal the admitted target.
 
 ## P0.3 — Drain and update completion protocol (resolved)
 
@@ -74,7 +74,7 @@ This does **not** mean every subsystem is ready to implement. In particular, `/q
 
 ## P0.6 — Azure Web PubSub live-data flow (resolved)
 
-- Canonical: `contracts/pubsub_live.md` (+ live payload in `contracts/telemetry.md` §4).
+- Canonical: `contracts/pubsub_live.md` (+ live payload in `contracts/telemetry.md` §5).
 - Groups: `cluster` (existing) and `dashboard-live` (`HEAD_PUBSUB_DASHBOARD_GROUP`). Leader always streams every `HEAD_TELEMETRY_LIVE_INTERVAL_SEC`; **no** listener detection / subscribe-event path.
 - Browser connects; Web only negotiates `{ url, expires_at, group }` with join/leave-only roles, TTL 60m; auth = Entra Bearer + admin group (`contracts/web_auth.md`, closed under P0.7); PubSub `user id` = Entra `oid`.
 - Free_F1 budget documented (~17k msgs/day with 1 viewer + cluster heartbeats; empty-group stream ≈0 outbound). Caps on live log batch size.
@@ -127,6 +127,26 @@ This does **not** mean every subsystem is ready to implement. In particular, `/q
 - Canonical: `contracts/guild_config.md` §4a/§7; `azure.md` `guilds.py` note; `discord_bot.md` §6.2; `guilds.md` list filter.
 - Field-scoped Cosmos Patch + ETag (≤5 on 412); soft-delete confirmed unbounded v1; rejoin preserves `created_at` + admin fields; default lists exclude `left_at != null`.
 - **Still open under P1.3:** offline removal sweep, Apply atomicity for invalid key/model, model-catalog pagination/25-cap, command recovery beyond Cosmos Apply already specified.
+
+## Phase 1 Slice 0 — Launcher/Head coordination reconciliation (resolved)
+
+- `Head` implementation location is `src/head/`.
+- Canonical release tags use the exact Docker-safe SemVer-compatible grammar in `contracts/launcher_ipc.md` §4. GitHub drafts are always ignored; automatic polling ignores prereleases by default and compares parsed SemVer precedence.
+- Compose injects required `APPLICATION_VERSION` into `head`, `bot`, and `ai_worker`. Launcher maps one admitted version to the fixed local image set under `LAUNCHER_GHCR_NAMESPACE`; brokers and independently deployed Web are outside this recreate set.
+- Go Docker API owns daemon ping and authenticated pulls. A controlled, no-shell Docker Compose CLI invocation owns recreation.
+- HTTP and mutating CLI operations share one coordinator, persisted state, and host-wide cross-process lock. Restarted active work is marked `INTERRUPTED` and requires explicit reconciliation/new admission; it is never blindly resumed.
+- Verification is authenticated Head liveness plus exact target version, not leadership/Bot/dependency readiness.
+- Failed recreate/verification receives one automatic rollback attempt. Manual `launcher rollback` is a separate admission.
+- Canonical docs: `containers/Launcher.md`, `containers/head.md`, `contracts/launcher_ipc.md`, `contracts/drain_status.md`, `architecture.md`, and S06–S09.
+
+## P1.8 — Observability and health semantics (resolved)
+
+- Canonical: `contracts/telemetry.md` §2/§3/§5, propagated to `head.md`, `bot/discord_bot.md`, `ai_worker/ai_worker.md`, `mosquitto.md`, and `pubsub_live.md`.
+- Bot and AI Worker heartbeat schemas are exact and versioned. Both default to 30-second cadence; Head uses a 90-second monotonic receipt-time staleness threshold.
+- Dependency health is proportionate: Bot reports Gateway plus latest RabbitMQ/Cosmos/Queue/status-Blob state; AI Worker reports RabbitMQ and deliberately does not synthesize a global Gemini probe.
+- Head buffers at most 60 completed one-minute metrics windows, uploads oldest-first after recovery, and drops the oldest window on overflow. Buffer loss on Head restart is accepted and operator-visible by warning.
+- Live payloads keep the fixed envelope/metrics, include at most 50 newest log lines, and are capped at 65,536 UTF-8 JSON bytes; oldest selected logs are omitted first and counted in `logs_dropped`.
+- Candidate Bot/AI Worker business/quality counters without a v1 transport or consumer are explicitly deferred, not left as unrouteable metrics.
 
 ---
 
@@ -281,19 +301,9 @@ The charting library, CSS token system, and live-vs-polling choice for compact c
 
 ---
 
-## P1.8 Observability and health semantics
+## P1.8 Observability and health semantics — resolved
 
-After the telemetry contract (`contracts/telemetry.md`, resolved P0.5.2):
-
-- ~~decide which node(s) the dashboard displays~~ — **leader-only upload**; finer UI picker still open;
-- ~~define uptime origin/reset and error counting~~ — **resolved** in telemetry contract;
-- define buffer capacity/drop policy for Head's in-memory telemetry beyond the log-archive caps already specified;
-- define Bot/AI Worker heartbeat schemas, staleness thresholds, and whether dependency health is included;
-- decide whether currently proposed Bot/AI Worker counters have a v1 transport and owner; otherwise remove them from the v1 metric surface rather than leaving unrouteable metrics in service docs;
-- decide Launcher verification readiness depth;
-- ~~correct `Head` “sole aggregation point for the entire cluster”~~ — **corrected** in `head.md` §7 (local node only).
-
-Extra business metrics, Mosquitto broker metrics, and Launcher metrics are optional v1 features.
+→ See **Resolved decisions → P1.8**. Canonical heartbeat, staleness, metrics-buffer, and live-payload rules: `contracts/telemetry.md`. Launcher verification: `contracts/launcher_ipc.md` §5.
 
 ---
 
@@ -365,7 +375,7 @@ These edits are mechanical after the decisions above; they should be completed b
 4. ~~**End-to-end scenarios** (P0.8)~~ — **resolved** (`docs/scenarios/`) + cleanup pass.
 5. **Quick Battle + AI graph bounded behavior** (P1.1–P1.2). Locale mapping is done (P1.9).
 6. **Remaining guild/suggestion concurrency** (leftover P1.3 items, P1.4).
-7. **Web/observability details** (P1.6, P1.8). Brokers (P1.5) and Azure clients (P1.7) are done.
+7. **Web details** (P1.6). Observability (P1.8), brokers (P1.5), and Azure clients (P1.7) are done.
 
 When all P0 items and the P1 items for a target subsystem are closed, that subsystem's docs can be considered ready for implementation. “All docs ready” requires every P0 and P1 item to be either resolved or explicitly removed from v1 scope with affected fields/endpoints/flows deleted from the specification.
 
@@ -392,6 +402,8 @@ When all P0 items and the P1 items for a target subsystem are closed, that subsy
 2. **Head:** Mosquitto safe-state startup → Blob Lease acquire/renew/release → PubSub heartbeat/update broadcast → Bot grant/desired-state machine → authenticated Launcher IPC → drain/update orchestration → release polling → log aggregation and telemetry.
 
 Implement election/fencing before update automation or telemetry. Validate S01–S03 and S06 before adding S07–S09 behavior. Launcher IPC work can proceed in parallel with Head's broker/Azure election work.
+
+**Documentation gate:** Phase 1 Slice 0 coordination reconciliation is closed. Implement against the exact release/version, fixed-image, coordinator/lock, interrupted-operation, verification/rollback, and heartbeat/buffer contracts above; do not invent alternate defaults.
 
 ## Phase 2 — AI Worker transport shell and Bot core
 
@@ -446,7 +458,7 @@ Web is one deployed container but should be implemented in slices:
 5. Webhook broadcast and audit after guild data and P1.6 endpoint behavior are fixed;
 6. health/readiness, logging destination, deployment, and rollback.
 
-Close the relevant P1.6–P1.8 items before treating each API/operations slice as complete. Validate S13 after auth and broadcast are both present.
+Close the relevant P1.6 items before treating each Web API/operations slice as complete; P1.8 observability contracts are closed. Validate S13 after auth and broadcast are both present.
 
 ## Parallel work and final gate
 

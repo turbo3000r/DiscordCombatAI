@@ -86,12 +86,13 @@ Published by the leader `Head` into `HEAD_PUBSUB_CLUSTER_GROUP` (`cluster`). Can
 |---|---|
 | `schema_version` | Current = `1`. Receivers reject unknown versions. |
 | `type` | Literal `"update_available"` — discriminates from `leader_heartbeat` (`contracts/leadership_control.md` §4). |
-| `target_version` | Release tag string (same format as `contracts/launcher_ipc.md` `target_version`). **Not** a field named `version`. |
+| `target_version` | Exact Docker-safe SemVer-compatible release tag from `contracts/launcher_ipc.md` §4. **Not** a field named `version`. Invalid tags are ignored/rejected before update admission. |
 
 ### 4b. Dedup / concurrent initiators
 
 `update_available` broadcasts become idempotent by `target_version` string: `Head` tracks the last version string it has already acted on (started draining for) and ignores a repeated broadcast for the same version.
 
+- The broadcasting leader emits only tags accepted by the canonical grammar. Automatic GitHub polling always ignores drafts and ignores prereleases by default; parsed SemVer precedence, never lexical ordering, determines whether a release is newer than `APPLICATION_VERSION`.
 - Manual `launcher update --version` bypasses `Head` entirely and goes straight to `Launcher`'s already-resolved idempotent `POST /v1/update` (`contracts/launcher_ipc.md`) — no new rule is needed for that path.
 - New rule needed only for the `Head`-broadcast path: if `Head` is already `DRAINING`/`UPDATING` for version X and receives a broadcast for a different version Y, it **queues Y as the pending next target** and only begins acting on Y after fully completing the current X cycle (no interruption of an in-progress drain/update).
 

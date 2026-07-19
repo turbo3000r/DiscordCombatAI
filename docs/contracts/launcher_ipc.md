@@ -96,6 +96,25 @@ Every payload below carries `schema_version`; an unknown value is rejected as `4
 
 `reason` is one of `auto_detected`, `manual`, `rollback`, `reconcile`. Body `request_id` must equal `X-DCA-Request-ID`. `target_version` must be a configured valid release-tag format; shell fragments and arbitrary image references are rejected.
 
+### Canonical release-tag grammar
+
+Every `target_version`, `APPLICATION_VERSION`, GitHub release tag considered by automatic polling, version-history entry, and local application image tag uses this exact Docker-safe SemVer-compatible grammar:
+
+```regex
+^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*)?$
+```
+
+Rules:
+
+- lowercase `v` is required;
+- major, minor, and patch are required and have no leading zero unless exactly `0`;
+- prerelease identifiers follow SemVer ordering and may contain ASCII alphanumerics/hyphens; numeric identifiers have no leading zero;
+- SemVer build metadata (`+...`) is deliberately rejected because `+` is not valid in a Docker image tag;
+- the complete ASCII tag is at most 128 bytes (Docker tag limit);
+- versions are compared by parsed SemVer precedence, never lexical string order.
+
+GitHub release polling always ignores drafts and ignores prereleases by default. An explicit Head configuration may opt automatic polling into prereleases; manual `launcher update --version` and authenticated `POST /v1/update` may target a valid prerelease without changing the polling default.
+
 ### Accepted/current response
 
 `202 Accepted` when queued or already running:
@@ -151,7 +170,11 @@ Error bodies use:
 
 Retry only connection failures, response timeouts, `500`, and `503`. Do not retry `400`, `401`, `409`, or `422`. A response timeout is an unknown outcome, so the same request ID is mandatory.
 
-`Launcher` persists accepted/completed request IDs and operation results in its state file before returning success, retaining them for at least 24 hours and across process restart. It also persists the active operation before execution. This deduplicates Head retries and Launcher restarts.
+`Launcher` persists accepted/completed request IDs and operation results in its state file before returning success, retaining them for at least 24 hours and across process restart. It also persists the active operation before execution, including `rollback_version = current_version` captured before any recreate. Automatic rollback restores that captured version; manual rollback is a separate admission targeting version history's `previous_version`. This deduplicates Head retries and makes rollback choice deterministic across status inspection.
+
+HTTP admission and every CLI mutation use the same Launcher coordinator and the same host-wide cross-process lock, held exclusively from accepted admission through terminal operation-state persistence. If another Launcher process owns the lock, a conflicting HTTP request returns `409 update_busy` and a CLI mutation exits non-zero with the current operation summary; neither starts a second pull/recreate.
+
+If Launcher restarts and its persisted operation was active, it marks that operation `interrupted` and exposes it through `/v1/status`. It **must not** infer which Compose steps completed or blindly resume recreate/rollback. A new authenticated admission (`reason: "reconcile"` or another explicit update/rollback request) is required after status inspection; the new request receives its own operation ID.
 
 ---
 
@@ -183,7 +206,9 @@ Retry only connection failures, response timeouts, `500`, and `503`. Do not retr
 }
 ```
 
-This endpoint is authenticated and is **liveness only**. It does not assert leadership, lease ownership, Mosquitto connectivity, or Bot readiness. Launcher uses a 2-second connect timeout and 5-second response timeout per poll and continues polling according to `LAUNCHER_HEALTHCHECK_INTERVAL_SEC` and `LAUNCHER_HEALTHCHECK_TIMEOUT_SEC`. `401`, malformed payload, `503`, timeout, and connection failure are unsuccessful polls; they trigger rollback only when the overall verification window expires.
+`version` is read from the required Compose-injected `APPLICATION_VERSION`; Head must fail startup if it is missing or does not match the canonical grammar in §4.
+
+This endpoint is authenticated and is **liveness only**. It does not assert leadership, lease ownership, Mosquitto connectivity, Bot readiness, or dependency readiness. Post-update verification succeeds only when the response is authenticated, schema-valid, `200` with `status: "alive"`, **and `version` exactly equals the operation's `target_version`**. A valid liveness response for any other version is an unsuccessful poll. Launcher uses a 2-second connect timeout and 5-second response timeout per poll and continues polling according to `LAUNCHER_HEALTHCHECK_INTERVAL_SEC` and `LAUNCHER_HEALTHCHECK_TIMEOUT_SEC`. `401`, malformed payload, version mismatch, `503`, timeout, and connection failure are unsuccessful polls; they trigger one automatic rollback attempt only when the overall verification window expires. Manual `launcher rollback` is a separate operator admission and is not that automatic attempt.
 
 ---
 
@@ -198,8 +223,10 @@ This endpoint is authenticated and is **liveness only**. It does not assert lead
   "current_version": "v1.5.0",
   "previous_version": "v1.4.0",
   "operation_id": null,
-  "target_version": null
+  "target_version": null,
+  "rollback_version": null,
+  "interrupted_operation": null
 }
 ```
 
-It is diagnostic/idempotency visibility only and does not replace the asynchronous `POST /v1/update` response.
+`state` is `IDLE`, `AWAIT_DOCKER`, `PULLING`, `RECREATING`, `VERIFYING`, `ROLLING_BACK`, or `INTERRUPTED`. In `INTERRUPTED`, `interrupted_operation` contains the prior operation ID, target version, last durable phase, and interruption timestamp; it contains no secrets. This status is diagnostic/idempotency visibility only and does not replace the asynchronous `POST /v1/update` response or authorize automatic resumption.

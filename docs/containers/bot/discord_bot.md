@@ -58,6 +58,7 @@ src/bot/
 
 | Variable | Required | Default | Description |
 |---|---|---|---|
+| `APPLICATION_VERSION` | Yes | — | Exact coordinated release tag injected by Compose. Included in the canonical heartbeat and required to match `contracts/launcher_ipc.md` §4's grammar. Startup fails if absent/invalid. |
 | `DISCORD_BOT_TOKEN` | Yes | — | The Discord bot token used to connect to the Gateway. **Previously undocumented anywhere in the project** — surfaced and formalized here; flagged in §13 since no other doc assumed a different name for it, but this is the first place it's been written down at all. Never logged (§7). |
 | `BOT_MOSQUITTO_HOST` | No | `mosquitto` | Hostname of the local Mosquitto broker. Formalizes the variable `mosquitto.md` §3 previously flagged as expected-but-open. |
 | `BOT_MOSQUITTO_PORT` | No | `1883` | Mosquitto broker port. |
@@ -103,7 +104,7 @@ src/bot/
 |---|---|---|---|
 | Discord Gateway | WebSocket | Slash command responses, DMs, guild messages, embed/view edits | Continuous |
 | RabbitMQ (via Celery `apply_async`) | `ai_tasks` (dispatch, `kwargs={"envelope": {...}}`, `task_id=task_id`, publisher confirms) | AI task envelope (`contracts/ai_task.md` §3 — the graph's own input contract flattened into `envelope`, plus `task_id`/`graph`/`created_at`/`schema_version`) | On `/quick-battle`'s environment/battle graph invocations (`bot/commands/quick-battle.md`) |
-| Mosquitto | `status/bot/heartbeat` | `{latency_ms, guild_count}` (§6.3 — extended beyond a bare ping, confirmed decision) | Every `BOT_HEARTBEAT_INTERVAL_SEC` |
+| Mosquitto | `status/bot/heartbeat` | Canonical versioned Bot liveness/dependency payload (`contracts/telemetry.md` §2.1) | Every `BOT_HEARTBEAT_INTERVAL_SEC` |
 | Mosquitto | `status/bot/drain_progress` (QoS 1, not retained) — **new this revision, P0.3** | `{"schema_version": 1, "node_id": ..., "leadership_term": ..., "in_flight_workflows": N, "observed_at": ISO8601}` (`contracts/drain_status.md` §1) | Every `BOT_DRAIN_PROGRESS_INTERVAL_SEC` while `bot.draining` is set (§6.4a) |
 | Mosquitto | `status/bot/control_ack` | Applied state, Gateway connection flag, leadership term, and command sequence (`contracts/leadership_control.md` §3.3) | After each control transition |
 | Mosquitto | `logs/<level>/bot` | Structured log string, per §7 | On every log emission |
@@ -166,7 +167,8 @@ class TaskRecord(TypedDict):
 - **On the terminal `ai_tasks_results` message (RabbitMQ), or on either timeout firing (§9):** the `TaskRecord` is removed from the map — these are the **only** cleanup paths (expanded this revision — previously only the RabbitMQ result path existed). A task whose result never arrives **and** never stalls/times out (impossible by construction once both timers are running, §9) is no longer a real gap — the dangling-entry risk is now bounded to "`Bot` itself crashes/restarts mid-task," which loses all in-memory state including the timers themselves, still flagged as an open item (§13).
 
 **Heartbeat / status reporting** (`modules/services/heartbeat.py`), feeding both `Head` telemetry and `Web` “now” cards (`contracts/telemetry.md`, `contracts/status_document.md`):
-- Every `BOT_HEARTBEAT_INTERVAL_SEC`, publishes `status/bot/heartbeat` on Mosquitto with `{latency_ms, guild_count}` — `latency_ms` from discord.py's `bot.latency`, `guild_count` from `len(bot.guilds)`. Leader `Head` samples these into Table rows; this is a superset of the bare liveness ping other services use.
+- Every `BOT_HEARTBEAT_INTERVAL_SEC`, publishes `status/bot/heartbeat` using the exact schema in `contracts/telemetry.md` §2.1: `node_id`, required `APPLICATION_VERSION`, audit timestamp, Gateway state, `latency_ms`, `guild_count`, and the latest `rabbitmq_connected` / `cosmos_ok` / `azure_queue_ok` / `status_blob_ok` results. No active probing is performed just to build the heartbeat; dependency booleans reflect the latest real connection/operation.
+- Leader `Head` samples fresh latency/guild fields into Table rows. After `HEAD_SERVICE_HEARTBEAT_STALE_SEC` (default 90) without a valid heartbeat, Head marks Bot stale and writes those fields as `null`; staleness does not itself change leadership.
 - Every `BOT_STATUS_PUSH_INTERVAL_SEC`, updates **only** the `status` section via `status.py`'s ETag RMW — never `identity` / `suggestion_catalog` (Web-owned after seed). Dashboard “now” latency/guild count read this section; do not use Cosmos document counts.
 
 ### 6.3a In-Flight Workflow Counter and Drain Progress (P0.3, resolved)
@@ -240,9 +242,9 @@ Same shared structured format as every other service (`contracts/log_archive.md`
 
 ## 8. Metrics
 
-**Candidate `Bot`-owned metrics** (not yet wired to any storage — same unresolved shape of gap `ai_worker.md` §8 already flags for its own container): `commands_invoked_total` (per command), `ai_tasks_published_total`, `suggestion_tickets_created_total`, `active_lobby_count` (`/quick-battle`-specific, per `bot/commands/quick-battle.md`).
+The v1 Bot telemetry surface is deliberately limited to the heartbeat in `contracts/telemetry.md` §2.1. Dashboard metrics sourced from it are `latency_ms` and `guild_count`; Gateway/dependency fields are operational health.
 
-The two metrics that **do** have a defined transport as of this revision are `latency_ms` and `guild_count` (§6.3) — everything else listed above has no path to any persistent store today, exactly the same open shape as `ai_worker.md` §8's own unresolved metrics gap.
+Business counters such as `commands_invoked_total`, `ai_tasks_published_total`, `suggestion_tickets_created_total`, and `active_lobby_count` have no agreed transport or v1 consumer and are explicitly deferred. Implementations must not emit an undocumented Mosquitto metric topic or add them to Table rows ad hoc.
 
 ---
 
@@ -252,7 +254,7 @@ The two metrics that **do** have a defined transport as of this revision are `la
 |---|---|---|
 | Discord Gateway disconnects unexpectedly (network blip, not a `Head`-driven stop) | discord.py's own connection-state events | Relies on discord.py's built-in automatic reconnect — no `Bot`-specific override decided. |
 | Cosmos DB unreachable (guild config or suggestion read/write) | Exception from `cosmos.py` (`azure.md` §9) | Surfaced per-command — see each command's own Failure Modes section (`config.md` §12, `suggest.md` §12). No container-wide fallback beyond what each command already documents. |
-| Azure Queue Storage poll fails (§6.6) | Exception from `queue.py` | Skip this poll cycle; after 3 consecutive failures mark `azure_queue` degraded (`azure.md` §6a). Retry at the next `BOT_QUEUE_POLL_INTERVAL_SEC`. Sweep path unaffected. |
+| Azure Queue Storage poll fails (§6.6) | Exception from `queue.py` | Skip this poll cycle; after 3 consecutive failures set heartbeat `dependencies.azure_queue_ok: false` (`azure.md` §6a, `contracts/telemetry.md` §2.1). Retry at the next `BOT_QUEUE_POLL_INTERVAL_SEC`; the next successful receive restores `true`. Sweep path unaffected. |
 | A DM to a suggestion's original author fails (§6.6) | `discord.Forbidden` or similar from the DM send call | **Resolved this revision:** retried by the reconciliation sweep (§6.6) up to `BOT_SUGGESTION_MAX_DM_ATTEMPTS` combined attempts, then `notification_status` is set to `"failed"` — a terminal state the admin can eventually see reflected on `web/pages/suggestions.md`, rather than an indefinite retry or a silent drop. |
 | Mosquitto unreachable — affects progress, heartbeat, and leadership control | Control connection loss | Progress remains best-effort. For safety, immediately enter bounded soft-stop and reject new AI work; hard-stop at drain timeout or earlier grant expiry unless safe control is restored. |
 | Active grant expires or Head grant/watchdog disappears | Local monotonic deadline | Hard-stop autonomously; no Head publish is required. |
@@ -281,15 +283,14 @@ The two metrics that **do** have a defined transport as of this revision are `la
 
 ## 11. Health Check
 
-No HTTP endpoint — unlike `Head`/`Launcher`, `Bot` exposes nothing for another service to poll directly. Its only liveness signal is the Mosquitto `status/bot/heartbeat` (§6.3), consumed by `Head` the same generic way `AI Worker`'s heartbeat is (`mosquitto.md` §4/§5) — now carrying `{latency_ms, guild_count}` rather than a bare ping, per this revision's confirmed extension.
-
-Whether a more detailed self-check (Discord Gateway session state, RabbitMQ/Cosmos connectivity) should be folded into that same heartbeat payload, or exposed some other way, is undecided — mirrors `ai_worker.md` §11's identical open item on its own side.
+No HTTP endpoint — unlike `Head`/`Launcher`, `Bot` exposes nothing for another service to poll directly. Its liveness/health surface is the Mosquitto heartbeat in `contracts/telemetry.md` §2.1, consumed by `Head`. It includes Gateway state and proportionate per-resource dependency flags; no additional readiness endpoint or active dependency probes are part of v1.
 
 ---
 
 ## 12. Versioning & Update Behavior
 
 - `Bot` shares the coordinated version tag with `Head`, `AI Worker`, and `Web` (`Launcher.md` §12) — it does not version independently.
+- The local container receives required `APPLICATION_VERSION` from Compose; Launcher recreates it only as part of the fixed `head`/`bot`/`ai_worker` image set.
 - Participates in the planned update sequence by draining, then completing hard-stop and best-effort acknowledgement **before** Head voluntarily releases the lease (`contracts/leadership_control.md` §6). The drain-completion signal/counts are resolved in `contracts/drain_status.md` (P0.3) — `in_flight_workflows` (§6.3a) is what `Head` actually watches.
 - No persistent state to preserve across a restart beyond what already lives in Cosmos DB (`contracts/guild_config.md`) — the in-memory task map (§6.3) and the `bot.draining` flag (§6.4) are both lost on restart by design, and a fresh instance starts clean once `Head` signals `activate` again.
 
@@ -305,6 +306,6 @@ Whether a more detailed self-check (Discord Gateway session state, RabbitMQ/Cosm
 - **New this revision** — `BOT_AI_TASK_TIMEOUT_SEC=900` and `BOT_AI_TASK_STALL_TIMEOUT_SEC=120` (§3) are proposed defaults, not confirmed against real Gemini/LangGraph timing — see `contracts/ai_task.md` §8 for the full reasoning and the explicit flag that these need revisiting once real latency data exists.
 - ~~Whether `Bot` publishes to `ai_tasks` via a Celery client or raw AMQP was undecided~~ — **resolved this revision, P0.4**: `Bot` uses `apply_async` (`contracts/ai_task.md` §2/§3), so `task_id` doubles as a revocable Celery task id and `revoke(terminate=True)` (§6.5) is directly reachable.
 - `DISCORD_BOT_TOKEN` (§3) was a previously-undocumented gap across the entire docs tree, not specific to this revision's scope — formalized here for the first time; worth double-checking no other in-progress doc silently assumed a different variable name for it.
-- Bot-owned metrics beyond `latency_ms`/`guild_count` have no transport path (§8) — same unresolved shape as `ai_worker.md` §8.
-- No health signal beyond the heartbeat exists or is planned (§11) — same unresolved shape as `ai_worker.md` §11.
+- Bot-owned counters beyond the canonical heartbeat are explicitly deferred from v1 (§8); this is a scope decision, not an unresolved transport contract.
+- Bot heartbeat dependency health and staleness are resolved in `contracts/telemetry.md` §2 (§11).
 - The exact copy/localization key for the "temporarily unavailable during drain" response (§6.4) hasn't been written yet.

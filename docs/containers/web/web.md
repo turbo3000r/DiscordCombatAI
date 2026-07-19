@@ -117,7 +117,7 @@ The legacy dashboard read several fields directly off an in-process `discord.py`
 | Error count | Leader Head `errors_in_window` (ERROR log lines per batch window, reset each flush) | **Resolved** |
 | Live log console | Browser ← PubSub `dashboard-live` (`contracts/pubsub_live.md`); live-only, no Blob replay in v1 | **Resolved** |
 
-**Multi-node:** only the leader uploads telemetry; Dashboard shows that leader’s node (`contracts/telemetry.md` §1). Finer node pickers remain P1.8.
+**Multi-node:** only the leader uploads telemetry; Dashboard shows that leader’s node (`contracts/telemetry.md` §1), falling back to the most recently written partition. There is no multi-node picker in v1.
 
 ---
 
@@ -192,7 +192,7 @@ The legacy dashboard read several fields directly off an in-process `discord.py`
 - ~~**Web PubSub telemetry/log group naming**~~ — **resolved (P0.6):** `dashboard-live` / `contracts/pubsub_live.md`.
 - ~~**No authentication/authorization**~~ — **resolved (P0.7):** Entra ID + admin group; `contracts/web_auth.md`. Group-claim overage Graph fallback remains P2.
 - ~~Bot-sourced dashboard fields (gateway latency, per-guild live metadata) have no defined write path from `Bot` yet~~ — **resolved** (§6.3): `bot/discord_bot.md` §6.2/§6.3 and `contracts/guild_config.md` now define both write paths.
-- ~~**Error-count metric** / **multi-node metrics ambiguity**~~ — **resolved** at contract level (`contracts/telemetry.md`: leader-only; `errors_in_window`; process `uptime_sec`). UI node picker remains P1.8.
+- ~~**Error-count metric** / **multi-node metrics ambiguity**~~ — **resolved** at contract level (`contracts/telemetry.md`: leader-only; `errors_in_window`; process `uptime_sec`; current-leader/most-recent partition selection). No node picker in v1.
 - **No logging path off this container** — `Web` can't reach `Head`'s aggregation pipeline (§7).
 - **No metrics path for `Web`'s own operational health** (§8).
 - **No health check contract defined** (§11).
