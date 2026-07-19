@@ -54,11 +54,18 @@ class PubSubClient:
         await retry_async(_send, category=RetryCategory.UNCERTAIN_SEND)
 
     async def get_client_access_token(
-        self, *, group: str, user_id: str, expires_in_minutes: int = 60
+        self,
+        *,
+        group: str,
+        user_id: str,
+        expires_in_minutes: int = 60,
+        allow_send: bool = False,
     ) -> PubSubNegotiateResponse:
         async def _mint() -> PubSubNegotiateResponse:
             client = self._client()
             roles = [f"webpubsub.joinLeaveGroup.{group}"]
+            if allow_send:
+                roles.append(f"webpubsub.sendToGroup.{group}")
             result = client.get_client_access_token(
                 user_id=user_id, roles=roles, minutes_to_expire=expires_in_minutes
             )

@@ -3,9 +3,15 @@ from __future__ import annotations
 from enum import StrEnum
 from typing import Any, Literal
 
-from pydantic import TypeAdapter
+from pydantic import Field, TypeAdapter
 
 from .base import SchemaVersionedModel, UnknownSchemaVersionError, UTCDateTime, UUIDString
+
+RELEASE_TAG_PATTERN = (
+    r"^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)"
+    r"(?:-(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)"
+    r"(?:\.(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*)?$"
+)
 
 
 class UpdateReason(StrEnum):
@@ -24,7 +30,7 @@ class LauncherErrorBody(SchemaVersionedModel):
 class UpdateRequest(SchemaVersionedModel):
     schema_version: int = 1
     request_id: UUIDString
-    target_version: str
+    target_version: str = Field(pattern=RELEASE_TAG_PATTERN, max_length=128)
     reason: UpdateReason
     requested_at: UTCDateTime
     source_node_id: str
@@ -35,7 +41,7 @@ class UpdateAcceptedResponse(SchemaVersionedModel):
     request_id: UUIDString
     operation_id: UUIDString
     state: Literal["accepted"]
-    target_version: str
+    target_version: str = Field(pattern=RELEASE_TAG_PATTERN, max_length=128)
 
 
 class UpdateAlreadyCurrentResponse(SchemaVersionedModel):
@@ -43,7 +49,7 @@ class UpdateAlreadyCurrentResponse(SchemaVersionedModel):
     request_id: UUIDString
     operation_id: UUIDString
     state: Literal["already_current"]
-    target_version: str
+    target_version: str = Field(pattern=RELEASE_TAG_PATTERN, max_length=128)
 
 
 class UpdateBusyResponse(SchemaVersionedModel):
@@ -51,16 +57,16 @@ class UpdateBusyResponse(SchemaVersionedModel):
     request_id: UUIDString
     error: LauncherErrorBody
     operation_id: UUIDString
-    target_version: str
+    target_version: str = Field(pattern=RELEASE_TAG_PATTERN, max_length=128)
 
 
 class LauncherStatusResponse(SchemaVersionedModel):
     schema_version: int = 1
     state: str
-    current_version: str
-    previous_version: str | None
+    current_version: str = Field(pattern=RELEASE_TAG_PATTERN, max_length=128)
+    previous_version: str | None = Field(pattern=RELEASE_TAG_PATTERN, max_length=128)
     operation_id: UUIDString | None
-    target_version: str | None
+    target_version: str | None = Field(pattern=RELEASE_TAG_PATTERN, max_length=128)
 
 
 class HealthStatus(StrEnum):
@@ -71,7 +77,7 @@ class HealthStatus(StrEnum):
 class HealthResponse(SchemaVersionedModel):
     schema_version: int = 1
     status: HealthStatus
-    version: str
+    version: str = Field(pattern=RELEASE_TAG_PATTERN, max_length=128)
     instance_id: UUIDString
     started_at: UTCDateTime
 
@@ -106,6 +112,7 @@ __all__ = [
     "LauncherErrorBody",
     "LauncherStatusResponse",
     "LauncherUpdateResponse",
+    "RELEASE_TAG_PATTERN",
     "UpdateAcceptedResponse",
     "UpdateAlreadyCurrentResponse",
     "UpdateBusyResponse",

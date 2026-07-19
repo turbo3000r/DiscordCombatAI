@@ -37,8 +37,7 @@ services:
       start_period: 30s
 
   head:
-    image: discord-combat-ai/head:local
-    profiles: [application]
+    image: ${LAUNCHER_GHCR_NAMESPACE:-discord-combat-ai}/head:${APPLICATION_VERSION:-local}
     restart: unless-stopped
     extra_hosts:
       - host.docker.internal:host-gateway
@@ -50,16 +49,31 @@ services:
       rabbitmq:
         condition: service_healthy
     environment:
+      APPLICATION_VERSION: ${APPLICATION_VERSION:-}
+      HEAD_NODE_ID: ${HEAD_NODE_ID:-node-local}
+      HEAD_GITHUB_REPO: ${HEAD_GITHUB_REPO:-}
       HEAD_MOSQUITTO_HOST: ${HEAD_MOSQUITTO_HOST:-mosquitto}
       HEAD_MOSQUITTO_PORT: ${HEAD_MOSQUITTO_PORT:-1883}
       HEAD_LAUNCHER_IPC_URL: ${HEAD_LAUNCHER_IPC_URL:-http://host.docker.internal:9700}
+      HEAD_LAUNCHER_IPC_SECRET_FILE: /run/secrets/launcher_ipc_secret
       HEAD_IPC_BIND: ${HEAD_IPC_BIND:-0.0.0.0}
       HEAD_IPC_PORT: ${HEAD_IPC_PORT:-9800}
+      AZURE_TENANT_ID: ${AZURE_TENANT_ID:-}
+      HEAD_AZURE_CLIENT_ID: ${HEAD_AZURE_CLIENT_ID:-}
+      HEAD_AZURE_CLIENT_SECRET: ${HEAD_AZURE_CLIENT_SECRET:-}
+      AZURE_COSMOS_ENDPOINT: ${AZURE_COSMOS_ENDPOINT:-}
+      AZURE_STORAGE_ACCOUNT_NAME: ${AZURE_STORAGE_ACCOUNT_NAME:-}
+      AZURE_WEBPUBSUB_ENDPOINT: ${AZURE_WEBPUBSUB_ENDPOINT:-}
+      AZURE_WEBPUBSUB_HUB_NAME: ${AZURE_WEBPUBSUB_HUB_NAME:-discordcombatai}
+      AZURE_METRICS_TABLE: ${AZURE_METRICS_TABLE:-NodeMetrics}
+      AZURE_LOG_ARCHIVE_CONTAINER: ${AZURE_LOG_ARCHIVE_CONTAINER:-service-logs}
+    volumes:
+      - ${LAUNCHER_IPC_SECRET_FILE:-./.secrets/launcher_ipc_secret}:/run/secrets/launcher_ipc_secret:ro
     networks:
       - dca-internal
 
   bot:
-    image: discord-combat-ai/bot:local
+    image: ${LAUNCHER_GHCR_NAMESPACE:-discord-combat-ai}/bot:${APPLICATION_VERSION:-local}
     profiles: [application]
     restart: unless-stopped
     depends_on:
@@ -68,6 +82,7 @@ services:
       rabbitmq:
         condition: service_healthy
     environment:
+      APPLICATION_VERSION: ${APPLICATION_VERSION:-}
       DISCORD_BOT_TOKEN: ${DISCORD_BOT_TOKEN:-replace-me-in-env}
       BOT_MOSQUITTO_HOST: ${BOT_MOSQUITTO_HOST:-mosquitto}
       BOT_MOSQUITTO_PORT: ${BOT_MOSQUITTO_PORT:-1883}
@@ -83,7 +98,7 @@ services:
       - dca-internal
 
   ai_worker:
-    image: discord-combat-ai/ai_worker:local
+    image: ${LAUNCHER_GHCR_NAMESPACE:-discord-combat-ai}/ai_worker:${APPLICATION_VERSION:-local}
     profiles: [application]
     restart: unless-stopped
     depends_on:
@@ -92,6 +107,7 @@ services:
       rabbitmq:
         condition: service_healthy
     environment:
+      APPLICATION_VERSION: ${APPLICATION_VERSION:-}
       AI_WORKER_MOSQUITTO_HOST: ${AI_WORKER_MOSQUITTO_HOST:-mosquitto}
       AI_WORKER_MOSQUITTO_PORT: ${AI_WORKER_MOSQUITTO_PORT:-1883}
       AI_WORKER_RABBITMQ_HOST: ${AI_WORKER_RABBITMQ_HOST:-rabbitmq}
