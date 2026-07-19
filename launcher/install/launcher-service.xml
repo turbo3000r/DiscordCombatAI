@@ -1,0 +1,19 @@
+<service>
+  <id>DiscordCombatAILauncher</id>
+  <name>DiscordCombatAI Launcher</name>
+  <description>Host-side update and rollback coordinator for DiscordCombatAI.</description>
+  <executable>powershell.exe</executable>
+  <arguments>-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "%BASE%\run-launcher.ps1"</arguments>
+  <workingdirectory>%BASE%\..</workingdirectory>
+  <startmode>Automatic</startmode>
+  <delayedAutoStart>true</delayedAutoStart>
+  <stoptimeout>20sec</stoptimeout>
+  <onfailure action="restart" delay="5 sec" />
+  <onfailure action="restart" delay="15 sec" />
+  <onfailure action="restart" delay="30 sec" />
+  <resetfailure>1 hour</resetfailure>
+  <log mode="roll-by-size">
+    <sizeThreshold>10240</sizeThreshold>
+    <keepFiles>5</keepFiles>
+  </log>
+</service>

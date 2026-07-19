@@ -1,0 +1,25 @@
+[Unit]
+Description=DiscordCombatAI Launcher
+Requires=docker.service
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=discordcombatai
+Group=docker
+WorkingDirectory=/opt/discordcombatai
+EnvironmentFile=/etc/discordcombatai/launcher.env
+ExecStart=/opt/discordcombatai/launcher daemon
+Restart=always
+RestartSec=5
+TimeoutStopSec=20
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/discordcombatai /var/log/discordcombatai
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

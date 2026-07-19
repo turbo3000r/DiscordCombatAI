@@ -1,0 +1,15 @@
+FROM --platform=$BUILDPLATFORM golang:1.25-alpine AS build
+
+ARG TARGETOS
+ARG TARGETARCH
+WORKDIR /src
+
+COPY go.mod go.sum* ./
+RUN go mod download
+COPY . .
+RUN extension=""; if [ "$TARGETOS" = "windows" ]; then extension=".exe"; fi; \
+    CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
+    go build -trimpath -ldflags="-s -w" -o "/out/launcher${extension}"
+
+FROM scratch AS artifact
+COPY --from=build /out/ /out/
