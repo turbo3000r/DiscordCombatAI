@@ -33,3 +33,13 @@
 ## Invariant checked
 
 **Control-plane loss soft-stops; grant expiry hard-stops.** Mosquitto outage never leaves Bot indefinitely active without renewals, and never invents leadership from PubSub alone.
+
+## Phase 2 acceptance ownership
+
+| Step | Phase 2 status | Notes |
+|---|---|---|
+| 1. Control disconnect → immediate soft-stop; reject new AI publishes | **complete** | Harness observes `bot.draining` / publish rejection — not slash UX |
+| 2. Head may publish draining grant when possible | **integration-only** | Real Head optional; protocol simulator acceptable |
+| 3. Grant expiry → hard-stop if unrecovered | **complete** | Bot autonomous |
+| 4. Best-effort progress/drain topics may be lost | **complete** | Must not gate leadership |
+| Slash-command “rejected while soft-stopped” user copy | **deferred** → command phases | No Phase 2 slash commands |

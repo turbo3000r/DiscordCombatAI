@@ -11,7 +11,7 @@
 
 ## Ordered steps
 
-1. Bot fails to `apply_async` / publisher-confirm for new `ai_tasks` (or AI Worker fails to consume). **User-visible:** the AI-backed command step that attempted the publish returns a localized ephemeral/error response; **no** `TaskRecord` is created for that attempt (`rabbitmq.md` §9).
+1. Bot fails to `send_task` / publisher-confirm for new `ai_tasks` (or AI Worker fails to consume). **User-visible:** the AI-backed step that attempted the publish returns a localized ephemeral/error response (Phase 2: harness asserts this path — no slash command yet); **no** `TaskRecord` is created for that attempt (`rabbitmq.md` §9).
 2. Leadership fencing is **unchanged**: Bot does not hard-stop solely because RabbitMQ is down — RabbitMQ is node-local work transport, not the activation authority (`architecture.md` / `ai_task.md` / `rabbitmq.md` §9).
 3. Bot and AI Worker AMQP clients reconnect with exponential backoff (`rabbitmq.md` §8a: 1s → ×2 → cap 60s + jitter).
 4. In-flight tasks already claimed by AI Worker may complete or fail locally; results cannot reach Bot until `ai_tasks_results` recovers. Bot’s stall/overall timeouts still apply (`ai_task.md` §8) and produce user-visible failure if the result never arrives.
@@ -37,3 +37,15 @@
 ## Invariant checked
 
 **RabbitMQ loss does not demote leadership or activate another Bot.** Work fails closed for AI tasks; fencing stays on lease + grant (`leadership_control.md`).
+
+## Phase 2 acceptance ownership
+
+| Step | Phase 2 status | Notes |
+|---|---|---|
+| 1. Failed publish → no `TaskRecord`; error surfaced | **complete** | Harness/assert path; Discord ephemeral for real slash is **deferred** → command phases |
+| 2. Leadership/Gateway unchanged | **complete** | |
+| 3. AMQP reconnect backoff | **complete** | Bot + AI Worker |
+| 4. In-flight stall/overall timers | **complete** | Transport-shell / tracked tasks |
+| 5. Recovery + DLQ for malformed | **complete** | |
+| 6. `in_flight_workflows` counts RabbitMQ-waiting work | **complete** | AI-task map entries only in Phase 2 |
+| Non-AI commands still succeed | **deferred** → `/suggest` / Phase 3 | |

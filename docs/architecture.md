@@ -109,8 +109,8 @@
 
 ### `RabbitMQ` — Local Message Broker
 * **Role:** Facilitates asynchronous communication strictly between the `Bot` and the `AI Worker(s)`.
-* **Behavior:** Holds queues for `ai_tasks` and `ai_tasks_results`, both dead-letter-configured (`contracts/ai_task.md` §9). Manual ack after result-publish ensures no tasks are lost if an AI Worker crashes mid-generation. **Delivery guarantee — corrected, P0.4:** at-least-once delivery, effectively-once outcome, not "exactly-once" — manual ack bounds duplicate generation to the crash window, and `contracts/ai_task.md` §6's discard-by-unknown-`task_id` logic makes the user-visible outcome effectively-once. **Wire protocol — resolved, P0.4:** `ai_tasks` is a real Celery queue (`Bot` dispatches via `apply_async`, `AI Worker` is a real Celery worker); `ai_tasks_results` stays a plain, manually-published queue — Celery's own result backend is never used. `task_id` = the Celery task id = the AMQP `correlation_id` = the domain idempotency key.
-* **Response:** Each message dispatched to `ai_tasks` (via Celery `apply_async`, `contracts/ai_task.md` §2) should eventually get its response manually published to `ai_tasks_results`, correlated by `correlation_id = task_id` — `reply_to` is not used.
+* **Behavior:** Holds queues for `ai_tasks` and `ai_tasks_results`, both dead-letter-configured (`contracts/ai_task.md` §9). Manual ack after result-publish ensures no tasks are lost if an AI Worker crashes mid-generation. **Delivery guarantee — corrected, P0.4:** at-least-once delivery, effectively-once outcome, not "exactly-once" — manual ack bounds duplicate generation to the crash window, and `contracts/ai_task.md` §6's discard-by-unknown-`task_id` logic makes the user-visible outcome effectively-once. **Wire protocol — resolved, P0.4 / Phase 2:** `ai_tasks` is a real Celery queue (`Bot` dispatches via `send_task("ai_worker.tasks.run_graph", ...)`, `AI Worker` is `celery -A ai_worker.celery_app worker -Q ai_tasks`); `ai_tasks_results` stays a plain, manually-published queue — Celery's own result backend is never used. `task_id` = the Celery task id = the AMQP `correlation_id` = the domain idempotency key.
+* **Response:** Each message dispatched to `ai_tasks` (via Celery `send_task`, `contracts/ai_task.md` §2) should eventually get its response manually published to `ai_tasks_results`, correlated by `correlation_id = task_id` — `reply_to` is not used.
 * **Local**: `RabbitMQ` is local and local only — there is no cross-node routing of any kind. A non-leader node's `AI Worker` is not processing work "for" the cluster leader; its local `ai_tasks` queue simply never receives anything, because only the active leader's local `Bot` ever publishes into its own local queue.
 * **Soft stop (`drain`):** stops accepting *new* `/quick-battle` requests only; anything already in `ai_tasks`/in-flight is left to finish normally, bounded by `contracts/drain_status.md`'s drain protocol (P0.3). Used for planned updates.
 * **Hard stop (`stop`), formerly "`Head` light crash":** In case of internet failure, `Bot` termination, or a drain-timeout escalation (`contracts/drain_status.md` §2), all messages in `ai_tasks`  are purged, and any `AI Worker` execution already claimed and running is actively terminated (`Bot`-issued Celery `revoke(task_id, terminate=True)`, not left to finish, `Bot` is the resolved actor, `contracts/ai_task.md` §8) — an `AiTaskResultFailed` message (`contracts/ai_task.md` §4, `node: "worker_terminated"`) is added to `ai_tasks_results` for each purged/terminated task. `Bot` delivers that error back to each task's originating Discord thread before disconnecting from the Gateway — see `bot/discord_bot.md` §6.5 for the exact sequencing.
@@ -249,9 +249,11 @@
 
 ## Target Compose skeleton (Phase 0 / P1.5)
 
-> Paths and service names below are the **documented target architecture**. They are not proof the files already exist on disk — Phase 0 scaffolding creates them. Full operational detail for brokers: `containers/rabbitmq.md`, `containers/mosquitto.md`.
+> Paths and service names below match the **checked-in** `docker-compose.yml` / `infra/` layout. Brokers and Head start by default; Bot and AI Worker use an explicit Compose profile (below). Full operational detail for brokers: `containers/rabbitmq.md`, `containers/mosquitto.md`.
 
 **Services (local node):** `mosquitto`, `rabbitmq`, `head`, `bot`, `ai_worker`. **`web` is excluded** (deployed independently). **`launcher` is excluded** (host binary).
+
+**Profiles:** `bot` and `ai_worker` use Compose profile `application`. Default `docker compose up` brings up brokers + Head only. Start transport peers with `--profile application` (or Launcher recreate of the fixed application image set). This keeps Head fencing testable without requiring Bot/Worker images during early slices.
 
 **Networks:** one internal bridge (`dca-internal`). Production compose publishes **no** host ports for Mosquitto `1883` or RabbitMQ `5672`/`15672`. Head IPC remains host-loopback only per `contracts/launcher_ipc.md`.
 
@@ -261,7 +263,7 @@
 
 **Broker mounts:**
 - `./infra/mosquitto/mosquitto.conf` → Mosquitto config
-- `./infra/rabbitmq/enabled_plugins` (+ optional `definitions.json`) → RabbitMQ
+- `./infra/rabbitmq/enabled_plugins`, `rabbitmq.conf`, and `definitions.json` (canonical topology) → RabbitMQ
 
 **Prompts:** `ai_worker` bind-mounts `./prompts` (or image-copies at build) read-only — exact path ownership for generic arenas remains a P1.1 item; Compose must still reserve the mount point.
 
@@ -270,6 +272,12 @@
 **Image pins (brokers):** `eclipse-mosquitto:2.0.20` (patch-pin in real Compose), `rabbitmq:3.13-management`. Application images use the coordinated release tag.
 
 **Application version injection:** Compose requires `APPLICATION_VERSION` (no default) and injects the same value into `head`, `bot`, and `ai_worker`. Their fixed image references are `${LAUNCHER_GHCR_NAMESPACE}/head:${APPLICATION_VERSION}`, `${LAUNCHER_GHCR_NAMESPACE}/bot:${APPLICATION_VERSION}`, and `${LAUNCHER_GHCR_NAMESPACE}/ai_worker:${APPLICATION_VERSION}`. During Launcher operations, the coordinator supplies the admitted target as the child Compose process's `APPLICATION_VERSION`; direct/manual Compose use must set it explicitly. Each application process fails startup if the value is absent or does not match `contracts/launcher_ipc.md` §4.
+
+**Node identity injection (Phase 2):** Compose reads one host-level `NODE_ID` and injects it as `HEAD_NODE_ID`, `BOT_NODE_ID`, and `AI_WORKER_NODE_ID`. All three must match on a deployment node. Grammar: `^[A-Za-z0-9._-]+$`, length 1–128.
+
+**Broker URL / vhost:** Compose injects `RABBITMQ_DEFAULT_VHOST` (default `/discordcombatai`) into `head`, `bot`, and `ai_worker`. Clients build `amqp://{user}:{pass}@{host}:{port}/{quote(vhost, safe="")}` (`contracts/ai_task.md` §2).
+
+**RabbitMQ topology:** `infra/rabbitmq/definitions.json` is canonical (not optional). Clients verify; they do not own competing declares.
 
 ---
 
@@ -285,7 +293,8 @@ discord-combat-ai/
 │   │   └── mosquitto.conf
 │   └── rabbitmq/
 │       ├── enabled_plugins
-│       └── definitions.json     # optional; see rabbitmq.md §2
+│       ├── rabbitmq.conf
+│       └── definitions.json     # canonical topology owner — see rabbitmq.md §2
 ├── pyproject.toml               # Single workspace root — all dependencies defined here
 ├── .env                         # Actual secrets (gitignored)
 ├── .env.example                 # Template with all required variables and descriptions
@@ -404,8 +413,9 @@ discord-combat-ai/
 │   ├── ai_worker/               # Container: Generation Engine
 │   │   ├── Dockerfile
 │   │   ├── entrypoint.sh
-│   │   ├── main.py              # Entry point: starts Celery worker
-│   │   ├── tasks.py             # Celery task definitions
+│   │   ├── main.py              # Entry point / worker process wrapper
+│   │   ├── celery_app.py        # Celery app — ai_worker.celery_app:app
+│   │   ├── tasks.py             # Task name ai_worker.tasks.run_graph
 │   │   ├── nodes/               # shared nodes — see containers/ai_worker/nodes.md
 │   │   |   ├── validation.py
 │   │   |   └── decider.py

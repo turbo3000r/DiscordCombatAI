@@ -33,9 +33,10 @@ head = [
 ]
 bot = [
   "discord-combat-ai[azure]",
-  "celery[redis]>=5.4,<6",
+  "celery>=5.4,<6",
   "kombu>=5.3,<6",
   "paho-mqtt>=2.1,<3",
+  "discord.py>=2.6,<3",
 ]
 ai-worker = [
   "celery>=5.4,<6",

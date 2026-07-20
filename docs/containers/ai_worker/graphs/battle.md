@@ -241,4 +241,4 @@ class BattleGraphState(TypedDict):
 - Whether `Validator` actually checks `predetermined_winners`-consistency in scripted mode is unconfirmed (§9).
 - `Validator`'s and `Decider`'s battle-specific criteria (what makes a story "valid," what makes one attempt "better" than another) are undecided — same shape of gap already flagged in `ai_worker/nodes.md` §6.
 - Whether `Modifier`'s prose-only restriction (§7) proves sufficient in practice, or whether some issues genuinely need skeleton-level revision, is a v2 concern not addressed here.
-- The exact task-boundary handoff between `environment` and `battle` remains pending on `ai_worker/graphs/quick-battle.md` and `bot/commands/quick-battle.md`, both unwritten stubs — same open item already tracked in `graphs/environment.md` §12.
+- The exact task-boundary handoff between `environment` and `battle` remains under **P1.1** / `bot/commands/quick-battle.md` — there is no `ai_worker/graphs/quick-battle.md` (same item as `graphs/environment.md` §12).

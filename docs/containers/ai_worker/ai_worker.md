@@ -6,7 +6,7 @@
 
 ## 1. Responsibility
 
-`AI Worker` is the Generation Engine (per `architecture.md`'s Container Breakdown): a **real Celery worker process** (`celery -A ai_worker worker -Q ai_tasks`, resolved this revision — P0.4, `contracts/ai_task.md` §2) consuming `RabbitMQ`'s `ai_tasks` queue via Celery's own task protocol, at **prefetch = 1** (one task at a time, matching the single-execution LangGraph model, §6). For each task it claims, it unwraps the `envelope` kwarg (`contracts/ai_task.md` §3), initializes the correct **LangGraph** state machine (`environment` or `battle`, selected by the envelope's `graph` field — see §6), drives it to completion against the **Google Gemini API**, and manually publishes the finished result onto `ai_tasks_results` — **not** via Celery's result backend, which this pipeline never uses (`contracts/ai_task.md` §2).
+`AI Worker` is the Generation Engine (per `architecture.md`'s Container Breakdown): a **real Celery worker process** (`celery -A ai_worker.celery_app worker -Q ai_tasks`, `contracts/ai_task.md` §2) consuming `RabbitMQ`'s `ai_tasks` queue via Celery's own task protocol, at **prefetch = 1** (one task at a time, matching the single-execution LangGraph model, §6). For each task it claims, it unwraps the `envelope` kwarg (`contracts/ai_task.md` §3), then either (Phase 2) runs the **transport shell** for `graph="environment"` when `AI_WORKER_TRANSPORT_SHELL=true`, or (Phase 4+) initializes the correct **LangGraph** state machine (`environment` or `battle`), drives it against **Google Gemini**, and manually publishes the finished result onto `ai_tasks_results` — **not** via Celery's result backend (`contracts/ai_task.md` §2/§11).
 
 It is stateless between tasks, has no direct Discord-facing or Azure-facing responsibility (confirmed, `azure.md` §4 — "No direct Azure dependency today"), and can be scaled to multiple instances per PC and across PCs. Unlike `Bot`, it stays active even when the local `Head` is not the cluster leader — task processing is not gated by leader election, only by the `Head`-driven pause/resume signal (§6, node-local). This does **not** mean it's idle only for cluster reasons: since `RabbitMQ` is strictly node-local (`rabbitmq.md` §1, `architecture.md`'s corrected `RabbitMQ` note), a non-leader node's `AI Worker` simply has nothing in its own local `ai_tasks` queue to pull — there is no cross-node task routing anywhere in this system.
 
@@ -20,12 +20,13 @@ It is stateless between tasks, has no direct Discord-facing or Azure-facing resp
 ai_worker/
 ├── Dockerfile
 ├── entrypoint.sh
-├── main.py              # Entry point: starts the Celery worker, registers tasks
-├── tasks.py             # Celery task definitions — routes each ai_tasks message to the correct graph (§6)
-├── nodes/               # Shared LangGraph nodes — see ai_worker/nodes.md
+├── main.py              # Entry point / process wrapper around the Celery worker
+├── celery_app.py        # Celery("ai_worker") app — import path ai_worker.celery_app:app
+├── tasks.py             # @app.task name ai_worker.tasks.run_graph — routes envelope.graph (§6)
+├── nodes/               # Shared LangGraph nodes — see ai_worker/nodes.md (Phase 4+)
 │   ├── validation.py    # Validator (nodes.md §2)
 │   └── decider.py       # Decider (nodes.md §3)
-└── graphs/              # LangGraph graphs — see graphs/environment.md, graphs/battle.md
+└── graphs/              # LangGraph graphs — see graphs/environment.md, graphs/battle.md (Phase 4+)
     ├── environment/
     │   ├── graph.py
     │   └── nodes/        # graph-specific: RouteInput, Generator, Normalise, Enhancer
@@ -34,7 +35,9 @@ ai_worker/
         └── nodes/        # graph-specific: Predefine, CreateSkeleton, Implement*Episode, Modifier, ResolveWinners
 ```
 
-> **Correction applied in this revision:** `architecture.md`'s Project File Structure previously listed only `validation.py` under `nodes/` — `decider.py` was missing despite `ai_worker/nodes.md` already documenting it as shared code (promoted from graph-specific, see `nodes.md` §3). Both this doc and `architecture.md` now show `decider.py`.
+> **Phase 2 note:** `celery_app.py` + `tasks.py` + transport-shell branch are required now. Real graph packages under `graphs/` and shared `nodes/` may exist as stubs but must not be required to pass the transport harness when `AI_WORKER_TRANSPORT_SHELL=true`.
+
+> **Correction applied earlier:** `architecture.md`'s Project File Structure previously listed only `validation.py` under `nodes/` — `decider.py` was missing despite `ai_worker/nodes.md` already documenting it as shared code. Both this doc and `architecture.md` show `decider.py`.
 
 `prompts/` (repo root, **not** under `ai_worker/`) is mounted into this container at runtime — its structure, injection pattern, and per-node mapping are fully owned by `ai_worker/prompts.md`, not duplicated here.
 
@@ -45,15 +48,18 @@ ai_worker/
 | Variable | Required | Default | Description |
 |---|---|---|---|
 | `APPLICATION_VERSION` | Yes | — | Exact coordinated release tag injected by Compose. Included in the canonical heartbeat and required to match `contracts/launcher_ipc.md` §4's grammar. Startup fails if absent/invalid. |
+| `AI_WORKER_NODE_ID` | Yes | — | Host node identity. Must equal the deployment's `NODE_ID` / `HEAD_NODE_ID` / `BOT_NODE_ID`. Grammar `^[A-Za-z0-9._-]+$`, length 1–128. Compose injects from host `NODE_ID`. |
 | `AI_WORKER_RABBITMQ_HOST` | No | `rabbitmq` | Hostname of the local RabbitMQ broker. Formalizes the variable `rabbitmq.md` §3 previously flagged as expected-but-open. |
 | `AI_WORKER_RABBITMQ_PORT` | No | `5672` | RabbitMQ broker port. |
-| `AI_WORKER_RABBITMQ_USER` / `AI_WORKER_RABBITMQ_PASS` | Yes | — | **Resolved this revision (P0.4)** — `AI Worker`'s own broker credentials, canonical definition in `rabbitmq.md` §3/§13. Never logged. |
+| `AI_WORKER_RABBITMQ_USER` / `AI_WORKER_RABBITMQ_PASS` | Yes | — | **Resolved (P0.4)** — `AI Worker`'s own broker credentials, canonical definition in `rabbitmq.md` §3/§13. Never logged. |
+| `RABBITMQ_DEFAULT_VHOST` | No | `/discordcombatai` | Shared vhost; required for broker URL construction (`contracts/ai_task.md` §2). Injected by Compose. |
 | `AI_WORKER_MOSQUITTO_HOST` | No | `mosquitto` | Hostname of the local Mosquitto broker. Formalizes the variable `mosquitto.md` §3 previously flagged as expected-but-open. |
 | `AI_WORKER_MOSQUITTO_PORT` | No | `1883` | Mosquitto broker port. |
-| `AI_WORKER_LLM_MAX_RETRIES` | No | `2` | **Canonical home for this variable** (confirmed decision, originally introduced in `graphs/environment.md` §8/§9 and `graphs/battle.md` §8/§9, both of which deferred to this doc once written). Shared retry budget for transient Gemini API failures **and** malformed/unparseable structured LLM output — one unified wrapper around every LLM-backed node call, across every graph. Not graph-specific — see `ai_worker/nodes.md` §5. |
-| `AI_WORKER_CELERY_CONCURRENCY` | No | `1` | Number of tasks a single `AI Worker` instance processes concurrently. Default of `1` is a conservative starting point (each task is already a multi-call LLM pipeline); horizontal scaling (§6, per `architecture.md`) is the primary scaling lever, not per-instance concurrency. |
-| `AI_WORKER_PROGRESS_HEARTBEAT_SEC` | No | `30` | **New this revision** — while a task is in flight, `AI Worker` re-publishes the current `progress/ai_worker/<task_id>` tick on this cadence even if the phase hasn't changed (`contracts/task_progress.md` §3), purely so `Bot`'s stall-detection timer (`contracts/ai_task.md` §5) has something to reset against during a legitimately long phase. Default sized against `BOT_AI_TASK_STALL_TIMEOUT_SEC=120` — see `ai_task.md` §8 for the reasoning and the note that both defaults are proposed, not measured. |
+| `AI_WORKER_LLM_MAX_RETRIES` | No | `2` | **Canonical home for this variable**. Shared retry budget for transient Gemini API failures **and** malformed/unparseable structured LLM output — Phase 4+ graphs. Not used by the Phase 2 transport shell. |
+| `AI_WORKER_CELERY_CONCURRENCY` | No | `1` | Number of tasks a single `AI Worker` instance processes concurrently. |
+| `AI_WORKER_PROGRESS_HEARTBEAT_SEC` | No | `30` | While a task is in flight, re-publish the current progress tick on this cadence (`contracts/task_progress.md` §3). |
 | `AI_WORKER_HEARTBEAT_INTERVAL_SEC` | No | `30` | Cadence of `status/ai_worker/heartbeat`; Head marks it stale after `HEAD_SERVICE_HEARTBEAT_STALE_SEC` (default 90). Canonical schema: `contracts/telemetry.md` §2.2. |
+| `AI_WORKER_TRANSPORT_SHELL` | No | `false` | **Phase 2.** When `true`, `run_graph` uses the canned `environment` success path (`contracts/ai_task.md` §11) instead of LangGraph. Harness/compose-test only; production images keep `false`. |
 
 > **`GEMINI_API_KEY` is deliberately NOT listed here (corrected this revision).** A previous revision of this doc listed it as a single required global environment variable — that directly contradicted `/config`'s per-guild key/model selection (`bot/commands/config.md`, `contracts/guild_config.md` §3) ever reaching this container. `AI Worker` is credential-stateless: the key and model it uses for a given task arrive **on that task's own `ai_tasks` message** (§4) — see the Credential model note in §1. Never logged, from any task, at any level (§7).
 
@@ -114,7 +120,7 @@ Independently of task-progress ticks, the process publishes `status/ai_worker/he
 5. On success, manually publish the graph's output state as the `ai_tasks_results` message (correlated via `correlation_id = task_id`, publisher confirms enabled, `contracts/ai_task.md` §2) and, once that publish is confirmed, acknowledge the `ai_tasks` message. Stop the heartbeat timer.
 6. On unrecoverable failure (§9), publish an `AiTaskResultFailed` (`contracts/ai_task.md` §4) instead — `node` set to whichever LangGraph node was actually executing when the failure occurred (not a generic code, corrected this revision). Stop the heartbeat timer.
 
-**Graph selection mechanism — resolved this revision, P0.4:** `tasks.py` defines one generic Celery task, `run_graph` (`ai_worker_tasks.run_graph`, matching `contracts/ai_task.md` §3's `apply_async` call), bound to the single `ai_tasks` queue. It unwraps the `envelope` kwarg and branches internally on the envelope's `graph` field — there is no per-graph Celery task or per-graph queue.
+**Graph selection mechanism — resolved P0.4 / Phase 2 path names:** `tasks.py` defines one generic Celery task registered as **`ai_worker.tasks.run_graph`**, bound to the single `ai_tasks` queue, on app **`ai_worker.celery_app:app`**. It unwraps the `envelope` kwarg and branches on `envelope.graph`. Phase 2 transport shell (`AI_WORKER_TRANSPORT_SHELL=true`) handles `environment` with the canned result (`contracts/ai_task.md` §11) and does not call LangGraph. There is no per-graph Celery task, no per-graph queue, and no `stub` graph discriminator.
 
 **Statelessness / scaling:** no state survives across tasks within a worker instance — any `AI Worker` instance can claim any `ai_tasks` message. This is the precondition that makes "scale to multiple instances per PC" (`architecture.md`) safe without any coordination between instances beyond RabbitMQ's own single-consumer-per-message delivery guarantee.
 
@@ -145,7 +151,7 @@ The complete v1 AI Worker observability surface is the heartbeat in `contracts/t
 | Failure | Detection | Recovery |
 |---|---|---|
 | Gemini API call fails/times out, or any LLM node returns structurally invalid output | Exception / schema validation error inside a node | Shared retry-with-backoff wrapper, budget `AI_WORKER_LLM_MAX_RETRIES` (§3, default `2`) — one unified budget for both failure shapes, per `ai_worker/nodes.md` §5. If exhausted, the task fails — see next row. |
-| A graph's LLM retry budget is exhausted, or any other unhandled exception occurs during graph execution | Exception propagates out of the graph invocation (§6 step 4) | `AiTaskResultFailed` published to `ai_tasks_results` (§6 step 6, `contracts/ai_task.md` §4 — renamed and reshaped this revision, `node`/`reason` instead of a `code` enum) with `node` set to whichever node was executing. The original `ai_tasks` message is still acknowledged — see next row for the open question this raises. |
+| A graph's LLM retry budget is exhausted, or any other unhandled exception occurs during graph execution | Exception propagates out of the graph invocation (§6 step 4) | `AiTaskResultFailed` published to `ai_tasks_results` (§6 step 6, `contracts/ai_task.md` §4) with `node` set to whichever node was executing. The original `ai_tasks` message is then acknowledged (publish-before-ack ordering, `contracts/ai_task.md` §2). |
 | `AI Worker` process crashes mid-task (before ack) | RabbitMQ consumer channel closes without an ack | **Resolved this revision, `contracts/ai_task.md` §2:** manual ack only after the corresponding `ai_tasks_results` message is published, so the original message is redelivered to another consumer. Accepted cost: possible duplicate LLM generation on redelivery; `Bot`-side dedup is `contracts/ai_task.md` §6, not this container's concern. |
 | `RabbitMQ` itself unreachable | Connection failure on consume or publish | **Resolved (P1.5):** Celery/Kombu reconnect per `rabbitmq.md` §8a (1s → ×2 → cap 60s + jitter). Do not ack until result publish succeeds. Process stays alive and idle until the broker returns. See S05. |
 | `Mosquitto` unreachable | Publish failure on `progress/*`, `logs/*`, `status/*`, or subscribe failure on `control/*` | **Must never block or fail the task itself** (confirmed, per `docs/contracts/task_progress.md` §7) — log-and-continue for progress/log/heartbeat publishing. For `control/ai_worker/desired_state` specifically: **resolved this revision** via the retained-message redesign (`mosquitto.md` §6) — if `Mosquitto` is down exactly when `Head` needs to pause `AI Worker`, `AI Worker` simply receives the retained `paused` state the instant it next (re)connects/(re)subscribes, rather than never learning about it (the residual case of `Head` itself being unable to publish at all is unchanged, `mosquitto.md` §9). |
@@ -188,11 +194,13 @@ The complete v1 AI Worker observability surface is the heartbeat in `contracts/t
 
 - ~~`GEMINI_API_KEY` as a single global required env var contradicted `/config`'s per-guild key/model selection~~ — **resolved this revision** (§1, §3, §4): credentials arrive per-task on the `ai_tasks` message, sourced from `contracts/guild_config.md`. Plaintext-in-transit/at-rest remains an accepted risk (§1), not solved by this fix.
 - Metrics without a v1 transport/consumer are explicitly deferred rather than left as an open contract (§8).
-- ~~The Celery-level task/graph dispatch mechanism (one generic task vs. one task per graph) was undecided~~ — **resolved this revision, P0.4** (§6): one generic `run_graph` task, branching internally on `envelope.graph`.
-- ~~RabbitMQ ack semantics (manual vs. automatic)~~ — **resolved this revision**, `contracts/ai_task.md` §2: manual ack after result publish.
-- ~~RabbitMQ broker credentials (username/password/vhost) were undecided project-wide~~ — **resolved this revision, P0.4**: `rabbitmq.md` §3/§13.
+- ~~The Celery-level task/graph dispatch mechanism (one generic task vs. one task per graph) was undecided~~ — **resolved P0.4** (§6): one generic `ai_worker.tasks.run_graph` task, branching internally on `envelope.graph`.
+- ~~Celery app import path / obsolete `ai_worker_tasks` name~~ — **resolved Phase 2:** `ai_worker.celery_app:app` + task name `ai_worker.tasks.run_graph`.
+- ~~Phase 2 transport stub discriminator~~ — **resolved:** reuse `graph="environment"` + `AI_WORKER_TRANSPORT_SHELL`; no `stub` graph (`contracts/ai_task.md` §11).
+- ~~RabbitMQ ack semantics (manual vs. automatic)~~ — **resolved**, `contracts/ai_task.md` §2.
+- ~~RabbitMQ broker credentials (username/password/vhost)~~ — **resolved, P0.4**: `rabbitmq.md` §3/§13.
 - Heartbeat schema, dependency scope, and staleness are resolved in `contracts/telemetry.md` §2 (§11).
 - ~~Standalone RabbitMQ outage behavior~~ — **resolved (P1.5):** `rabbitmq.md` §8a/§9, this doc §9, S05.
 - Mosquitto control loss remains fail-closed via Head/Bot leadership contracts; AI Worker pause/resume simply cannot be delivered while the broker is down (accepted).
-- **New this revision** — `AI_WORKER_PROGRESS_HEARTBEAT_SEC=30` (§3, §6) is a proposed default, sized only by inference against `Bot`'s `BOT_AI_TASK_STALL_TIMEOUT_SEC=120` (`contracts/ai_task.md` §5), not by measuring real per-node execution time. Revisit once real timing data exists — see `ai_task.md` §8 for the same flag on the `Bot`-side timeout defaults.
-- ~~Whether `Bot` publishes `ai_tasks` via a real Celery client or raw AMQP was undecided, affecting whether hard-stop's `revoke(terminate=True)` is reachable~~ — **resolved this revision, P0.4**: `Bot` publishes via `apply_async`; see `contracts/ai_task.md` §2/§8.
+- **`AI_WORKER_PROGRESS_HEARTBEAT_SEC=30`** (§3, §6) remains a proposed default sized by inference — see `ai_task.md` §12.
+- ~~Whether `Bot` publishes `ai_tasks` via a real Celery client or raw AMQP~~ — **resolved P0.4 / Phase 2**: Bot uses `send_task("ai_worker.tasks.run_graph", ...)`.

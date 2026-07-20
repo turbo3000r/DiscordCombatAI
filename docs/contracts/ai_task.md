@@ -12,24 +12,27 @@ Defines the complete wire contract for the two RabbitMQ queues that connect `Bot
 
 ## 2. Transport & Broker Semantics
 
-**Wire design resolved this revision (P0.4, owner-approved): native Celery task protocol, domain envelope nested as a single kwarg.** `Bot` is a real Celery client and `AI Worker` is a real Celery worker (`celery -A ai_worker worker -Q ai_tasks`), not a bare Kombu/AMQP JSON consumer — this was the previously-open choice between that option and a raw-AMQP-with-custom-consumer design.
+**Wire design resolved this revision (P0.4, owner-approved): native Celery task protocol, domain envelope nested as a single kwarg.** `Bot` is a real Celery client and `AI Worker` is a real Celery worker (`celery -A ai_worker.celery_app worker -Q ai_tasks`), not a bare Kombu/AMQP JSON consumer — this was the previously-open choice between that option and a raw-AMQP-with-custom-consumer design.
 
 | | |
 |---|---|
-| **Dispatch call** | `Bot` calls `ai_worker_tasks.run_graph.apply_async(kwargs={"envelope": envelope}, task_id=task_id, queue="ai_tasks")`. `envelope` is exactly §3's `AiTaskEnvelope` — today's flattened body — now nested one level under the single `envelope` kwarg instead of being the top-level Celery message body. Celery's own protocol supplies task headers (task id, task name, retries, etc.); this envelope carries domain data only, never duplicating what Celery's headers already provide. |
-| **Queues** | `ai_tasks` (Bot → AI Worker, a real Celery queue), `ai_tasks_results` (AI Worker → Bot, a plain AMQP/Kombu queue — **not** Celery's result backend, see next row) — both **durable**, declared once at startup by whichever service connects first, both with a `x-dead-letter-exchange` pointing at the shared `dlx` (§9). |
-| **Results transport — resolved this revision** | `ai_tasks_results` remains the existing custom queue. **Celery is used for task dispatch/cancellation only, not for results.** `AI Worker` explicitly publishes `AiTaskResultSuccess`/`AiTaskResultFailed` (§4, shape unchanged) to `ai_tasks_results` via a manual publish inside the task body, setting `correlation_id = task_id` manually. `AsyncResult.get()`/`.result`/any Celery result-backend read must never be used or assumed anywhere in this pipeline. |
-| **Message persistence** | `delivery_mode=2` (persistent) on every publish to either queue — messages survive a RabbitMQ container restart. |
-| **Content type** | `application/json`, UTF-8, for both the Celery-dispatched `ai_tasks` message and the manually-published `ai_tasks_results` message. |
-| **Identifier unification — resolves former open item #7** | `task_id` (Bot-generated UUID, §3) = the Celery task id passed to `apply_async(task_id=...)` = the AMQP `correlation_id` on both publishes = the domain idempotency key §6's discard logic keys on. One identifier, four names, generated exactly once per task by `Bot`. |
-| **Correlation** | `correlation_id` is set to `task_id` on both the `ai_tasks` Celery dispatch and `AI Worker`'s manual `ai_tasks_results` publish. |
-| **`reply_to`** | Not used — resolves the P0.4 cleanup flag on whether it should remain. `ai_tasks_results` is one shared, node-local durable queue, not a per-Bot temporary queue; `Bot` is its consumer and filters by `correlation_id`. |
-| **Publisher confirms — new this revision** | `confirm_delivery` (publisher confirms) is enabled on both publish paths: `Bot`'s `ai_tasks` dispatch and `AI Worker`'s `ai_tasks_results` publish. A nacked/unconfirmed publish is treated as **not sent**: on `Bot`'s side this triggers its existing retry/error-surfacing logic (same path as any other `ai_tasks` publish failure, `rabbitmq.md` §9); on `AI Worker`'s side the inbound `ai_tasks` message is deliberately **not acked yet**, so it naturally redelivers per the manual-ack ordering below — not a second, separate retry loop. |
-| **Prefetch — new this revision, makes an existing implication explicit** | `AI Worker` runs with **prefetch = 1** on `ai_tasks` — one task at a time per worker process, matching the LangGraph single-execution model (`ai_worker.md` §6); previously only implied by `AI_WORKER_CELERY_CONCURRENCY=1`, now a stated wire-level guarantee. `Bot`'s prefetch on `ai_tasks_results` stays default/unbounded — handling a result is an O(1) task-map lookup (§6). |
-| **Ack semantics on `ai_tasks` (Bot→Worker)** | `AI Worker` uses **manual ack**, acknowledging a message only *after* successfully publishing its corresponding `ai_tasks_results` message (success or synthetic error, §4) and receiving that publish's confirm. If `AI Worker` crashes after claiming a message but before ack, RabbitMQ redelivers that message to another consumer once the channel closes. |
-| **Ack semantics on `ai_tasks_results` (Worker→Bot) — resolved this revision, was previously undefined** | `Bot` uses **auto-ack**. A discarded/duplicate/unmapped result is intentionally droppable per §6 — there is nothing worth protecting by delaying the ack. |
-| **Delivery guarantee — corrected this revision** | **At-least-once delivery, effectively-once outcome** — not "exactly-once." Manual ack after result-publish (above) bounds duplicate *generation* to the crash window between claim and ack; §6's discard-by-task_id-absent-from-map logic is the dedup mechanism that makes the user-visible *outcome* effectively-once even though the transport itself is only at-least-once. Every "exactly-once" claim elsewhere in the docs (`architecture.md`, `rabbitmq.md` §1, and any other occurrence) is stale and has been corrected alongside this revision. |
-| **Redelivery cost, accepted** | A redelivered task re-runs the full graph from scratch (no partial-state resume) — a crash mid-task can cost a duplicate LLM generation. Accepted for v1 given how rare a mid-task crash actually is; see §6 for how `Bot` avoids showing the user a duplicate result even though generation itself may run twice. |
+| **Dispatch call** | `Bot` calls `celery_app.send_task("ai_worker.tasks.run_graph", kwargs={"envelope": envelope}, task_id=task_id, queue="ai_tasks")` (or the equivalent shared task-name constant). `envelope` is exactly §3's `AiTaskEnvelope`. Celery headers supply task id / name / retries; the envelope carries domain data only. |
+| **Celery app / task identity** | Worker app import path: `ai_worker.celery_app:app`. Registered task name: `ai_worker.tasks.run_graph` (module `src/ai_worker/tasks.py`). Obsolete names such as `ai_worker_tasks.run_graph` or `celery -A ai_worker` without `celery_app` are non-canonical. |
+| **Queues** | `ai_tasks` (Bot → AI Worker, a real Celery queue), `ai_tasks_results` (AI Worker → Bot, a plain AMQP/Kombu queue — **not** Celery's result backend) — both **durable**, with `x-dead-letter-exchange` → shared `dlx` (§9). **Topology owner:** `infra/rabbitmq/definitions.json`. Clients may verify/passive-declare; they must not create conflicting topology. |
+| **Results transport** | `ai_tasks_results` remains the custom queue. **Celery is used for task dispatch/cancellation only, not for results.** `AI Worker` publishes `AiTaskResultSuccess`/`AiTaskResultFailed` (§4) manually with `correlation_id = task_id`. Never use `AsyncResult` / Celery result backends. |
+| **Broker URL** | `amqp://{user}:{password}@{host}:{port}/{quote(RABBITMQ_DEFAULT_VHOST, safe="")}` — Compose injects the vhost into Bot and AI Worker. Default vhost `/discordcombatai` → path `/%2Fdiscordcombatai`. |
+| **Serialization** | JSON only on Celery and on manual result publishes (`application/json`, UTF-8). |
+| **Message persistence** | `delivery_mode=2` (persistent) on every publish to either queue. |
+| **Identifier unification** | `task_id` (Bot-generated UUID, §3) = Celery task id = AMQP `correlation_id` = domain idempotency key. |
+| **`reply_to`** | Not used. |
+| **Publisher confirms** | Enabled on both publish paths; confirm wait 5s (`rabbitmq.md` §8a). Unconfirmed = not sent. |
+| **Prefetch** | `AI Worker` prefetch = 1 (`worker_prefetch_multiplier=1`, concurrency 1). Bot’s `ai_tasks_results` prefetch stays default/unbounded. |
+| **Late ack on `ai_tasks`** | `task_acks_late=True`. Ack only after confirmed `ai_tasks_results` publish. Crash before ack → redelivery. |
+| **Ack on `ai_tasks_results`** | Bot **auto-ack**. Unknown/`task_id`-absent results are discarded (§6). |
+| **Delivery guarantee** | **At-least-once delivery, effectively-once outcome** — not exactly-once. |
+| **Revoke / purge** | Bot sole actor (§8). |
+| **Redelivery cost, accepted** | Redelivered task re-runs from scratch (transport shell or real graph). |
+| **Phase 2 transport shell** | Uses `graph="environment"` only — see §11. No `stub` graph discriminator. |
 
 ---
 
@@ -38,7 +41,8 @@ Defines the complete wire contract for the two RabbitMQ queues that connect `Bot
 **Dispatch call (§2):**
 
 ```python
-ai_worker_tasks.run_graph.apply_async(
+celery_app.send_task(
+    "ai_worker.tasks.run_graph",
     kwargs={"envelope": envelope},
     task_id=task_id,      # also the AMQP correlation_id and the domain idempotency key, §2
     queue="ai_tasks",
@@ -62,7 +66,7 @@ class AiTaskEnvelope(TypedDict):
     # guild_id, trace_id, api_key, model (per this revision's earlier credential-gap fix)
 ```
 
-**Not a nested `payload` object inside `AiTaskEnvelope` itself, by design:** the graph-specific input fields are flattened directly alongside `task_id`/`graph`/`created_at`/`schema_version`, matching exactly how each graph doc's own `Input State` table (§2 in both `graphs/environment.md` and `graphs/battle.md`) is already written. The only nesting this revision introduces is the envelope's own position as a single `apply_async` kwarg (§2) — there is no second nesting level inside the envelope, and no second schema to keep in sync.
+**Not a nested `payload` object inside `AiTaskEnvelope` itself, by design:** the graph-specific input fields are flattened directly alongside `task_id`/`graph`/`created_at`/`schema_version`, matching exactly how each graph doc's own `Input State` table (§2 in both `graphs/environment.md` and `graphs/battle.md`) is already written. The only nesting this revision introduces is the envelope's own position as a single `send_task`/`apply_async`-compatible kwarg (§2) — there is no second nesting level inside the envelope, and no second schema to keep in sync.
 
 ---
 
@@ -187,12 +191,44 @@ Every `AiTaskEnvelope` (§3) and every `ai_tasks_results` message (§4) carries 
 
 ---
 
-## 11. Open Items
+## 11. Phase 2 transport shell (resolved)
 
-- ~~Malformed-message handling policy~~ — **resolved this revision**, §9: nack-without-requeue to a shared `dead_letter` queue.
-- ~~No dead-letter queue was configured~~ — **resolved this revision**, §9.
-- ~~`AiTaskError.code`'s enum is not guaranteed exhaustive~~ — **resolved this revision**: replaced with the `node` field (§4), which doesn't need an exhaustive enum since it's just naming whichever LangGraph node actually ran (or a fixed, small set of pseudo-node values for non-node failures).
-- ~~Hard-stop authorship (which service purges/terminates/synthesizes) was unclear~~ — **resolved this revision**, §2/§8: `Bot` publishes via `apply_async(task_id=task_id, queue="ai_tasks")`, making `task_id` a revocable Celery task id, and `Bot` itself is the actor for every cancellation-matrix row that calls `revoke` (§8) — no third actor is introduced.
-- **`BOT_AI_TASK_TIMEOUT_SEC=900` is a proposed default, not yet confirmed** — raised from the previous `300` on the reasoning in §5 (multi-episode `battle` + a full `refiner` retry budget can legitimately run several minutes), but the actual worst-case latency depends on real Gemini response times this project hasn't measured yet. Revisit once real timing data exists; the two-timer split (§5) means this default being "a bit too generous" mainly costs user-visible latency on a truly-stuck task, not correctness, so erring high is the safer direction if unsure.
-- **`AI_WORKER_PROGRESS_HEARTBEAT_SEC=30` (`contracts/task_progress.md` §3) is sized off `BOT_AI_TASK_STALL_TIMEOUT_SEC=120` at roughly a 1:4 ratio** — chosen to mirror the same margin pattern `head.md` §3 already uses between `HEAD_ELECTION_HEARTBEAT_SEC`/`HEAD_ELECTION_HEARTBEAT_TIMEOUT_SEC` (1:3), rounded slightly more generous here since a false-positive stall here throws away real Gemini spend, not just a cheap re-election. Not independently confirmed — flagged alongside the timeout default above since both were sized by inference, not measurement.
-- Broker-side secret exposure (guild `api_key` traveling plaintext on `ai_tasks`) and RabbitMQ broker credentials are accepted/defined in `rabbitmq.md` §3/§6/§13 — cross-referenced here, not duplicated.
+Phase 2 proves the wire path without LangGraph/Gemini. Rules:
+
+1. Keep `graph: "environment"` — **never** add a `stub` graph literal.
+2. When `AI_WORKER_TRANSPORT_SHELL=true`, `ai_worker.tasks.run_graph` validates the envelope, publishes the mandatory progress sequence (`queued` is Bot-local; worker emits `launching` → `composing` → `refining` → `finishing`), then publishes this success result:
+
+```json
+{
+  "schema_version": 1,
+  "task_id": "<same as envelope>",
+  "graph": "environment",
+  "status": "success",
+  "result": {
+    "final_environment": {
+      "description": "Phase 2 transport-shell canned environment.",
+      "tags": ["phase2", "transport-shell"],
+      "setting": "realistic"
+    },
+    "attempts_used": 0,
+    "forced_selection": false
+  },
+  "completed_at": "<ISO 8601 UTC>"
+}
+```
+
+3. The `result` object must validate against `graphs/environment.md` §2 Output State / shared `EnvironmentState` models.
+4. Trigger only from tests/acceptance harnesses that exercise Bot’s Celery dispatch + task map. No temporary Discord command or production endpoint.
+5. Production default is `AI_WORKER_TRANSPORT_SHELL=false`. Real `environment`/`battle` graphs remain Phase 4 (P1.2).
+
+## 12. Open Items
+
+- ~~Malformed-message handling policy~~ — **resolved**, §9.
+- ~~No dead-letter queue~~ — **resolved**, §9.
+- ~~`AiTaskError.code` enum~~ — **resolved**, §4 `node` field.
+- ~~Hard-stop authorship~~ — **resolved**, §2/§8.
+- ~~Celery app import path / task name drift (`ai_worker_tasks` vs `ai_worker.tasks`)~~ — **resolved**, §2 / Phase 2.
+- ~~Topology declare-on-connect ownership~~ — **resolved**: definitions.json is canonical (§2).
+- **`BOT_AI_TASK_TIMEOUT_SEC=900` is a proposed default, not yet confirmed** — revisit once real timing data exists (P1.2).
+- **`AI_WORKER_PROGRESS_HEARTBEAT_SEC=30` sized by inference** — same flag as above.
+- Broker-side secret exposure accepted in `rabbitmq.md` §3/§6/§13.

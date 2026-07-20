@@ -105,6 +105,7 @@ Internally, every graph node can still log at full granularity (e.g. `environmen
 - ~~Exact ISO 8601 timestamp/timezone convention~~ — **resolved:** UTC required (§4).
 - ~~QoS / retention for progress ticks~~ — **resolved (P1.5):** QoS 0, not retained (`mosquitto.md` §6).
 - ~~`queued` publisher~~ — **resolved:** Bot creates `queued` locally; AI Worker publishes from `launching` onward (§3/§4).
-- ~~`battle` graph's phase mapping (§6.1) is undefined until `ai_worker/graphs/quick-battle.md` is written~~ — **stale, already resolved**: §6.1 above already defines `battle`'s mapping (`composing`/`refining`/`finishing`), matching `graphs/battle.md` §11. This bullet was left over from an earlier draft of this doc.
-- Whether the optional `attempt` field (or any further per-phase detail) is actually needed by the Discord UI, or whether the phase name alone is sufficient, is undecided — included now as optional so adding/dropping it later isn't a breaking schema change.
-- **`AI_WORKER_PROGRESS_HEARTBEAT_SEC=30`'s default is sized by inference (roughly 1:4 against `BOT_AI_TASK_STALL_TIMEOUT_SEC=120`), not measurement** — see `contracts/ai_task.md` §8 for the full reasoning and the explicit flag that this pair of defaults needs confirmation once real timing data exists.
+- ~~`battle` graph's phase mapping (§6.1) undefined until `ai_worker/graphs/quick-battle.md`~~ — **resolved:** §6.1 defines `battle` mapping; that path never existed — sequencing lives in `bot/commands/quick-battle.md` + P1.1.
+- **Phase 2 transport-shell progress order** is fixed in `contracts/ai_task.md` §11 / `to_resolve.md` Phase 2: Bot `queued` → worker `launching` → `composing` → `refining` → `finishing` → terminal result.
+- Whether the optional `attempt` field is needed by Discord UI remains undecided — optional so adding/dropping later is non-breaking.
+- **`AI_WORKER_PROGRESS_HEARTBEAT_SEC=30` default sized by inference** — see `contracts/ai_task.md` §12.
