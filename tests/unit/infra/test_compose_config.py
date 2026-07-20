@@ -31,12 +31,19 @@ def test_base_compose_has_expected_broker_topology() -> None:
     assert rabbitmq["healthcheck"]  # type: ignore[index]
     assert rabbitmq["volumes"][0].startswith("rabbitmq-data:")  # type: ignore[index]
 
-    for service in (head, bot, ai_worker):
+    assert "profiles" not in head
+    for service in (bot, ai_worker):
         assert service["profiles"] == ["application"]  # type: ignore[index]
+    for service in (head, bot, ai_worker):
         assert service["restart"] == "unless-stopped"  # type: ignore[index]
+        assert "APPLICATION_VERSION" in service["environment"]  # type: ignore[index]
 
     assert head["extra_hosts"] == ["host.docker.internal:host-gateway"]  # type: ignore[index]
     assert head["ports"] == ["127.0.0.1:9800:9800"]  # type: ignore[index]
+    assert any(
+        str(mount).endswith(":/run/secrets/launcher_ipc_secret:ro")
+        for mount in head["volumes"]  # type: ignore[index]
+    )
     assert "condition" in head["depends_on"]["mosquitto"]  # type: ignore[index]
     assert "condition" in head["depends_on"]["rabbitmq"]  # type: ignore[index]
 

@@ -17,6 +17,14 @@ def _is_blob_not_found(exc: BaseException) -> bool:
     return "blobnotfound" in message or "not found" in message or "404" in message
 
 
+def _is_already_exists(exc: BaseException) -> bool:
+    status_code = getattr(exc, "status_code", None)
+    if status_code in {409, 412}:
+        return True
+    message = str(exc).lower()
+    return "alreadyexists" in message or "conditionnotmet" in message
+
+
 class BlobClient:
     def __init__(
         self,
@@ -50,6 +58,20 @@ class BlobClient:
 
     def _blob(self, container_name: str, blob_name: str) -> Any:
         return self._client().get_blob_client(container=container_name, blob=blob_name)
+
+    async def ensure_blob(self, container_name: str, blob_name: str) -> None:
+        container = self._client().get_container_client(container_name)
+        try:
+            await maybe_await(container.create_container())
+        except Exception as exc:
+            if not _is_already_exists(exc):
+                raise
+        blob = self._blob(container_name, blob_name)
+        try:
+            await maybe_await(blob.upload_blob(b"", overwrite=False, if_none_match="*"))
+        except Exception as exc:
+            if not _is_already_exists(exc):
+                raise
 
     async def read_text(self, container_name: str, blob_name: str) -> tuple[str, str | None]:
         async def _read() -> tuple[str, str | None]:
