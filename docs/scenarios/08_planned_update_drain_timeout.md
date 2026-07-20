@@ -34,3 +34,14 @@
 ## Invariant checked
 
 **Drain timeout always escalates to hard-stop** — never “abandon work and leave Gateway up,” and never treats `pause_ack` as a second gate (`drain_status.md` §3).
+
+## Phase 2 acceptance ownership
+
+| Step | Phase 2 status | Notes |
+|---|---|---|
+| 1. Drain progress with `in_flight_workflows > 0` | **complete** for AI-task entries |
+| 2. `HEAD_DRAIN_TIMEOUT_SEC` → hard-stop escalation | **integration-only** Head timer; Bot hard-stop execution **complete** |
+| 3. Purge + revoke + Gateway disconnect | **complete** | |
+| 3a. Cancel lobby/collector/vote with localized notice | **deferred** → `/quick-battle` / P1.1 | No Phase 2 lobbies |
+| 4. `revoke` only in hard-stop, not at drain-timeout itself | **complete** | |
+| 5. Demotion / Launcher continue | **integration-only** | Phase 1 |

@@ -41,3 +41,13 @@
 ## Invariant checked
 
 **Drain means full user-workflow (`in_flight_workflows`), not empty RabbitMQ alone.** Lease is released only after commanding hard-stop; followers also update via the same broadcast.
+
+## Phase 2 acceptance ownership
+
+| Step | Phase 2 status | Notes |
+|---|---|---|
+| 1. Head `update_available` / SemVer | **integration-only** | Phase 1 Head/Launcher |
+| 2. Bot receives draining grant; sets `bot.draining`; publishes `drain_progress` | **complete** | |
+| 2a. Reject new drain-gated slash work | **deferred** → `/quick-battle` | Phase 2 rejects new AI publishes only |
+| 3. `in_flight_workflows == 0` → Head UPDATING | **complete** when only AI-task workflows exist; lobby units **deferred** → `/quick-battle` |
+| 4–8. stopped → lease release → Launcher recreate → verify | **integration-only** | Phase 1; Bot hard-stop + ack portion **complete** |

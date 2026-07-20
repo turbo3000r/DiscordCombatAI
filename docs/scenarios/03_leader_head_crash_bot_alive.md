@@ -35,3 +35,13 @@
 ## Invariant checked
 
 **Bot never stays Gateway-active on a dead Head:** grant/watchdog expiry forces hard-stop without waiting for a follower to steal the lease first. Retained MQTT alone cannot keep Bot active.
+
+## Phase 2 acceptance ownership
+
+| Step | Phase 2 status | Notes |
+|---|---|---|
+| 1. Grant renewals stop; monotonic deadline continues | **complete** | Bot grant watchdog |
+| 2. Optional early soft-stop on control loss | **complete** | Overlaps S04; Bot-owned |
+| 3. Autonomous hard-stop: purge/revoke tracked AI tasks, Gateway disconnect | **complete** | Discord thread notices only when a harness registered a delivery ref; no slash-command recovery claimed |
+| 3a. Notify affected Discord command surfaces | **deferred** → `/quick-battle` / command phases | No user-facing commands in Phase 2 |
+| 4. Followers race for lease (S02) | **integration-only** | Head/lease already Phase 1; Phase 2 may simulate Head disappearance |

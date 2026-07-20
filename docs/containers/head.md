@@ -56,6 +56,7 @@ src/head/
 | `HEAD_LOSS_OF_INTERNET_GRACE_SEC` | No | `0` | Grace period before treating a connectivity drop as leadership loss (per node, tune to local network reliability). |
 | `HEAD_RECONNECT_BACKOFF_MAX_SEC` | No | `1800` | Maximum exponential backoff delay (30 min) when retrying Azure connectivity after a disconnect, per existing design. |
 | `APPLICATION_VERSION` | Yes | — | Exact coordinated application release tag injected by Compose. Used in heartbeats, update comparison, and `/v1/health`; the process must fail startup if absent or invalid. Canonical grammar: `contracts/launcher_ipc.md` §4. |
+| `HEAD_NODE_ID` | Yes | — | Host node identity. Compose injects from host `NODE_ID`. Must equal `BOT_NODE_ID` / `AI_WORKER_NODE_ID` on the same deployment node. Grammar `^[A-Za-z0-9._-]+$`, length 1–128. |
 | `HEAD_GITHUB_REPO` | Yes | — | `owner/repo` to poll for new releases. |
 | `HEAD_RELEASE_POLL_INTERVAL_SEC` | No | `300` | How often `Head` checks the GitHub Releases API for a new version. |
 | `HEAD_RELEASE_INCLUDE_PRERELEASE` | No | `false` | Automatic polling ignores prereleases by default. Draft releases are always ignored. Manual Launcher admission may still target any valid release tag. |

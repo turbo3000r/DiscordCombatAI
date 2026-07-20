@@ -43,3 +43,15 @@
 ## Invariant checked
 
 **At-least-once delivery, effectively-once outcome by `task_id`.** Restart never invents a second leadership story; Bot remains sole `revoke` author when cancellation is required.
+
+## Phase 2 acceptance ownership
+
+| Step | Phase 2 status | Notes |
+|---|---|---|
+| A1. Bot restart loses in-memory task map / timers | **complete** | |
+| A2. Bot cold-starts inactive until fresh grant | **complete** | |
+| A3. Orphaned `ai_tasks_results` discarded by unknown `task_id` | **complete** | **v1 limitation preserved** — no durable Discord delivery reconciliation |
+| A4. User retries / lobby gone | **deferred** → command phases / P1.1 | Do not claim interaction recovery |
+| B1–B2. AI Worker restart → redelivery / possible duplicate execution | **complete** | Transport shell |
+| B3. Progress stops; stall timeout / revoke while Bot still tracks | **complete** | |
+| B4. Malformed → DLQ | **complete** | |

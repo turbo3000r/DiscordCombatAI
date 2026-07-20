@@ -17,7 +17,7 @@
 
 This does **not** mean every subsystem is ready to implement. In particular, `/quick-battle`, the real LangGraph graphs, remaining guild lifecycle edges, suggestion edge cases, and Web API schemas still require the open P1 items below. None of those gaps changes the global service topology or already-resolved cross-service wire contracts.
 
-**Phase 0 implementation-ready now:** scaffold/Compose skeleton, shared typed models from contracts (including `language` enum + mapping), shared Azure credential/client layer, RabbitMQ + Mosquitto configuration. **Phase 1 coordination Slice 0 documentation is reconciled:** Launcher/Head versioning, image/recreate ownership, interrupted-operation recovery, verification/rollback, Blob-renew recovery, and P1.8 heartbeat/buffer/live-cap contracts are closed. **Still deferred for later phases:** remaining P1.3 command/lifecycle items, P1.1–P1.2, P1.4 leftovers, P1.6, and all P2 items.
+**Phase 0 implementation-ready now:** scaffold/Compose skeleton, shared typed models from contracts (including `language` enum + mapping), shared Azure credential/client layer, RabbitMQ + Mosquitto configuration. **Phase 1 coordination Slice 0 documentation is reconciled:** Launcher/Head versioning, image/recreate ownership, interrupted-operation recovery, verification/rollback, Blob-renew recovery, and P1.8 heartbeat/buffer/live-cap contracts are closed. **Phase 2 documentation is reconciled:** transport-shell (`graph="environment"` canned path), host `NODE_ID` injection, Celery/RabbitMQ wiring (definitions-owned topology, task name, broker URL/vhost), Bot asyncio vs Celery/MQTT concurrency, Phase 2 Bot scope (no slash commands), and S03/S04/S05/S07/S08/S10 acceptance ownership. **Still deferred for later phases:** remaining P1.3 command/lifecycle items, P1.1–P1.2, P1.4 leftovers, P1.6, real LangGraph behavior, `/config`/`/suggest`/`/quick-battle`, Web product slices, and all P2 items.
 
 ---
 
@@ -54,7 +54,7 @@ This does **not** mean every subsystem is ready to implement. In particular, `/q
 ## P0.4 — RabbitMQ/Celery wire design (resolved)
 
 - Canonical contract: `contracts/ai_task.md` §2/§3 (wire/dispatch), §8 (cancellation matrix), §9 (dead-letter policy), §10 (schema versioning); cross-referenced from `containers/rabbitmq.md` §1–§3/§6/§9/§13, `containers/ai_worker/ai_worker.md` §1/§4–§6, `containers/bot/discord_bot.md` §3–§6.5, and `architecture.md`'s `RabbitMQ`/design-boundary sections.
-- Native Celery task protocol: `Bot` dispatches via `apply_async(kwargs={"envelope": {...}}, task_id=task_id, queue="ai_tasks")`; `AI Worker` is a real Celery worker at prefetch = 1. `task_id` = the Celery task id = the AMQP `correlation_id` = the domain idempotency key — one identifier, four names.
+- Native Celery task protocol: `Bot` dispatches via `send_task("ai_worker.tasks.run_graph", kwargs={"envelope": {...}}, task_id=task_id, queue="ai_tasks")`; `AI Worker` is a real Celery worker (`celery -A ai_worker.celery_app worker -Q ai_tasks`) at prefetch = 1. `task_id` = the Celery task id = the AMQP `correlation_id` = the domain idempotency key — one identifier, four names.
 - `ai_tasks_results` stays a custom, manually-published queue with auto-ack on `Bot`'s side; Celery's own result backend (`AsyncResult`) is never used. Publisher confirms are enabled on both publish paths.
 - Delivery guarantee corrected project-wide from "exactly-once" to **at-least-once delivery, effectively-once outcome** — manual ack after result-publish bounds duplicate generation, and discard-by-unknown-`task_id` makes the outcome effectively-once.
 - A full cancellation matrix now covers user-abort, stall timeout, overall timeout, drain timeout, and hard-stop, with `Bot` confirmed as the sole actor for every `revoke` call (resolving the previous hard-stop-authorship ambiguity).
@@ -147,6 +147,91 @@ This does **not** mean every subsystem is ready to implement. In particular, `/q
 - Head buffers at most 60 completed one-minute metrics windows, uploads oldest-first after recovery, and drops the oldest window on overflow. Buffer loss on Head restart is accepted and operator-visible by warning.
 - Live payloads keep the fixed envelope/metrics, include at most 50 newest log lines, and are capped at 65,536 UTF-8 JSON bytes; oldest selected logs are omitted first and counted in `logs_dropped`.
 - Candidate Bot/AI Worker business/quality counters without a v1 transport or consumer are explicitly deferred, not left as unrouteable metrics.
+
+## Phase 2 — AI Worker transport shell and Bot core (resolved)
+
+Documentation gate for implementing Phase 2. Canonical detail lives in the linked docs; this section records the decisions only.
+
+### Transport stub (no `stub` graph)
+
+- Phase 2 proves **Bot → RabbitMQ → AI Worker → Mosquitto progress → `ai_tasks_results` → Bot** without real LangGraph/Gemini behavior.
+- Keep the existing envelope discriminator `graph="environment"`. Do **not** introduce a `stub` graph value.
+- AI Worker Phase 2 path: when the harness/env flag selects transport-shell mode (`AI_WORKER_TRANSPORT_SHELL=true`, default `false` in production images), `run_graph` skips LangGraph and emits the canned success result below. Real graph code remains Phase 4.
+- **Canned `AiTaskResultSuccess.result`** (must validate as environment Output State, `graphs/environment.md` §2):
+
+```json
+{
+  "final_environment": {
+    "description": "Phase 2 transport-shell canned environment.",
+    "tags": ["phase2", "transport-shell"],
+    "setting": "realistic"
+  },
+  "attempts_used": 0,
+  "forced_selection": false
+}
+```
+
+- **Exact progress phase sequence** for every transport-shell task (`contracts/task_progress.md`):
+  1. `queued` — Bot local only, on successful Celery publish + `TaskRecord` create
+  2. `launching` — AI Worker on claim, before canned work
+  3. `composing` — AI Worker after init, before building the canned `Environment`
+  4. `refining` — AI Worker after the canned `Environment` object exists
+  5. `finishing` — AI Worker immediately before publishing `ai_tasks_results`
+  6. Terminal result on `ai_tasks_results` (not a progress phase)
+- Same-phase Mosquitto heartbeats (`AI_WORKER_PROGRESS_HEARTBEAT_SEC`) remain required only while the task is still in flight after a phase publish; a sub-second stub may finish without extras. Order of phase names above is mandatory.
+- **Trigger only via tests/acceptance harnesses** that publish a valid `EnvironmentAiTaskEnvelope` through Bot’s dispatch API (or an in-process test double of that API). No temporary Discord slash command, no production HTTP endpoint, no operator “stub” control topic.
+
+### Node identity
+
+- One host-level `NODE_ID` in `.env` / operator config.
+- Compose injects the **same** value as `HEAD_NODE_ID`, `BOT_NODE_ID`, and `AI_WORKER_NODE_ID`.
+- **Invariant:** on one deployment node, all three service-scoped values must be identical. Mismatch is a startup failure for Bot and AI Worker (Head already validates `HEAD_NODE_ID`).
+- **Grammar (shared):** `^[A-Za-z0-9._-]+$`, length 1–128 (matches existing Head settings). Default example: `node-local`.
+
+### RabbitMQ / Celery wiring
+
+- **Broker URL:** `amqp://{user}:{password}@{host}:{port}/{urlencoded_vhost}` where `urlencoded_vhost = urllib.parse.quote(RABBITMQ_DEFAULT_VHOST, safe="")`. With default vhost `/discordcombatai`, the path is `/%2Fdiscordcombatai`.
+- Compose injects `RABBITMQ_DEFAULT_VHOST` into `head`, `bot`, and `ai_worker` (plus each service’s `*_RABBITMQ_USER`/`PASS`/`HOST`/`PORT`).
+- **Celery app import path:** `ai_worker.celery_app:app`.
+- **Worker CLI:** `celery -A ai_worker.celery_app worker -Q ai_tasks`.
+- **Registered task name:** `ai_worker.tasks.run_graph` (module `ai_worker.tasks`, function `run_graph`). Bot dispatches by that name via `send_task` / shared task-name constant — Bot must not import LangGraph packages.
+- **Queue routing:** only queue `ai_tasks` for Celery dispatch; results on plain queue `ai_tasks_results` (not Celery result backend).
+- **Serialization:** JSON only (`task_serializer`/`accept_content`/`result_serializer` = `json`). No pickle.
+- **Publisher confirms:** enabled; confirm wait 5s (`rabbitmq.md` §8a).
+- **Prefetch:** worker `worker_prefetch_multiplier=1` with `AI_WORKER_CELERY_CONCURRENCY=1`.
+- **Late acknowledgement:** `task_acks_late=True`; ack only after confirmed `ai_tasks_results` publish (`contracts/ai_task.md` §2).
+- **Reject / redelivery / DLQ:** malformed or unknown `schema_version` → nack without requeue → `dead_letter`. Worker crash before ack → broker redelivery. Bot discards unknown `task_id` results.
+- **Revoke / purge:** Bot sole actor (`ai_task.md` §8). Hard-stop purges `ai_tasks` and `revoke(..., terminate=True)` for tracked in-flight ids.
+- **Topology owner:** `infra/rabbitmq/definitions.json` is canonical. Clients may passive-declare / verify args; they must not create conflicting exchanges, queues, bindings, or DLX args. Align `shared/messaging/rabbitmq_topology.py` constants with definitions.
+- **Dependencies:** Bot optional-extra uses `celery` + `kombu` **without** the Redis extra. Redis is not a broker or result backend in this architecture; `celery[redis]` is obsolete and removed from `pyproject.toml`.
+
+### Bot concurrency model
+
+- The **asyncio event loop owns discord.py** and all Bot domain state mutations that touch Discord or the in-memory task/drain maps.
+- Blocking Celery/Kombu I/O (publish confirm wait, result consume, purge/revoke) runs on **dedicated threads / Celery client threads**, never on the event loop.
+- Thread → asyncio handoff uses `loop.call_soon_threadsafe` / `asyncio.run_coroutine_threadsafe` (or an asyncio queue drained by a loop task). No unsynchronized writes to Bot state from broker threads.
+- **MQTT (paho) callbacks** are foreign threads: only enqueue control/progress/heartbeat work onto the loop; never call discord.py or mutate task maps directly from the callback.
+- **Shutdown order:** stop accepting new AI work → complete hard-stop / drain path as commanded → cancel timers → stop MQTT subscriptions/client → stop result consumer and Celery client → close Discord Gateway → exit process. Reconnect ownership: Discord reconnect = discord.py; AMQP = Celery/Kombu policy (`rabbitmq.md` §8a); MQTT = Bot MQTT client with fail-closed control semantics (`leadership_control.md`).
+
+### Phase 2 Bot scope
+
+- **In scope:** runtime bootstrap, Gateway lifecycle under grants, fencing/watchdog, guild join/update/remove + periodic sync (no `/config` UI), Celery dispatch + result consumer + task tracker + progress plumbing, heartbeat + status Blob push, drain progress, hard-stop (purge/revoke/synthetic failures). Shared Components V2 UI base may land only as needed for progress plumbing tests — no user-facing command UI.
+- **Out of scope:** full `ProcessCommand` dispatch abstraction (deferred to `/config`, `/suggest`, `/quick-battle` phases); **no user-facing slash command** in Phase 2; suggestion queue poller/sweep; real LangGraph; Web.
+
+### Phase 2 acceptance ownership (summary)
+
+Per-scenario step matrices live in `docs/scenarios/03`, `04`, `05`, `07`, `08`, and `10`. Labels: **complete in Phase 2**, **integration-only in Phase 2**, or **deferred** (owning later phase named).
+
+| Scenario | Phase 2 owns | Explicitly not claimed in Phase 2 |
+|---|---|---|
+| S03 | Bot autonomous grant-expiry hard-stop, Gateway disconnect, purge/revoke when tasks tracked | Follower lease race completion beyond Head (S02); Discord command recovery |
+| S04 | Bot MQTT control disconnect → soft-stop; grant-expiry hard-stop; reconnect does not revive from retained alone | User-facing slash rejection UX (no commands yet) |
+| S05 | Bot/AI Worker AMQP reconnect; publish failure creates no `TaskRecord`; consume/result recovery via harness | Discord ephemeral for a real slash command (harness asserts error path instead) |
+| S07 | Bot drain flag, `drain_progress`, zero `in_flight_workflows` when only AI-task workflows exist | Open lobby/collector/vote drain units (`/quick-battle`); full Launcher recreate (Phase 1 already) |
+| S08 | Hard-stop, revoke, purge for tracked AI tasks; escalate from drain timeout | Lobby/collector/vote cancel notices (`/quick-battle` / P1.1) |
+| S10 | AI Worker restart redelivery; Bot restart loses map and discards orphan results (v1 limitation preserved) | Discord interaction/lobby recovery (command phases / P1.1) |
+
+**Orphaned tasks after Bot restart remain the documented v1 limitation** (`discord_bot.md` §9/§13, S10): no durable delivery reconciliation unless a later contract explicitly requires it — Phase 2 does not invent one.
 
 ---
 
@@ -341,27 +426,27 @@ These edits are mechanical after the decisions above; they should be completed b
 
 1. ~~Replace every RabbitMQ "exactly-once" claim with the chosen at-least-once/effectively-once semantics~~ — **done, P0.4**.
 2. ~~Remove stale `reply_to`-based routing text where `correlation_id` is canonical~~ — **done, P0.4**.
-3. Remove references to unwritten `ai_worker/graphs/quick-battle.md`; `bot/commands/quick-battle.md` already defines sequencing.
-4. Correct `environment.md`'s old `prompts/core/generic_environments` path to the target `prompts/static/generic_environments` path, then resolve which container owns it.
-5. Correct `quick-battle.md` step numbers.
+3. ~~Remove references to unwritten `ai_worker/graphs/quick-battle.md`; `bot/commands/quick-battle.md` already defines sequencing~~ — **done, Phase 2 doc pass** (environment/battle open items now point at `bot/commands/quick-battle.md` + P1.1).
+4. ~~Correct `environment.md`'s old `prompts/core/generic_environments` path to the target `prompts/static/generic_environments` path~~ — **done, Phase 2 doc pass**; container ownership of generic arenas remains **P1.1 item 11**.
+5. Correct `quick-battle.md` step numbers — **still open under P1.1** (command phase, not Phase 2).
 6. ~~Correct `home.md`'s implication that status updates maintain identity~~ — **done, P0.5.3**.
 7. ~~Reconcile Dashboard guild-count and latency-history sources~~ — **done, P0.5.2**.
-8. ~~Update `Readme.md` after new contracts~~ — **done for P0.5/P0.6/P0.7 contracts and P0.8 scenarios**.
-9. Ensure source-tree comments match the chosen IPC/config files and service ownership.
-10. Remove resolved/open-item prose from component docs once its canonical decision is recorded, instead of leaving “resolved” tombstones indefinitely.
-11. ~~Reconcile `task_progress.md`'s `queued` publisher: Bot creates that phase locally; an AI Worker cannot report a task while it is still waiting unclaimed in RabbitMQ.~~ — **done (Phase 0 Slice 0):** `task_progress.md` §3/§4 and `mosquitto.md` §4.
-12. Remove stale wording that Web PubSub group presence is used for leader election; it is only heartbeat transport after the Blob Lease redesign.
+8. ~~Update `Readme.md` after new contracts~~ — **done for P0.5/P0.6/P0.7 contracts and P0.8 scenarios**; Phase 2 notes added this pass.
+9. ~~Ensure source-tree comments match the chosen IPC/config files and service ownership~~ — **done for Phase 2 Celery paths / `celery_app.py` / node identity** this pass; remaining Web tree polish is non-blocking.
+10. Remove resolved/open-item prose from component docs once its canonical decision is recorded, instead of leaving “resolved” tombstones indefinitely — ongoing hygiene.
+11. ~~Reconcile `task_progress.md`'s `queued` publisher~~ — **done (Phase 0 Slice 0).**
+12. Remove stale wording that Web PubSub group presence is used for leader election; it is only heartbeat transport after the Blob Lease redesign — remaining stray mentions only if found.
 13. ~~Correct `Readme.md` and `web/pages/home.md` claims that Bot status writes resolve/maintain identity~~ — **done, P0.5.3**.
-14. Correct `bot/commands/suggest.md` §5's claim that the `WizardView` correction is unapplied; its own §14 and `visuals.md` say it was applied.
-15. Reconcile the high-level project tree with detailed service trees (notably Web home/PubSub routes and `status.py`'s obsolete version comment).
+14. Correct `bot/commands/suggest.md` §5's claim that the `WizardView` correction is unapplied — **deferred to suggestion/command docs hygiene** (not Phase 2).
+15. ~~Reconcile the high-level project tree with detailed service trees (Celery app path, Bot services, definitions as topology owner)~~ — **done, Phase 2 doc pass**.
 16. ~~Remove conditional live streaming / “Web listens to PubSub” / unnamed dashboard group~~ — **done, P0.6**.
 17. ~~Remove “auth deferred / no auth / Auth Placeholder / not publicly safe until P0.7”~~ — **done, P0.7**.
-18. Remove `ai_worker.md` §9's dangling “see next row for the open question” reference; the next row describes crash/redelivery and `contracts/ai_task.md` already fixes publish-before-ack behavior.
-19. Replace `bot/visuals.md`'s stale statement that the suggestion catalog is “moving off” a hardcoded list; `contracts/status_document.md` already owns it.
-20. Reconcile `web/pages/home.md`'s documented `version` response with the canonical status document, which deliberately excludes version. Until P1.6 chooses a source, mark the field unavailable or remove it from the v1 response.
-21. Remove or update stale self-marked “resolved” prose, including the old `task_progress.md` open-item tombstone, after its canonical text is corrected.
-22. ~~Correct `azure.md` and `web.md` Queue-failure wording: a failed Web enqueue after the Cosmos write is recoverable through the canonical pending-ticket sweep~~ — **done with P1.7 / `azure.md` §9**; poller skip/degraded behavior also closed there.
-23. Update `web/pages/template.md`'s stale “eventual authenticated admin” wording; Entra admin authorization is resolved in P0.7 and applies to all `/api/*` routes.
+18. ~~Remove `ai_worker.md` §9's dangling “see next row for the open question” reference~~ — **done, Phase 2 doc pass**.
+19. Replace `bot/visuals.md`'s stale statement that the suggestion catalog is “moving off” a hardcoded list — **deferred** (visuals/catalog hygiene; not Phase 2 transport).
+20. Reconcile `web/pages/home.md`'s documented `version` response with the canonical status document — **deferred to P1.6 / Web**.
+21. Remove or update stale self-marked “resolved” prose in task_progress after canonical text is corrected — **done for the quick-battle stub tombstone this pass**.
+22. ~~Correct `azure.md` and `web.md` Queue-failure wording~~ — **done with P1.7**.
+23. Update `web/pages/template.md`'s stale “eventual authenticated admin” wording — **deferred to Web doc hygiene / P1.6**.
 
 **Verified repository fact:** there are no duplicate slash/backslash variants of docs files in Git; the earlier duplicate-path concern was a Windows path-rendering artifact and is closed.
 
@@ -407,12 +492,14 @@ Implement election/fencing before update automation or telemetry. Validate S01�
 
 ## Phase 2 — AI Worker transport shell and Bot core
 
-Build these in parallel around a stub graph so the message path can be tested before LLM behavior:
+Build these in parallel around the **transport shell** (`graph="environment"` canned path — no `stub` discriminator) so the message path can be tested before LLM behavior:
 
-1. **AI Worker shell:** Celery task registration/prefetch → pause/resume and heartbeat → progress publishing → manual result publishing with publish-before-ack → redelivery/cancellation behavior.
-2. **Bot core:** inactive startup and leadership watchdog → guild reconciliation/status heartbeat → Celery dispatch/result consumer/task tracker → progress rendering plumbing → drain counter and hard-stop cancellation → shared Components V2 UI base.
+1. **AI Worker shell:** Celery app `ai_worker.celery_app` + task `ai_worker.tasks.run_graph` / prefetch → pause/resume and heartbeat → progress publishing (exact Phase 2 sequence) → manual result publishing with publish-before-ack → redelivery/cancellation behavior → transport-shell canned environment result when `AI_WORKER_TRANSPORT_SHELL=true`.
+2. **Bot core:** inactive startup and leadership watchdog → guild reconciliation/status heartbeat → Celery dispatch/result consumer/task tracker (asyncio vs broker-thread boundaries) → progress rendering plumbing → drain counter and hard-stop cancellation. **No slash commands; `ProcessCommand` deferred.**
 
-**Gate:** a dummy `ai_task` must complete Bot → RabbitMQ → AI Worker → result/progress → Bot. Then validate the transport portions of S04, S05, and S10. P1.5 must define standalone RabbitMQ recovery before S05 can pass faithfully.
+**Documentation gate:** Phase 2 decisions in this file’s Resolved section are closed. Implement against transport-shell, `NODE_ID` injection, definitions-owned RabbitMQ topology, and the S03/S04/S05/S07/S08/S10 ownership matrices — do not invent a Discord stub command or a `stub` graph.
+
+**Gate:** a harness-driven dummy `ai_task` must complete Bot → RabbitMQ → AI Worker → result/progress → Bot. Then validate the Phase 2-owned steps of S03, S04, S05, S07, S08, and S10.
 
 ## Phase 3 — Configuration and suggestions vertical slices
 

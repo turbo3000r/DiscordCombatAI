@@ -59,12 +59,14 @@ src/bot/
 | Variable | Required | Default | Description |
 |---|---|---|---|
 | `APPLICATION_VERSION` | Yes | — | Exact coordinated release tag injected by Compose. Included in the canonical heartbeat and required to match `contracts/launcher_ipc.md` §4's grammar. Startup fails if absent/invalid. |
-| `DISCORD_BOT_TOKEN` | Yes | — | The Discord bot token used to connect to the Gateway. **Previously undocumented anywhere in the project** — surfaced and formalized here; flagged in §13 since no other doc assumed a different name for it, but this is the first place it's been written down at all. Never logged (§7). |
-| `BOT_MOSQUITTO_HOST` | No | `mosquitto` | Hostname of the local Mosquitto broker. Formalizes the variable `mosquitto.md` §3 previously flagged as expected-but-open. |
+| `BOT_NODE_ID` | Yes | — | Host node identity. Must equal the deployment's `NODE_ID` / `HEAD_NODE_ID` / `AI_WORKER_NODE_ID`. Grammar `^[A-Za-z0-9._-]+$`, length 1–128. Compose injects from host `NODE_ID`. |
+| `DISCORD_BOT_TOKEN` | Yes | — | The Discord bot token used to connect to the Gateway. Never logged (§7). |
+| `BOT_MOSQUITTO_HOST` | No | `mosquitto` | Hostname of the local Mosquitto broker. |
 | `BOT_MOSQUITTO_PORT` | No | `1883` | Mosquitto broker port. |
-| `BOT_RABBITMQ_HOST` | No | `rabbitmq` | Hostname of the local RabbitMQ broker. Formalizes the variable `rabbitmq.md` §3 previously flagged as expected-but-open. |
+| `BOT_RABBITMQ_HOST` | No | `rabbitmq` | Hostname of the local RabbitMQ broker. |
 | `BOT_RABBITMQ_PORT` | No | `5672` | RabbitMQ broker port. |
-| `BOT_RABBITMQ_USER` / `BOT_RABBITMQ_PASS` | Yes | — | **Resolved this revision (P0.4)** — `Bot`'s own broker credentials, canonical definition in `rabbitmq.md` §3/§13. Never logged. |
+| `BOT_RABBITMQ_USER` / `BOT_RABBITMQ_PASS` | Yes | — | **Resolved (P0.4)** — `Bot`'s own broker credentials, canonical definition in `rabbitmq.md` §3/§13. Never logged. |
+| `RABBITMQ_DEFAULT_VHOST` | No | `/discordcombatai` | Shared vhost for broker URL construction (`contracts/ai_task.md` §2). Injected by Compose. |
 | `BOT_DRAIN_PROGRESS_INTERVAL_SEC` | No | `5` | **New this revision (P0.3)** — cadence of the `status/bot/drain_progress` publish (§6.3a, `contracts/drain_status.md` §1) while `bot.draining` is set. |
 | `BOT_QUEUE_POLL_INTERVAL_SEC` | No | `300` | How often `Bot` polls Azure Queue Storage for suggestion-response notifications (§6.6). Formalizes the "every 5 minutes" already stated in `architecture.md`'s Data Storage table. |
 | `BOT_AI_TASK_STALL_TIMEOUT_SEC` | No | `120` | **New this revision** — per-task stall timer (`contracts/ai_task.md` §5): if no `progress/ai_worker/<task_id>` message (phase-change **or** heartbeat tick, `contracts/task_progress.md` §3) arrives within this window, `Bot` gives up on the task locally. Resets on every progress message, not just phase changes. |
@@ -103,7 +105,7 @@ src/bot/
 | Destination | Channel | Format | Trigger |
 |---|---|---|---|
 | Discord Gateway | WebSocket | Slash command responses, DMs, guild messages, embed/view edits | Continuous |
-| RabbitMQ (via Celery `apply_async`) | `ai_tasks` (dispatch, `kwargs={"envelope": {...}}`, `task_id=task_id`, publisher confirms) | AI task envelope (`contracts/ai_task.md` §3 — the graph's own input contract flattened into `envelope`, plus `task_id`/`graph`/`created_at`/`schema_version`) | On `/quick-battle`'s environment/battle graph invocations (`bot/commands/quick-battle.md`) |
+| RabbitMQ (via Celery `send_task`) | `ai_tasks` (dispatch, `kwargs={"envelope": {...}}`, `task_id=task_id`, task name `ai_worker.tasks.run_graph`, publisher confirms) | AI task envelope (`contracts/ai_task.md` §3) | Harness (Phase 2) or `/quick-battle` graph invocations (later) |
 | Mosquitto | `status/bot/heartbeat` | Canonical versioned Bot liveness/dependency payload (`contracts/telemetry.md` §2.1) | Every `BOT_HEARTBEAT_INTERVAL_SEC` |
 | Mosquitto | `status/bot/drain_progress` (QoS 1, not retained) — **new this revision, P0.3** | `{"schema_version": 1, "node_id": ..., "leadership_term": ..., "in_flight_workflows": N, "observed_at": ISO8601}` (`contracts/drain_status.md` §1) | Every `BOT_DRAIN_PROGRESS_INTERVAL_SEC` while `bot.draining` is set (§6.4a) |
 | Mosquitto | `status/bot/control_ack` | Applied state, Gateway connection flag, leadership term, and command sequence (`contracts/leadership_control.md` §3.3) | After each control transition |
@@ -117,6 +119,26 @@ src/bot/
 ---
 
 ## 6. Internal Logic
+
+### 6.0 Phase 2 scope and concurrency (resolved)
+
+**Phase 2 includes:** Gateway lifecycle under grants, fencing/watchdog, guild join/update/remove + periodic metadata sync, Celery dispatch/`ai_tasks_results` consumer/task tracker/progress plumbing, heartbeat + status Blob push, drain progress, hard-stop (purge/revoke/synthetic `worker_terminated`). Transport is exercised only via tests/acceptance harnesses (`contracts/ai_task.md` §11).
+
+**Phase 2 excludes:** user-facing slash commands; the full `ProcessCommand` command-dispatch abstraction (deferred to `/config`, `/suggest`, `/quick-battle`); suggestion queue poller/sweep; lobby/collector/vote workflow units beyond counting AI-task map entries in `in_flight_workflows`.
+
+**Concurrency model (mandatory):**
+
+| Owner | Responsibility |
+|---|---|
+| asyncio event loop | discord.py Gateway, interaction/command hooks (later phases), all mutations of task map / `in_flight_workflows` / drain flags that Discord observes |
+| Dedicated Celery/Kombu thread(s) | Blocking `send_task` + publisher confirm wait, `ai_tasks_results` consume loop, purge/revoke |
+| MQTT client thread(s) | paho callbacks only enqueue work |
+
+- Never run blocking Celery/Kombu I/O on the asyncio event loop.
+- Hand off broker/MQTT events into the loop with `call_soon_threadsafe` / `run_coroutine_threadsafe` (or an asyncio queue drained by a loop task).
+- MQTT callbacks must not call discord.py or write Bot maps directly.
+- **Shutdown order:** stop accepting new AI work → hard-stop/drain path as commanded → cancel per-task timers → stop MQTT → stop result consumer + Celery client → close Gateway → exit.
+- **Reconnect ownership:** Discord = discord.py; AMQP = Celery/Kombu (`rabbitmq.md` §8a); MQTT control = Bot MQTT client with fail-closed grant semantics (`leadership_control.md`).
 
 ### 6.1 Activation Lifecycle
 
@@ -183,20 +205,20 @@ On receiving a `draining` grant (`contracts/leadership_control.md` §3.2):
 
 ### 6.4 Command Availability During Drain
 
-**Confirmed decision (project owner):** rather than a single blanket behavior, `bot.draining` is one global, container-wide flag (set when `control/bot/desired_state` resolves to `draining`, §6.5), but **whether a given command actually respects it is a per-command opt-in parameter**, not a hardcoded blanket rule.
+**Confirmed decision (project owner):** `bot.draining` is one global container-wide flag. Whether a given command respects it is a per-command opt-in on the future `ProcessCommand` helper — **not implemented in Phase 2** (no user-facing slash commands).
 
-`ProcessCommand` (`modules/utils.py`) gets one new parameter:
+When command phases land:
 
 ```python
 def ProcessCommand(bot, ..., blocked_during_drain: bool = False):
     ...
 ```
 
-- Default is `False` — **most commands keep working during a drain window**, since drain exists specifically to protect in-flight AI generation, not to freeze the whole bot.
-- `/quick-battle` is the one confirmed opt-in (`blocked_during_drain=True`) — the only command with real `AI Worker`/RabbitMQ cost, matching `architecture.md`'s original framing ("ceasing new `/quick-battle` acceptance on drain"). `bot/commands/quick-battle.md` §4 should state this explicitly (cross-referenced).
-- `/config` and `/suggest` stay unblocked — neither touches `AI Worker` (`/config`'s Gemini call is a direct, cheap model-listing request; `/suggest` never calls Gemini at all), so there's no reason to interrupt admin or feedback flows during a brief planned-update drain.
+- Default `False` — most commands keep working during drain.
+- `/quick-battle` opts in (`blocked_during_drain=True`) — see `bot/commands/quick-battle.md` §4.
+- `/config` and `/suggest` stay unblocked.
 
-When a `blocked_during_drain=True` command is invoked while `bot.draining` is set, `ProcessCommand` should respond with a localized "temporarily unavailable, try again shortly" ephemeral message instead of proceeding — exact copy/localization key not yet written, flagged in §13.
+Phase 2 still sets `bot.draining` and rejects **new AI task publishes** from the harness/dispatch API while draining. Localized ephemeral “temporarily unavailable” copy for slash commands is deferred with `ProcessCommand`.
 
 ### 6.5 Fenced Active, Bounded Drain, and Hard Stop
 
@@ -261,7 +283,7 @@ Business counters such as `commands_invoked_total`, `ai_tasks_published_total`, 
 | **New this revision** — a task's progress/heartbeat ticks stop arriving for longer than `BOT_AI_TASK_STALL_TIMEOUT_SEC` (§3, §6.3's `last_progress_at`) | `Bot`'s own per-task stall timer expires | `Bot` synthesizes an `AiTaskResultFailed` (`contracts/ai_task.md` §4) with `node: "bot_stall_timeout"`, removes the `TaskRecord` (§6.3), and notifies the user — without waiting for RabbitMQ. If the task was actually still alive (e.g. a transient Mosquitto hiccup on `AI Worker`'s side only), the eventual real result is safely discarded on arrival (`ai_task.md` §6) — accepted false-positive cost, not a bug. |
 | **New this revision** — a task's total duration exceeds `BOT_AI_TASK_TIMEOUT_SEC`, regardless of how healthy its progress ticks looked | `Bot`'s own per-task overall timer expires | Same synthesis/cleanup as the stall-timeout row, with `node: "bot_task_timeout"` instead — this is the absolute ceiling against a task that's ticking normally but never actually converging. |
 | `Bot` process crashes or restarts mid-task (after publishing `ai_tasks`, before consuming the matching `ai_tasks_results`) | N/A — no detection mechanism | The in-memory task map (§6.3), including both timers above, is lost entirely. On restart, if the matching `ai_tasks_results` message still arrives, it has no `TaskRecord` to update and is effectively orphaned — no reconciliation exists. This is now the **only** remaining shape of this gap — a task that survives `Bot`'s own process lifetime is always eventually resolved by either a real result or one of the two timers above. Flagged in §13. |
-| `RabbitMQ` unreachable when publishing `ai_tasks` | `apply_async` / confirm failure | **Resolved (P1.5):** no `TaskRecord`; localized command error; Gateway stays up; client reconnects per `rabbitmq.md` §8a. Canonical scenario: S05. |
+| `RabbitMQ` unreachable when publishing `ai_tasks` | `send_task` / confirm failure | **Resolved (P1.5):** no `TaskRecord`; localized command error (Phase 2: harness asserts this); Gateway stays up; client reconnects per `rabbitmq.md` §8a. Canonical scenario: S05. |
 
 ---
 
@@ -304,8 +326,9 @@ No HTTP endpoint — unlike `Head`/`Launcher`, `Bot` exposes nothing for another
 - ~~No fallback exists if a DM to a suggestion's original author fails (§6.6, §9)~~ — **resolved this revision**: reconciliation sweep + `notification_status: "failed"` terminal state after `BOT_SUGGESTION_MAX_DM_ATTEMPTS`.
 - ~~Dangling task-map entries for a task whose result never arrives~~ — **resolved this revision** (§6.3, §9): the stall timer (`BOT_AI_TASK_STALL_TIMEOUT_SEC`) and overall timer (`BOT_AI_TASK_TIMEOUT_SEC`) together guarantee every task is eventually resolved one way or another, as long as `Bot` itself stays alive. **Narrowed, not eliminated:** dangling entries are still possible if `Bot` itself crashes/restarts mid-task, since the timers are in-memory and don't survive that — a task whose result arrives after `Bot` has already forgotten about it (crash, not timeout) is still simply dropped, no reconciliation exists for that specific case.
 - **New this revision** — `BOT_AI_TASK_TIMEOUT_SEC=900` and `BOT_AI_TASK_STALL_TIMEOUT_SEC=120` (§3) are proposed defaults, not confirmed against real Gemini/LangGraph timing — see `contracts/ai_task.md` §8 for the full reasoning and the explicit flag that these need revisiting once real latency data exists.
-- ~~Whether `Bot` publishes to `ai_tasks` via a Celery client or raw AMQP was undecided~~ — **resolved this revision, P0.4**: `Bot` uses `apply_async` (`contracts/ai_task.md` §2/§3), so `task_id` doubles as a revocable Celery task id and `revoke(terminate=True)` (§6.5) is directly reachable.
+- ~~Whether `Bot` publishes to `ai_tasks` via a Celery client or raw AMQP was undecided~~ — **resolved P0.4 / Phase 2**: `Bot` uses `send_task("ai_worker.tasks.run_graph", ...)` (`contracts/ai_task.md` §2/§3), so `task_id` doubles as a revocable Celery task id and `revoke(terminate=True)` (§6.5) is directly reachable.
 - `DISCORD_BOT_TOKEN` (§3) was a previously-undocumented gap across the entire docs tree, not specific to this revision's scope — formalized here for the first time; worth double-checking no other in-progress doc silently assumed a different variable name for it.
 - Bot-owned counters beyond the canonical heartbeat are explicitly deferred from v1 (§8); this is a scope decision, not an unresolved transport contract.
 - Bot heartbeat dependency health and staleness are resolved in `contracts/telemetry.md` §2 (§11).
-- The exact copy/localization key for the "temporarily unavailable during drain" response (§6.4) hasn't been written yet.
+- The exact copy/localization key for the "temporarily unavailable during drain" response (§6.4) hasn't been written yet — deferred with `ProcessCommand` to command phases.
+- **Phase 2 concurrency, node identity, Celery task name, and transport-shell trigger rules are resolved** — see §6.0 and `docs/to_resolve.md` → Phase 2.
