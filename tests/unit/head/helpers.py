@@ -146,4 +146,6 @@ def make_settings() -> HeadSettings:
         node_id="node-a",
         application_version="v1.0.0",
         github_repo="owner/repo",
+        rabbitmq_user="discordcombatai",
+        rabbitmq_pass="change-me-in-env",
     )

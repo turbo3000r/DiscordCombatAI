@@ -39,6 +39,8 @@ def test_settings_reject_unsafe_cadence_and_group_relationships() -> None:
             node_id="node-a",
             application_version="v1.0.0",
             github_repo="owner/repo",
+            rabbitmq_user="discordcombatai",
+            rabbitmq_pass="change-me-in-env",
             election_heartbeat_sec=60,
             lease_duration_sec=60,
             pubsub_cluster_group="same",

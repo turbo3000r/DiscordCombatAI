@@ -22,12 +22,14 @@ from .lease import LeaseCoordinator
 from .logs import LogAggregator
 from .mqtt import HeadMqttEvent, MqttManager
 from .pubsub import ClusterPubSub, ServiceSdkTelemetrySender
+from .rabbitmq_bridge import RabbitMqEventBridge
 from .release import ReleasePoller
 from .settings import HeadSettings
 from .telemetry import MetricsServiceWriter, TelemetryPipeline
 from .transports import (
     AioHttpClientTransport,
     AioHttpHeadServer,
+    AioPikaEventExchangeTransport,
     AzureClusterPubSubTransport,
     GitHubApiReleaseSource,
     PahoMqttTransport,
@@ -128,6 +130,18 @@ async def build_application(settings: HeadSettings | None = None) -> HeadApplica
         metrics_buffer_max_batches=config.metrics_buffer_max_batches,
         live_max_logs=config.telemetry_live_max_logs,
         live_max_bytes=config.telemetry_live_max_bytes,
+    )
+
+    event_bridge = RabbitMqEventBridge(
+        transport=AioPikaEventExchangeTransport(
+            host=config.rabbitmq_host,
+            port=config.rabbitmq_port,
+            username=config.rabbitmq_user,
+            password=config.rabbitmq_pass,
+            vhost=config.rabbitmq_vhost,
+        ),
+        publisher=mqtt,
+        clock=clock,
     )
 
     async def on_mqtt_event(event: HeadMqttEvent) -> None:
@@ -235,7 +249,7 @@ async def build_application(settings: HeadSettings | None = None) -> HeadApplica
     )
 
     return HeadApplication(
-        components=(server, election),
+        components=(server, election, event_bridge),
         resources=(
             release_poller,
             launcher,

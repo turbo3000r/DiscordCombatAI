@@ -165,6 +165,13 @@ class MqttManager:
             raise MqttControlError("activation grant denied without live control and authority")
         await self._publish(MQTT_TOPIC_POLICIES["control_bot_activation_grant"], grant)
 
+    async def publish_log_wire(self, topic: str, payload: bytes) -> None:
+        if not topic.startswith("logs/"):
+            raise ValueError("only Mosquitto log topics may be published through publish_log_wire")
+        if not self.connected:
+            raise MqttControlError("Mosquitto is disconnected")
+        await self._transport.publish(topic, payload, qos=0, retain=False)
+
     async def _publish(
         self,
         policy: TopicPolicy,

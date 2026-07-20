@@ -69,21 +69,33 @@ def test_release_selector_ignores_drafts_and_prereleases() -> None:
 def test_log_bridge_redacts_and_never_accepts_message_payload() -> None:
     archive = FakeArchive()
     aggregator = LogAggregator(archive)
-    bridge = RabbitMqLogBridge(aggregator)
+    bridge = RabbitMqLogBridge()
 
-    bridge.handle(
+    line = bridge.handle(
         RabbitBrokerEvent(
             routing_key="queue.deleted",
             severity=RabbitSeverity.warning,
             occurred_at=datetime(2026, 7, 19, tzinfo=UTC),
-        )
+            headers={"name": "ai_tasks", "password": "should-never-appear"},
+        ),
+        aggregator,
     )
     aggregator.ingest(
         "[2026-07-19T00:00:00Z][ERROR][bot][worker]: [api_key=very-secret]"
     )
 
+    assert line is not None
+    assert "routing_key=queue.deleted" in line.tags
+    assert "password" not in line.tags
     assert "very-secret" not in "\n".join(archive.lines)
     assert aggregator.errors_in_window == 1
+
+
+def test_log_bridge_drops_noisy_lifecycle_events() -> None:
+    bridge = RabbitMqLogBridge()
+    assert bridge.classify("connection.created") is None
+    assert bridge.classify("alarm.set") is RabbitSeverity.error
+    assert bridge.mqtt_topic(RabbitSeverity.error) == "logs/errors/rabbitmq"
 
 
 @pytest.mark.asyncio

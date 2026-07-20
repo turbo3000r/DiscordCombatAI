@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 from collections.abc import Awaitable, Callable, Coroutine, Mapping
+from contextlib import suppress
 from typing import Any
 
 import aiohttp
@@ -372,9 +373,103 @@ class PsutilProcessSampler(ProcessSampler):
         )
 
 
+class AioPikaEventExchangeTransport:
+    """Consumes rabbitmq_event_exchange metadata only (never message payloads)."""
+
+    EVENT_EXCHANGE = "amq.rabbitmq.event"
+
+    def __init__(
+        self,
+        *,
+        host: str,
+        port: int,
+        username: str,
+        password: str,
+        vhost: str,
+        binding_keys: tuple[str, ...] = ("#",),
+    ) -> None:
+        self._host = host
+        self._port = port
+        self._username = username
+        self._password = password
+        self._vhost = vhost
+        self._binding_keys = binding_keys
+        self._connection: Any | None = None
+        self._channel: Any | None = None
+        self._queue: Any | None = None
+        self._iterator: Any | None = None
+
+    async def connect(self) -> None:
+        import aio_pika
+
+        await self.close()
+        self._connection = await aio_pika.connect_robust(
+            host=self._host,
+            port=self._port,
+            login=self._username,
+            password=self._password,
+            virtualhost=self._vhost,
+            timeout=5,
+        )
+        self._channel = await self._connection.channel()
+        await self._channel.set_qos(prefetch_count=10)
+        self._queue = await self._channel.declare_queue(exclusive=True, auto_delete=True)
+        exchange = await self._channel.get_exchange(self.EVENT_EXCHANGE, ensure=False)
+        for key in self._binding_keys:
+            await self._queue.bind(exchange, routing_key=key)
+        self._iterator = self._queue.iterator().__aiter__()
+
+    async def consume_once(self) -> tuple[str, Mapping[str, object], Any] | None:
+        from datetime import UTC, datetime
+
+        if self._iterator is None:
+            raise ConnectionError("event exchange transport is not connected")
+        message = await self._iterator.__anext__()
+        async with message.process(ignore_processed=True):
+            headers: dict[str, object] = {}
+            raw_headers = message.headers or {}
+            for key, value in raw_headers.items():
+                if isinstance(key, str):
+                    headers[key] = value
+            occurred = message.timestamp
+            if occurred is None:
+                occurred_at = datetime.now(tz=UTC)
+            elif occurred.tzinfo is None:
+                occurred_at = occurred.replace(tzinfo=UTC)
+            else:
+                occurred_at = occurred.astimezone(UTC)
+            # Intentionally ignore message.body — broker event payloads must not be logged.
+            return str(message.routing_key or ""), headers, occurred_at
+
+    async def close(self) -> None:
+        iterator = self._iterator
+        self._iterator = None
+        if iterator is not None:
+            aclose = getattr(iterator, "aclose", None)
+            if aclose is not None:
+                with suppress(Exception):
+                    await aclose()
+        queue = self._queue
+        self._queue = None
+        if queue is not None:
+            with suppress(Exception):
+                await queue.delete(if_unused=False, if_empty=False)
+        channel = self._channel
+        self._channel = None
+        if channel is not None:
+            with suppress(Exception):
+                await channel.close()
+        connection = self._connection
+        self._connection = None
+        if connection is not None:
+            with suppress(Exception):
+                await connection.close()
+
+
 __all__ = [
     "AioHttpClientTransport",
     "AioHttpHeadServer",
+    "AioPikaEventExchangeTransport",
     "AzureClusterPubSubTransport",
     "GitHubApiReleaseSource",
     "PahoMqttTransport",

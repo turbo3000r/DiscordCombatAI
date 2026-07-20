@@ -43,6 +43,16 @@ class HeadSettings(BaseSettings):
 
     mosquitto_host: str = "mosquitto"
     mosquitto_port: int = Field(default=1883, ge=1, le=65535)
+    rabbitmq_host: str = "rabbitmq"
+    rabbitmq_port: int = Field(default=5672, ge=1, le=65535)
+    rabbitmq_user: str = Field(min_length=1, max_length=128)
+    rabbitmq_pass: str = Field(min_length=1, max_length=256)
+    rabbitmq_vhost: str = Field(
+        default="/discordcombatai",
+        validation_alias="RABBITMQ_DEFAULT_VHOST",
+        min_length=1,
+        max_length=128,
+    )
     metrics_interval_sec: float = Field(default=2, gt=0)
     telemetry_batch_interval_sec: float = Field(default=60, gt=0)
     telemetry_live_interval_sec: float = Field(default=10, gt=0)

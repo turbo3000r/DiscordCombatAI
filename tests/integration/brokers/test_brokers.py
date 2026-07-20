@@ -133,6 +133,7 @@ def test_rabbitmq_definitions_loaded_via_management_api(broker_stack: None) -> N
     results_queue = _http_json(f"http://127.0.0.1:15672/api/queues/{vhost}/ai_tasks_results")
     dead_letter_queue = _http_json(f"http://127.0.0.1:15672/api/queues/{vhost}/dead_letter")
     dlx_exchange = _http_json(f"http://127.0.0.1:15672/api/exchanges/{vhost}/dlx")
+    plugins = _http_json("http://127.0.0.1:15672/api/nodes")
 
     assert tasks_queue["durable"] is True
     assert results_queue["durable"] is True
@@ -140,3 +141,12 @@ def test_rabbitmq_definitions_loaded_via_management_api(broker_stack: None) -> N
     assert tasks_queue["arguments"]["x-dead-letter-exchange"] == "dlx"  # type: ignore[index]
     assert results_queue["arguments"]["x-dead-letter-exchange"] == "dlx"  # type: ignore[index]
     assert dlx_exchange["type"] == "topic"
+
+    overview = _http_json("http://127.0.0.1:15672/api/overview")
+    enabled = overview.get("enable_queue_totals")  # presence check that API is alive
+    assert enabled is not None or "rabbitmq_version" in overview
+    assert isinstance(plugins, list)
+    # Event exchange must be enabled for Head's bridge; management API lists enabled plugins
+    # on each node under `enabled_plugins` when available.
+    if plugins and isinstance(plugins[0], dict) and "enabled_plugins" in plugins[0]:
+        assert "rabbitmq_event_exchange" in plugins[0]["enabled_plugins"]

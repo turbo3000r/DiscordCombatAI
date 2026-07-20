@@ -9,6 +9,7 @@ from .lease import LeaseCoordinator, LeaseLostError
 from .logs import LogAggregator, RabbitMqLogBridge
 from .mqtt import MqttManager
 from .pubsub import ClusterPubSub
+from .rabbitmq_bridge import RabbitMqEventBridge
 from .release import ReleasePoller, select_newest_stable
 from .settings import HeadSettings
 from .telemetry import TelemetryPipeline
@@ -29,6 +30,7 @@ __all__ = [
     "LogAggregator",
     "MqttDrainObserver",
     "MqttManager",
+    "RabbitMqEventBridge",
     "RabbitMqLogBridge",
     "ReleasePoller",
     "RequestAuthenticator",

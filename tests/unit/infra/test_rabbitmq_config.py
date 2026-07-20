@@ -19,6 +19,7 @@ def test_rabbitmq_conf_loads_definitions_and_management_ui() -> None:
     assert "management.tcp.ip = 0.0.0.0" in content
     assert "management.tcp.port = 15672" in content
     assert "management.load_definitions = /etc/rabbitmq/definitions.json" in content
+    assert "rabbitmq_event_exchange.vhost = /discordcombatai" in content
 
 
 def test_definitions_define_vhost_topology_without_secrets() -> None:
