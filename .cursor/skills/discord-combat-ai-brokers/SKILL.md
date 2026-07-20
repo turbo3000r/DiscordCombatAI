@@ -42,7 +42,9 @@ Require:
 - Enforce prefetch rules from the worker contract (prefetch = 1 unless documentation changes).
 - Use non-`guest` broker credentials and documented vhost/user variables.
 - Treat delivery as at-least-once with effectively-once outcomes. Never claim exactly-once delivery.
-- Keep Celery protocol usage aligned with the contract: custom result queue where documented; do not silently switch to Celery result backends.
+- Keep Celery protocol usage aligned with the contract: app `ai_worker.celery_app`, task name `ai_worker.tasks.run_graph`, custom result queue; do not silently switch to Celery result backends or Redis.
+- Treat `infra/rabbitmq/definitions.json` as the topology owner; clients verify only.
+- Compose must inject `RABBITMQ_DEFAULT_VHOST` and host `NODE_ID` into Bot/AI Worker/Head as documented.
 
 ## Mosquitto
 
