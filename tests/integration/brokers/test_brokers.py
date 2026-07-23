@@ -7,6 +7,7 @@ import shutil
 import socket
 import subprocess
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from collections.abc import Iterator
@@ -15,6 +16,7 @@ from threading import Event
 from typing import Final
 
 import pytest
+import yaml
 
 pytestmark = pytest.mark.integration
 
@@ -63,14 +65,31 @@ def _http_json(url: str) -> dict[str, object]:
         return json.loads(response.read().decode("utf-8"))
 
 
+def _wait_for_http_json(url: str, timeout_sec: int = 120) -> dict[str, object]:
+    deadline = time.monotonic() + timeout_sec
+    last_error: Exception | None = None
+    while time.monotonic() < deadline:
+        try:
+            return _http_json(url)
+        except (OSError, urllib.error.HTTPError, urllib.error.URLError, json.JSONDecodeError) as exc:
+            last_error = exc
+            time.sleep(1)
+    raise AssertionError(f"{url} did not become ready: {last_error}")
+
+
 @pytest.fixture(scope="module")
 def broker_stack() -> Iterator[None]:
     args = _docker_compose_args()
-    subprocess.run(args + ["up", "-d", "mosquitto", "rabbitmq"], check=True, cwd=ROOT)
+    # --wait blocks until Compose healthchecks pass (TCP alone is not enough).
+    subprocess.run(
+        args + ["up", "-d", "--wait", "--wait-timeout", "120", "mosquitto", "rabbitmq"],
+        check=True,
+        cwd=ROOT,
+    )
     try:
         _wait_for_tcp("127.0.0.1", 1883)
         _wait_for_tcp("127.0.0.1", 15672)
-        _http_json("http://127.0.0.1:15672/api/overview")
+        _wait_for_http_json("http://127.0.0.1:15672/api/overview")
         yield
     finally:
         subprocess.run(args + ["down", "-v", "--remove-orphans"], check=False, cwd=ROOT)
@@ -88,7 +107,25 @@ def test_compose_cli_accepts_phase_zero_files() -> None:
 
     assert "eclipse-mosquitto:2.0.20" in result.stdout
     assert "rabbitmq:3.13-management" in result.stdout
-    assert "profiles:" in result.stdout
+
+    # `docker compose config` resolves the active project; it does not echo raw
+    # `profiles:` keys. Default resolution must include brokers/head and omit
+    # application-profile services until --profile application is set.
+    services = yaml.safe_load(result.stdout)["services"]
+    assert {"mosquitto", "rabbitmq", "head"} <= set(services)
+    assert "bot" not in services
+    assert "ai_worker" not in services
+
+    profiled = subprocess.run(
+        args + ["--profile", "application", "config"],
+        check=True,
+        capture_output=True,
+        text=True,
+        cwd=ROOT,
+    )
+    profiled_services = yaml.safe_load(profiled.stdout)["services"]
+    assert "bot" in profiled_services
+    assert "ai_worker" in profiled_services
 
 
 def test_mosquitto_round_trip_publish_subscribe(broker_stack: None) -> None:
