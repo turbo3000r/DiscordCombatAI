@@ -1,0 +1,30 @@
+name: Launcher
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  launcher:
+    name: Vet and test
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: launcher
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: launcher/go.mod
+          cache-dependency-path: launcher/go.sum
+
+      - name: Go vet
+        run: go vet ./...
+
+      - name: Go test
+        run: go test ./...

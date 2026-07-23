@@ -34,6 +34,7 @@ jobs:
           filters: |
             python:
               - '.github/workflows/ci.yml'
+              - '.github/workflows/python.yml'
               - 'src/**'
               - 'tests/**'
               - 'pyproject.toml'
@@ -43,9 +44,11 @@ jobs:
               - 'docker-compose.dev.yml'
             launcher:
               - '.github/workflows/ci.yml'
+              - '.github/workflows/launcher.yml'
               - 'launcher/**'
             brokers:
               - '.github/workflows/ci.yml'
+              - '.github/workflows/brokers.yml'
               - 'infra/**'
               - 'docker-compose.yml'
               - 'docker-compose.dev.yml'
@@ -53,84 +56,22 @@ jobs:
               - 'tests/unit/infra/**'
 
   python:
-    name: Python (lint, types, tests)
+    name: Python
     needs: changes
     if: needs.changes.outputs.python == 'true'
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@v5
-        with:
-          enable-cache: true
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Install dependencies
-        run: uv sync --frozen --all-extras
-
-      - name: Ruff
-        run: uv run ruff check .
-
-      - name: Mypy
-        run: uv run mypy src
-
-      - name: Unit and acceptance tests
-        run: uv run pytest tests/unit tests/acceptance -q
+    uses: ./.github/workflows/python.yml
 
   launcher:
-    name: Launcher (vet, test)
+    name: Launcher
     needs: changes
     if: needs.changes.outputs.launcher == 'true'
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: launcher
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version-file: launcher/go.mod
-          cache-dependency-path: launcher/go.sum
-
-      - name: Go vet
-        run: go vet ./...
-
-      - name: Go test
-        run: go test ./...
+    uses: ./.github/workflows/launcher.yml
 
   brokers:
-    name: Broker integration
+    name: Brokers
     needs: changes
     if: needs.changes.outputs.brokers == 'true'
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@v5
-        with:
-          enable-cache: true
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Install dependencies
-        run: uv sync --frozen --extra integration
-
-      - name: Broker integration tests
-        run: uv run pytest tests/integration -m integration -q
+    uses: ./.github/workflows/brokers.yml
 
   ci:
     name: CI
