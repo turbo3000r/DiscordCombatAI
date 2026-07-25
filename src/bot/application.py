@@ -6,8 +6,15 @@ import asyncio
 import logging
 from collections.abc import Callable
 from contextlib import suppress
+from datetime import UTC, datetime
 from typing import Any, Protocol
 
+from bot.localization.handler import LocalizationHandler
+from bot.modules.commands.suggestions.service import (
+    NotificationDeliveryService,
+    NotificationSweepService,
+    SuggestionQueuePoller,
+)
 from shared.messaging.mqtt_topics import MQTT_TOPIC_POLICIES
 from shared.models import (
     ControlAck,
@@ -59,17 +66,30 @@ class GuildService(Protocol):
 class StatusServiceProto(Protocol):
     async def update_status(self, status: dict[str, Any]) -> Any: ...
 
+    async def get_suggestion_catalog(self) -> Any: ...
+
+    async def ensure_seeded(self) -> Any: ...
+
+
+class SuggestionServiceProto(Protocol):
+    async def create(self, payload: dict[str, Any]) -> Any: ...
+
+    async def get(self, guild_id: str, suggestion_id: str) -> Any: ...
+
 
 class DependencyHealth:
     def __init__(self) -> None:
         self.cosmos_ok = False
         self.rabbitmq_connected = False
         self.status_blob_ok = False
-        # Phase 2 does not probe Azure Queue; keep conservatively false.
+        # Queue health is false until a successful production receive.
         self.azure_queue_ok = False
 
     def set_cosmos_ok(self, ok: bool) -> None:
         self.cosmos_ok = ok
+
+    def set_azure_queue_ok(self, ok: bool) -> None:
+        self.azure_queue_ok = ok
 
 
 class _GatewayView:
@@ -108,6 +128,8 @@ class BotApplication:
         *,
         guild_service: GuildService | None = None,
         status_service: StatusServiceProto | None = None,
+        suggestion_service: SuggestionServiceProto | None = None,
+        l10n: LocalizationHandler | None = None,
         bot_factory: Callable[[], CombatBot] | None = None,
         token: str | None = None,
         mqtt_transport: BotPahoMqttTransport | None = None,
@@ -118,19 +140,25 @@ class BotApplication:
         development_guild_id: str | None = None,
         expected_application_id: str | None = None,
         enable_suggestion_queue: bool = True,
+        suggestion_queue_client: Any | None = None,
+        suggestion_queue_name: str | None = None,
     ) -> None:
         self.settings = settings
         self._guild_service = guild_service
         self._status_service = status_service
+        self._suggestion_service = suggestion_service
+        self.l10n = l10n
         self._bot_factory = bot_factory or create_bot
         self._token = token or settings.discord_bot_token.get_secret_value()
         self.runtime_mode = RuntimeMode(runtime_mode)
         self.development_guild_id = development_guild_id
         self.expected_application_id = expected_application_id
-        # Development suppresses Azure Queue / DM poller (not implemented yet).
+        # Development suppresses Azure Queue / DM poller and sweep.
         self.enable_suggestion_queue = (
             enable_suggestion_queue and self.runtime_mode is RuntimeMode.production
         )
+        self._suggestion_queue_client = suggestion_queue_client
+        self._suggestion_queue_name = suggestion_queue_name
         self.health = DependencyHealth()
         self._client: CombatBot | None = None
         self._client_task: asyncio.Task[None] | None = None
@@ -141,6 +169,10 @@ class BotApplication:
         self._enable_mqtt = enable_mqtt
         self._enable_transport = enable_transport
         self._tick_task: asyncio.Task[None] | None = None
+        self.accepting_suggestion_claims = False
+        self.suggestion_delivery: NotificationDeliveryService | None = None
+        self.suggestion_queue_poller: SuggestionQueuePoller | None = None
+        self.suggestion_sweep: NotificationSweepService | None = None
 
         self.tracker = TaskTracker(
             stall_timeout_sec=settings.ai_task_stall_timeout_sec,
@@ -195,6 +227,34 @@ class BotApplication:
             health=self.health,
             gateway=_GatewayView(self),
         )
+        self._wire_lifecycle_suggestion_hooks()
+
+    def _wire_lifecycle_suggestion_hooks(self) -> None:
+        original_activate = self.lifecycle.on_activate
+        original_soft = self.lifecycle.on_soft_stop
+        original_hard = self.lifecycle.on_hard_stop
+
+        async def _activate() -> None:
+            await original_activate()
+            # Restart delivery after soft-stop when Gateway is already up.
+            await self._start_suggestion_delivery()
+
+        async def _soft_stop() -> None:
+            self.accepting_suggestion_claims = False
+            await self._stop_suggestion_delivery()
+            await original_soft()
+
+        async def _hard_stop() -> None:
+            self.accepting_suggestion_claims = False
+            await self._stop_suggestion_delivery()
+            await original_hard()
+
+        self.lifecycle.on_activate = _activate  # type: ignore[method-assign]
+        self.lifecycle.on_soft_stop = _soft_stop  # type: ignore[method-assign]
+        self.lifecycle.on_hard_stop = _hard_stop  # type: ignore[method-assign]
+        self.control.on_activate = _activate
+        self.control.on_soft_stop = _soft_stop
+        self.control.on_hard_stop = _hard_stop
 
     @property
     def started(self) -> bool:
@@ -229,6 +289,7 @@ class BotApplication:
     async def authorize_gateway(self) -> None:
         """Create a fresh discord.py client and connect (one activation)."""
         if self._client_task is not None:
+            await self._start_suggestion_delivery()
             return
         self._gateway_authorized = True
         self._client = self._bot_factory()
@@ -249,10 +310,13 @@ class BotApplication:
         await asyncio.sleep(0)
         if self._guild_sync is not None and self._client is not None:
             self._guild_sync.start(self._client)
+        await self._start_suggestion_delivery()
 
     async def revoke_gateway(self) -> None:
         """Close and discard the current client instance."""
         self._gateway_authorized = False
+        self.accepting_suggestion_claims = False
+        await self._stop_suggestion_delivery()
         if self._guild_sync is not None:
             await self._guild_sync.stop()
             self._guild_sync = None
@@ -264,6 +328,66 @@ class BotApplication:
             with suppress(asyncio.CancelledError):
                 await self._client_task
             self._client_task = None
+
+    async def _start_suggestion_delivery(self) -> None:
+        if not self.enable_suggestion_queue:
+            return
+        if self._suggestion_service is None or self.l10n is None:
+            logger.warning("suggestion delivery not started: missing repository or l10n")
+            return
+        if self._suggestion_queue_client is None or not self._suggestion_queue_name:
+            logger.warning("suggestion delivery not started: missing queue client")
+            return
+        if self.suggestion_delivery is not None:
+            self.accepting_suggestion_claims = True
+            if self.suggestion_queue_poller is not None:
+                self.suggestion_queue_poller.start()
+            if self.suggestion_sweep is not None:
+                self.suggestion_sweep.start()
+            return
+
+        self.suggestion_delivery = NotificationDeliveryService(
+            repository=self._suggestion_service,  # type: ignore[arg-type]
+            l10n=self.l10n,
+            node_id=self.settings.node_id,
+            max_attempts=self.settings.suggestion_max_dm_attempts,
+            client_provider=lambda: self._client,
+            accepting_claims=lambda: self.accepting_suggestion_claims,
+        )
+        self.suggestion_queue_poller = SuggestionQueuePoller(
+            queue_client=self._suggestion_queue_client,
+            queue_name=self._suggestion_queue_name,
+            delivery=self.suggestion_delivery,
+            health=self.health,
+            poll_interval_sec=self.settings.queue_poll_interval_sec,
+            accepting=lambda: self.accepting_suggestion_claims,
+        )
+        self.suggestion_sweep = NotificationSweepService(
+            repository=self._suggestion_service,  # type: ignore[arg-type]
+            delivery=self.suggestion_delivery,
+            sweep_interval_sec=self.settings.suggestion_sweep_interval_sec,
+            min_age_sec=self.settings.suggestion_sweep_min_age_sec,
+            claim_timeout_sec=self.settings.suggestion_claim_timeout_sec,
+            accepting=lambda: self.accepting_suggestion_claims,
+            utcnow=lambda: datetime.now(tz=UTC),
+        )
+        self.accepting_suggestion_claims = True
+        self.suggestion_queue_poller.start()
+        self.suggestion_sweep.start()
+        logger.info("suggestion queue poller and sweep started")
+
+    async def _stop_suggestion_delivery(self) -> None:
+        self.accepting_suggestion_claims = False
+        if self.suggestion_queue_poller is not None:
+            await self.suggestion_queue_poller.stop()
+        if self.suggestion_sweep is not None:
+            await self.suggestion_sweep.stop()
+        # Allow an already-started DM/claim transition a short bounded wait.
+        if self.suggestion_delivery is not None and self.suggestion_delivery.in_flight:
+            for _ in range(10):
+                if self.suggestion_delivery.in_flight <= 0:
+                    break
+                await asyncio.sleep(0.05)
 
     async def dispatch_environment(
         self,

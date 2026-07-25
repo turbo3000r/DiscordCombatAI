@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import builtins
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import uuid4
 
@@ -8,12 +11,19 @@ from pydantic import ValidationError
 from shared.azure._helpers import utc_now
 from shared.azure.clients.cosmos import CosmosClient
 from shared.azure.clients.queue import QueueClient
-from shared.azure.errors import AzurePermanentError
+from shared.azure.errors import AzurePermanentError, AzureTransientError, classify_azure_error
 from shared.models import SuggestionDocument, SuggestionQueueMessage
+from shared.models.suggestion import generate_ticket_uid
 from shared.security.redact import redact_sensitive
 from shared.utils.retry import RetryCategory, retry_async
 
-PatchOperations = list[dict[str, Any]]
+PatchOperations = builtins.list[dict[str, Any]]
+
+
+@dataclass(frozen=True, slots=True)
+class SuggestionRecord:
+    document: SuggestionDocument
+    etag: str
 
 
 class SuggestionService:
@@ -40,15 +50,25 @@ class SuggestionService:
             raise AzurePermanentError("unsupported suggestion schema_version")
         return model
 
+    def _record(self, document: dict[str, Any]) -> SuggestionRecord:
+        return SuggestionRecord(
+            document=self._validate(document),
+            etag=str(document.get("_etag", "")),
+        )
+
+    def _safe_validate(self, document: dict[str, Any]) -> SuggestionDocument | None:
+        try:
+            return self._validate(document)
+        except AzurePermanentError:
+            return None
+
     async def create(self, payload: dict[str, Any]) -> SuggestionDocument:
         now = utc_now()
-        ticket_id = str(uuid4())
-        ticket_uid = f"SUG-{ticket_id.replace('-', '')[:8].upper()}"
         data = dict(payload)
         conversation = data.pop("conversation", [])
+        ticket_id = str(data.pop("id", None) or uuid4())
+        ticket_uid = str(data.pop("ticket_uid", None) or generate_ticket_uid())
         data.pop("schema_version", None)
-        data.pop("id", None)
-        data.pop("ticket_uid", None)
         data.pop("created_at", None)
         data.pop("updated_at", None)
         document = SuggestionDocument(
@@ -59,9 +79,20 @@ class SuggestionService:
             conversation=conversation,
             **data,
         )
-        saved = self._validate(
-            await self.cosmos_client.upsert(self.container_name, document.model_dump(mode="python"))
-        )
+        try:
+            saved_raw = await self.cosmos_client.create_item(
+                self.container_name, document.model_dump(mode="python")
+            )
+        except Exception as exc:
+            classified = classify_azure_error(exc, operation="suggestion.create")
+            if classified.status_code == 409 or "conflict" in str(classified).lower():
+                raise AzurePermanentError(
+                    "suggestion already exists",
+                    operation="suggestion.create",
+                    status_code=409,
+                ) from exc
+            raise classified from exc
+        saved = self._validate(saved_raw)
         if saved.notification_status == "pending":
             await self.enqueue(saved)
         return saved
@@ -70,19 +101,64 @@ class SuggestionService:
         document = await self.cosmos_client.point_read(self.container_name, suggestion_id, guild_id)
         return self._validate(document)
 
-    async def list(self, guild_id: str) -> list[SuggestionDocument]:
+    async def get_with_etag(self, guild_id: str, suggestion_id: str) -> SuggestionRecord:
+        document = await self.cosmos_client.point_read(self.container_name, suggestion_id, guild_id)
+        return self._record(document)
+
+    async def get_by_id(self, suggestion_id: str) -> SuggestionRecord:
+        query = "SELECT * FROM c WHERE c.id = @id"
+        documents = await self.cosmos_client.query(
+            self.container_name, query, [{"name": "@id", "value": suggestion_id}]
+        )
+        for document in documents:
+            record = self._safe_validate(document)
+            if record is not None:
+                return SuggestionRecord(document=record, etag=str(document.get("_etag", "")))
+        raise AzurePermanentError("suggestion not found", status_code=404)
+
+    async def list(self, guild_id: str) -> builtins.list[SuggestionDocument]:
         query = "SELECT * FROM c WHERE c.guild_id = @guild_id"
         documents = await self.cosmos_client.query(
             self.container_name, query, [{"name": "@guild_id", "value": guild_id}]
         )
-        return [self._validate(document) for document in documents]
+        results: builtins.list[SuggestionDocument] = []
+        for document in documents:
+            model = self._safe_validate(document)
+            if model is not None:
+                results.append(model)
+        return results
 
-    async def update(self, payload: dict[str, Any]) -> SuggestionDocument:
-        document = self._validate(payload)
-        saved = await self.cosmos_client.upsert(
-            self.container_name, document.model_dump(mode="python")
-        )
-        return self._validate(saved)
+    async def list_all(self) -> builtins.list[SuggestionDocument]:
+        documents = await self.cosmos_client.query(self.container_name, "SELECT * FROM c")
+        results: builtins.list[SuggestionDocument] = []
+        for document in documents:
+            model = self._safe_validate(document)
+            if model is not None:
+                results.append(model)
+        return results
+
+    async def patch_respond(
+        self,
+        guild_id: str,
+        suggestion_id: str,
+        *,
+        etag: str,
+        operations: PatchOperations,
+    ) -> SuggestionRecord:
+        try:
+            saved = await self.cosmos_client.patch_if_match(
+                self.container_name, suggestion_id, guild_id, operations, etag=etag
+            )
+        except Exception as exc:
+            classified = classify_azure_error(exc, operation="suggestion.patch_respond")
+            if classified.status_code == 412:
+                raise AzureTransientError(
+                    "suggestion etag conflict",
+                    operation="suggestion.patch_respond",
+                    status_code=412,
+                ) from exc
+            raise classified from exc
+        return self._record(saved)
 
     async def delete(self, guild_id: str, suggestion_id: str) -> None:
         container = (
@@ -114,15 +190,21 @@ class SuggestionService:
             if current.status != "done" or current.notification_status != "pending":
                 return None
             etag = str(current_raw.get("_etag", ""))
-            operations: list[dict[str, Any]] = [
+            operations: builtins.list[dict[str, Any]] = [
                 {"op": "set", "path": "/notification_status", "value": "claiming"},
                 {"op": "set", "path": "/notification_claimed_at", "value": utc_now()},
                 {"op": "set", "path": "/notification_claimed_by", "value": claimed_by},
                 {"op": "set", "path": "/updated_at", "value": utc_now()},
             ]
-            saved = await self.cosmos_client.patch_if_match(
-                self.container_name, suggestion_id, guild_id, operations, etag=etag
-            )
+            try:
+                saved = await self.cosmos_client.patch_if_match(
+                    self.container_name, suggestion_id, guild_id, operations, etag=etag
+                )
+            except Exception as exc:
+                classified = classify_azure_error(exc, operation="suggestion.claim")
+                if classified.status_code == 412:
+                    return None
+                raise classified from exc
             return self._validate(saved)
 
         return await retry_async(_claim, category=RetryCategory.ETag_RMW)
@@ -136,6 +218,9 @@ class SuggestionService:
             claimed_by=claimed_by,
             operations=[
                 {"op": "set", "path": "/notification_status", "value": "sent"},
+                {"op": "set", "path": "/notification_claimed_at", "value": None},
+                {"op": "set", "path": "/notification_claimed_by", "value": None},
+                {"op": "set", "path": "/notification_last_error", "value": None},
                 {"op": "set", "path": "/updated_at", "value": utc_now()},
             ],
         )
@@ -166,9 +251,83 @@ class SuggestionService:
                     "path": "/notification_status",
                     "value": "pending" if requeue else "failed",
                 },
+                {"op": "set", "path": "/notification_claimed_at", "value": None},
+                {"op": "set", "path": "/notification_claimed_by", "value": None},
                 {"op": "set", "path": "/updated_at", "value": utc_now()},
             ],
         )
+
+    async def list_pending_for_sweep(
+        self, *, min_age_sec: float, now: datetime | None = None
+    ) -> builtins.list[SuggestionRecord]:
+        cutoff = (now or datetime.now(UTC)) - timedelta(seconds=min_age_sec)
+        cutoff_iso = cutoff.astimezone(UTC).isoformat().replace("+00:00", "Z")
+        query = (
+            "SELECT * FROM c WHERE c.notification_status = @status "
+            "AND c.updated_at <= @cutoff"
+        )
+        documents = await self.cosmos_client.query(
+            self.container_name,
+            query,
+            [
+                {"name": "@status", "value": "pending"},
+                {"name": "@cutoff", "value": cutoff_iso},
+            ],
+        )
+        results: builtins.list[SuggestionRecord] = []
+        for document in documents:
+            model = self._safe_validate(document)
+            if model is not None:
+                results.append(
+                    SuggestionRecord(document=model, etag=str(document.get("_etag", "")))
+                )
+        return results
+
+    async def list_expired_claims(
+        self, *, claim_timeout_sec: float, now: datetime | None = None
+    ) -> builtins.list[SuggestionRecord]:
+        cutoff = (now or datetime.now(UTC)) - timedelta(seconds=claim_timeout_sec)
+        cutoff_iso = cutoff.astimezone(UTC).isoformat().replace("+00:00", "Z")
+        query = (
+            "SELECT * FROM c WHERE c.notification_status = @status "
+            "AND c.notification_claimed_at <= @cutoff"
+        )
+        documents = await self.cosmos_client.query(
+            self.container_name,
+            query,
+            [
+                {"name": "@status", "value": "claiming"},
+                {"name": "@cutoff", "value": cutoff_iso},
+            ],
+        )
+        results: builtins.list[SuggestionRecord] = []
+        for document in documents:
+            model = self._safe_validate(document)
+            if model is not None:
+                results.append(
+                    SuggestionRecord(document=model, etag=str(document.get("_etag", "")))
+                )
+        return results
+
+    async def reset_expired_claim(
+        self, guild_id: str, suggestion_id: str, *, etag: str
+    ) -> SuggestionDocument | None:
+        operations: PatchOperations = [
+            {"op": "set", "path": "/notification_status", "value": "pending"},
+            {"op": "set", "path": "/notification_claimed_at", "value": None},
+            {"op": "set", "path": "/notification_claimed_by", "value": None},
+            {"op": "set", "path": "/updated_at", "value": utc_now()},
+        ]
+        try:
+            saved = await self.cosmos_client.patch_if_match(
+                self.container_name, suggestion_id, guild_id, operations, etag=etag
+            )
+        except Exception as exc:
+            classified = classify_azure_error(exc, operation="suggestion.reset_claim")
+            if classified.status_code == 412:
+                return None
+            raise classified from exc
+        return self._validate(saved)
 
     async def _patch_notification(
         self,
@@ -194,3 +353,6 @@ class SuggestionService:
             return self._validate(saved)
 
         return await retry_async(_mutate, category=RetryCategory.ETag_RMW)
+
+
+__all__ = ["SuggestionRecord", "SuggestionService"]

@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import builtins
+from datetime import datetime
 from typing import Any, Protocol
 
+from shared.azure.services.suggestions import SuggestionRecord
 from shared.models.guild_config import GuildConfigDocument
 from shared.models.status_document import StatusDocument
 from shared.models.suggestion import SuggestionDocument
@@ -41,11 +44,56 @@ class SuggestionRepository(Protocol):
 
     async def get(self, guild_id: str, suggestion_id: str) -> SuggestionDocument: ...
 
-    async def list(self, guild_id: str) -> list[SuggestionDocument]: ...
+    async def get_with_etag(self, guild_id: str, suggestion_id: str) -> SuggestionRecord: ...
 
-    async def update(self, payload: dict[str, Any]) -> SuggestionDocument: ...
+    async def get_by_id(self, suggestion_id: str) -> SuggestionRecord: ...
+
+    async def list(self, guild_id: str) -> builtins.list[SuggestionDocument]: ...
+
+    async def list_all(self) -> builtins.list[SuggestionDocument]: ...
+
+    async def patch_respond(
+        self,
+        guild_id: str,
+        suggestion_id: str,
+        *,
+        etag: str,
+        operations: builtins.list[dict[str, Any]],
+    ) -> SuggestionRecord: ...
 
     async def delete(self, guild_id: str, suggestion_id: str) -> None: ...
+
+    async def enqueue(self, document: SuggestionDocument) -> None: ...
+
+    async def claim_pending(
+        self, guild_id: str, suggestion_id: str, claimed_by: str
+    ) -> SuggestionDocument | None: ...
+
+    async def mark_sent(
+        self, guild_id: str, suggestion_id: str, *, claimed_by: str
+    ) -> SuggestionDocument: ...
+
+    async def mark_failed(
+        self,
+        guild_id: str,
+        suggestion_id: str,
+        error: str,
+        *,
+        claimed_by: str,
+        requeue: bool,
+    ) -> SuggestionDocument: ...
+
+    async def list_pending_for_sweep(
+        self, *, min_age_sec: float, now: datetime | None = None
+    ) -> builtins.list[SuggestionRecord]: ...
+
+    async def list_expired_claims(
+        self, *, claim_timeout_sec: float, now: datetime | None = None
+    ) -> builtins.list[SuggestionRecord]: ...
+
+    async def reset_expired_claim(
+        self, guild_id: str, suggestion_id: str, *, etag: str
+    ) -> SuggestionDocument | None: ...
 
 
 class StatusRepository(Protocol):

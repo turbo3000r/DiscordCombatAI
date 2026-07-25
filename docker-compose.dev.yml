@@ -91,5 +91,39 @@ services:
       retries: 8
       start_period: 15s
 
+  web:
+    profiles: [application, development]
+    build:
+      context: .
+      dockerfile: src/web/Dockerfile
+    restart: unless-stopped
+    depends_on:
+      dev-support:
+        condition: service_healthy
+    environment:
+      DCA_RUNTIME_MODE: development
+      DEV_COMPOSE_OVERLAY_ACTIVE: "true"
+      DEV_SUPPORT_URL: http://dev-support:8080
+      DISCORD_DEVELOPMENT_GUILD_ID: ${DISCORD_DEVELOPMENT_GUILD_ID:?set DISCORD_DEVELOPMENT_GUILD_ID}
+      WEB_LOCAL_ADMIN_OID: ${WEB_LOCAL_ADMIN_OID:-local-dev-admin}
+      WEB_PORT: "8080"
+      # Clear Azure/Entra markers for development.
+      AZURE_TENANT_ID: ""
+      WEB_AZURE_CLIENT_ID: ""
+      WEB_AZURE_CLIENT_SECRET: ""
+      AZURE_COSMOS_ENDPOINT: ""
+      AZURE_STORAGE_ACCOUNT_NAME: ""
+      WEB_ENTRA_TENANT_ID: ""
+      WEB_ENTRA_CLIENT_ID: ""
+      WEB_ENTRA_API_AUDIENCE: ""
+      WEB_ENTRA_ADMIN_GROUP_ID: ""
+    ports:
+      - "127.0.0.1:8088:8080"
+    networks:
+      - dca-internal
+    volumes:
+      - ./src:/app/src
+
 volumes:
   dev-support-data:
+

@@ -1,0 +1,62 @@
+{
+  "errors": {
+    "denied_permission": "No tienes permiso para usar este comando.",
+    "denied_guild": "Este comando solo se puede usar dentro de un servidor.",
+    "denied_drain": "El bot no está disponible temporalmente durante una actualización. Inténtalo más tarde.",
+    "denied_runtime_filter": "Este comando no está disponible en este servidor.",
+    "denied_enabled": "La IA no está habilitada o configurada en este servidor. Un administrador debe usar /config primero.",
+    "denied_development_dm": "Este comando no se puede usar en mensajes directos en desarrollo.",
+    "error_transient": "Ocurrió un error temporal. Inténtalo de nuevo en breve.",
+    "error_permanent": "No se pudo completar esta operación. Contacta a un operador.",
+    "error_unexpected": "Algo salió mal. Inténtalo de nuevo más tarde.",
+    "foreign_user": "Solo el usuario que abrió este panel puede usar estos controles."
+  },
+  "commands": {
+    "config": {
+      "description": "Configurar el bot para este servidor",
+      "permission_denied": "Se requiere permiso de administrador para usar /config.",
+      "cosmos_transient": "No se pudo acceder al almacenamiento de configuración. Inténtalo de nuevo en breve.",
+      "cosmos_permanent": "El almacenamiento de configuración rechazó esta solicitud. Contacta a un operador.",
+      "listing_failure": "No se pudieron listar los modelos disponibles para la clave API preparada.",
+      "truncation_notice": "Mostrando {shown} de {total} modelos (límite de Discord).",
+      "apply_applied": "Aplicado: {fields}",
+      "apply_rejected": "No aplicado: {fields}",
+      "invalid_webhook": "La URL del webhook no es válida o no está permitida.",
+      "invalid_key": "Google rechazó la clave API.",
+      "unavailable_model": "El modelo seleccionado no está disponible para esta clave.",
+      "rate_limit": "Google limitó la tasa de solicitudes. Inténtalo más tarde.",
+      "transient_service": "El servicio de Google no está disponible temporalmente. Inténtalo más tarde.",
+      "enabled_gate_warning": "La IA permanece deshabilitada hasta que la clave API y el modelo sean válidos.",
+      "timeout": "La sesión de configuración expiró. Se descartaron los cambios no aplicados.",
+      "cancelled": "Configuración cancelada. Se descartaron los cambios no aplicados.",
+      "apply_button": "Aplicar",
+      "cancel_button": "Cancelar",
+      "language_label": "Idioma",
+      "api_key_label": "Clave API",
+      "model_label": "Modelo",
+      "webhook_label": "Webhook",
+      "api_key_configured": "Configurada",
+      "api_key_staged": "Preparada (oculta)",
+      "api_key_missing": "No configurada",
+      "webhook_configured": "Configurado",
+      "webhook_missing": "No configurado",
+      "enabled_label": "IA habilitada"
+    },
+    "suggest": {
+      "description": "Sugerir una función o reportar un error",
+      "catalog_unavailable": "Las categorías de sugerencias no están disponibles temporalmente. Inténtalo más tarde.",
+      "validation_error": "Selecciona un tipo válido y al menos una categoría.",
+      "write_transient": "No se pudo guardar tu sugerencia ahora. Inténtalo de nuevo en breve.",
+      "write_permanent": "No se pudo guardar tu sugerencia. Contacta a un operador.",
+      "success": "¡Gracias! Tu ticket de sugerencia es {ticket_uid}.",
+      "development_dm_rejected": "No se pueden enviar sugerencias por MD en desarrollo.",
+      "timeout": "La sesión de sugerencia expiró.",
+      "open_modal": "Escribir sugerencia",
+      "notification_dm": "Respuesta a tu sugerencia ({ticket_uid}):\n{response}",
+      "prompt": "Selecciona un tipo y una o más categorías, luego abre el formulario.",
+      "modal_title": "Comparte tu sugerencia",
+      "title_label": "Título",
+      "details_label": "Detalles"
+    }
+  }
+}

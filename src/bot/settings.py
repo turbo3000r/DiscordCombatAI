@@ -52,6 +52,11 @@ class BotSettings(BaseSettings):
     shutdown_grace_sec: float = Field(default=30, gt=0)
     control_drain_timeout_sec: float = Field(default=45, gt=0)
     activation_grant_max_ttl_sec: int = Field(default=60, gt=0)
+    queue_poll_interval_sec: float = Field(default=300, gt=0)
+    suggestion_sweep_interval_sec: float = Field(default=900, gt=0)
+    suggestion_sweep_min_age_sec: float = Field(default=600, gt=0)
+    suggestion_max_dm_attempts: int = Field(default=5, gt=0)
+    suggestion_claim_timeout_sec: float = Field(default=120, gt=0)
 
     @model_validator(mode="after")
     def _validate_node_identity_and_timers(self) -> BotSettings:
@@ -62,6 +67,8 @@ class BotSettings(BaseSettings):
             )
         if self.ai_task_stall_timeout_sec >= self.ai_task_timeout_sec:
             raise ValueError("stall timeout must be below overall AI task timeout")
+        if self.suggestion_claim_timeout_sec <= 60:
+            raise ValueError("suggestion claim timeout must exceed queue visibility (60s)")
         return self
 
     def broker_url(self) -> str:

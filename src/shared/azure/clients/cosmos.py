@@ -79,6 +79,30 @@ class CosmosClient:
 
         return await _patch()
 
+    async def create_item(self, container_name: str, document: dict[str, Any]) -> dict[str, Any]:
+        async def _create() -> dict[str, Any]:
+            container = self._container(container_name)
+            try:
+                result = container.create_item(document)
+                return await maybe_await(result)
+            except Exception as exc:
+                from shared.azure.errors import classify_azure_error
+
+                classified = classify_azure_error(exc, operation="cosmos.create_item")
+                status = classified.status_code
+                text = str(classified).lower()
+                if status == 409 or "conflict" in text or "already exists" in text:
+                    from shared.azure.errors import AzurePermanentError
+
+                    raise AzurePermanentError(
+                        "document already exists",
+                        operation="cosmos.create_item",
+                        status_code=409,
+                    ) from exc
+                raise classified from exc
+
+        return await _create()
+
     async def upsert(self, container_name: str, document: dict[str, Any]) -> dict[str, Any]:
         async def _upsert() -> dict[str, Any]:
             container = self._container(container_name)
