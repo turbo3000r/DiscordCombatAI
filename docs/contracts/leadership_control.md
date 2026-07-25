@@ -12,6 +12,8 @@ Azure Blob Lease is the authority used by `Head` to claim leadership. The grant 
 
 This design is **best-effort fencing, not a proof of strict at-most-one Gateway connection**. Network partitions, delayed failure detection, a final draining interval, or a failed stop acknowledgement can produce bounded dual-active overlap. The owner accepts that availability/safety limitation. Implementations must apply all safeguards below, but documentation and tests must not claim a universal at-most-one guarantee.
 
+**Product development:** grant *message shape* and Bot acceptance rules in this contract still apply, but the publisher is Compose-only `dev-support` (not Head/Blob Lease). Head is absent from the development stack. That mode does not validate lease theft, PubSub `cluster` membership, or multi-node failover — see `contracts/local_development.md` and S14. Production Heads must never share a lease blob with a development process.
+
 ---
 
 ## 2. Terms and Ordering

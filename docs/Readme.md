@@ -75,7 +75,9 @@ docs/
 │   ├── battle_archive.md     # Battle story Blob archive (P0.5.4)
 │   ├── log_archive.md        # Structured log format + Blob append archive (P0.5.6)
 │   ├── pubsub_live.md        # dashboard-live group, negotiate, always-stream, Free_F1 (P0.6)
-│   └── web_auth.md           # Entra ID Web admin auth boundary (P0.7)
+│   ├── web_auth.md           # Entra ID Web admin auth boundary (P0.7)
+│   └── local_development.md  # Product-dev mode: Discord guild isolation, domain providers,
+│                              # Compose-only dev-support, local Web admin (not Azure emulation)
 │
 └── scenarios/                 # End-to-end architecture acceptance cases (P0.8)
                                 # that cross multiple services. Link into contracts/
@@ -93,7 +95,8 @@ docs/
     ├── 10_bot_or_ai_worker_restart_mid_task.md
     ├── 11_quick_battle_success_abort_timeout.md
     ├── 12_suggestion_duplicate_or_lost_queue.md
-    └── 13_web_auth_and_all_guild_broadcast.md
+    ├── 13_web_auth_and_all_guild_broadcast.md
+    └── 14_local_development_isolation.md  # Product-dev isolation (not Azure failover fidelity)
 ```
 
 ---
@@ -126,10 +129,12 @@ docs/
 | Operational log line format + Blob append archive | `contracts/log_archive.md` |
 | Live dashboard PubSub groups, negotiate, always-stream budget | `contracts/pubsub_live.md` |
 | Web admin authentication (Entra ID, Bearer JWT, admin group, webhook SSRF/audit) | `contracts/web_auth.md` |
+| Local product development (dev Discord app + guild, domain providers, `dev-support`, local Web admin) | `contracts/local_development.md` — **not** Azure protocol emulation; **not** a substitute for S01–S10 |
 | Where a guild's language/locale setting comes from, and what it drives (Bot UI vs. AI-generated content) | `contracts/localization.md` |
 | The exact Cosmos DB document schema for a guild's config (admin-set fields + Discord-sourced metadata), and who writes which field | `contracts/guild_config.md` |
 | The exact format of a message passed between two services | `contracts/` — check first; remaining gaps are tracked in `to_resolve.md` |
 | A full request flow spanning multiple services (architecture acceptance cases) | `scenarios/` — index in `scenarios/Readme.md` |
+| Whether a change is product-dev isolation vs production Azure acceptance | Product UI/commands → `local_development.md` + S14; leadership/failover/outage → S01–S10 / S12–S13 |
 
 
 ---
@@ -141,7 +146,8 @@ docs/
 - `containers/ai_worker/graphs/template.md` defines an analogous but distinct schema for documenting a single LangGraph graph (state, nodes, control flow, diagram) — it is not the service template. Don't reuse `containers/template.md` for a graph doc, and don't invent a third structure; follow `graphs/template.md`.
 - `bot/` is intentionally more granular than other containers because it is the largest and most user-facing service. New slash commands get their own file under `bot/commands/`, not a section inside `discord_bot.md`.
 - **`web/` follows the exact same granularity pattern as `bot/`, deliberately.** `web.md` = container-level (build/deploy, frontend↔backend integration model, Azure deps — the 12-section schema), `components.md` = shared frontend UI pieces reused across ≥2 pages (the `visuals.md` equivalent), `pages/*.md` = one file per dashboard page, pairing that page's UI with the specific backend endpoints it owns (the `commands/*.md` equivalent — a page's endpoints live with its own doc, not in a separate all-routes file). New dashboard pages get their own file under `pages/`, following `pages/template.md`, not a section inside `web.md`.
-- **`Web` is a single container**, not a frontend/backend pair — one Dockerfile, one multi-stage build (compile the React frontend, then serve it from the same FastAPI process that serves the API). "Standalone" for `Web` means decoupled from the local Docker Compose cluster (no `Bot`/`Head`/`RabbitMQ`/`Mosquitto` access, per `architecture.md`), not frontend deployed separately from backend — see `web.md` §1/§2 for the reasoning.
+- **`Web` is a single container**, not a frontend/backend pair — one Dockerfile, one multi-stage build (compile the React frontend, then serve it from the same FastAPI process that serves the API). In **production**, "standalone" means decoupled from the local Docker Compose cluster (no `Bot`/`Head`/`RabbitMQ`/`Mosquitto` access, per `architecture.md`) — not frontend deployed separately from backend — see `web.md` §1/§2. In **product-development mode**, Web is Compose-included and talks to `dev-support` instead of Azure (`contracts/local_development.md`); that is an explicit exception, not a rewrite of production topology.
+- **`docker-compose.dev.yml` is not data-plane isolation by itself.** It is the explicit opt-in overlay for mounts/ports and development services. Safe local Discord UI/command testing requires `DCA_RUNTIME_MODE=development`, a separate Discord application, `DISCORD_DEVELOPMENT_GUILD_ID`, and local domain providers — canonical in `contracts/local_development.md`. Do not point a laptop Bot/Web at production Azure “with a guild filter.”
 - ~~Several `web/pages/*.md` docs depend on decisions that belong to `bot/discord_bot.md`, which is still an unwritten stub~~ — **resolved: `bot/discord_bot.md` is now drafted.** Guild metadata for the Guilds page, bot status/latency for the Dashboard page, and bot identity for the Home page (`version` excluded, see below) are all resolved from `Bot`'s side now — `web.md` §6.2 and each affected page's own §9/§10 were revisited and updated in the same pass, not left as stale "open item" notes.
 - **Implementation-readiness pass (this revision) — six confirmed corrections, all project owner:**
   - **Leader election is now a real mutex, not an assumption.** Azure Web PubSub group membership is additive, not exclusive (confirmed against Microsoft's own documentation) — the previous "only one join durably persists" claim in `head.md`/`architecture.md` was factually wrong, not just an accepted edge case. An **Azure Blob Lease** is now the actual mutual-exclusion primitive; Web PubSub is repurposed as a cheap, always-joined, push-based broadcast (leader heartbeat + update-available), keeping request volume unchanged from before. See `architecture.md`'s High-Level Architecture note and `head.md` §3/§6/§9.
@@ -173,4 +179,5 @@ docs/
 - **Phase 0 doc prerequisites (P1.5, P1.7, P1.9, and the P1.3 Azure-client subset) are resolved** — see `to_resolve.md` Resolved decisions. Brokers, shared Azure clients, locale enum/mapping, and guild Patch/soft-delete helpers are implementation-ready; leftover P1.3/P1.1/P1.2/P1.4/P1.6 remain intentionally deferred.
 - **Phase 1 Slice 0 documentation reconciliation is resolved.** `Head` lives at `src/head/`; coordinated tags/version injection, fixed Launcher image mapping, Docker-API-vs-Compose ownership, shared CLI/HTTP coordinator lock, interrupted-operation handling, exact-version liveness verification, one-shot automatic rollback, same-term Blob-renew recovery, and P1.8 heartbeat/buffer/live-cap defaults are canonical in `to_resolve.md`, `contracts/launcher_ipc.md`, `contracts/telemetry.md`, and the linked container/scenario docs. P1.8 is no longer deferred.
 - **Phase 2 documentation is resolved.** Transport shell (`graph="environment"` canned path, no `stub` graph), host `NODE_ID` → `HEAD_NODE_ID`/`BOT_NODE_ID`/`AI_WORKER_NODE_ID`, Celery app `ai_worker.celery_app` + task `ai_worker.tasks.run_graph`, definitions-owned RabbitMQ topology, Bot asyncio vs Celery/MQTT concurrency, Phase 2 Bot scope (no slash commands), and S03/S04/S05/S07/S08/S10 acceptance ownership matrices are canonical in `to_resolve.md` and the linked contracts/container/scenario docs. Project skills: `discord-combat-ai-bot`, `discord-combat-ai-ai-worker`, `discord-combat-ai-web`.
+- **Local product-development architecture is resolved.** Canonical: `contracts/local_development.md` + S14. Separate Discord app, domain providers over `dev-support`, Compose-included Web with local admin; not an Azure emulator and not a substitute for S01–S10.
 

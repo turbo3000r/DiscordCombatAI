@@ -14,6 +14,17 @@
 
 Unauthenticated API → **401**. Authenticated but not in the admin group → **403**.
 
+### 1a. Product-development carve-out
+
+When `DCA_RUNTIME_MODE=development`, this Entra boundary is **not** used. Canonical rules: `contracts/local_development.md` §8:
+
+- Fixed local admin principal (`WEB_LOCAL_ADMIN_OID`, default `local-dev-admin`).
+- No MSAL / no Entra JWT validation / no Entra network calls.
+- Persistent visible DEVELOPMENT banner.
+- Loopback-only bind; production must refuse to start with local-admin auth enabled.
+- Webhook Discord POSTs are dry-run only (still apply allowlist validation to the *would-send* URL for UX parity).
+
+Production Web must never silently fall through to local-admin auth.
 ---
 
 ## 2. Entra App Registration
@@ -189,10 +200,11 @@ Also log the same identity fields at **INFO**. `request_id` ties the audit row t
 
 | Concern | Canonical doc |
 |---|---|
-| Web env + middleware | `containers/web/web.md` §3 / §6.3 |
+| Web env + middleware | `containers/web/web.md` §3 / §6.2 |
 | PubSub negotiate auth | `contracts/pubsub_live.md` §4 |
 | Suggestion audit fields | `contracts/suggestion.md` §2 |
 | Guild webhook redaction / allowlist note | `contracts/guild_config.md` |
 | Webhook page UX / endpoints | `web/pages/webhook.md` |
 | Bot webhook URL validation on save | `bot/commands/config.md` |
+| Product-development local admin / dry-run webhooks | `contracts/local_development.md` §7–§8 |
 | Group-overage Graph fallback | P2 (`to_resolve.md`) |

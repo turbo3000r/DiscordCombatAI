@@ -6,9 +6,11 @@
 
 ## 1. Responsibility
 
-`Web` is the independent admin/monitoring dashboard for the whole system (per `architecture.md`'s Container Breakdown): a FastAPI backend serving a compiled React frontend, packaged as a **single container**, deployed independently of the local Docker Compose node (`architecture.md`: "excluded from `docker-compose.yml` by design").
+`Web` is the independent admin/monitoring dashboard for the whole system (per `architecture.md`'s Container Breakdown): a FastAPI backend serving a compiled React frontend, packaged as a **single container**.
 
-It has **no direct network access** to `Bot`, `Head`, `RabbitMQ`, or `Mosquitto` — every capability it has is mediated entirely through Azure (`Cosmos DB`, `Queue Storage`, `Web PubSub`, `Table Storage`; see §10). This is the literal meaning of "standalone" for this container: it is one deployable unit (frontend + backend together), decoupled from the local cluster's lifecycle, not two independently deployable halves.
+**Production:** deployed independently of the local Docker Compose node (`architecture.md`: "excluded from `docker-compose.yml` by design"). It has **no direct network access** to `Bot`, `Head`, `RabbitMQ`, or `Mosquitto` — every capability it has is mediated entirely through Azure (`Cosmos DB`, `Queue Storage`, `Web PubSub`, `Table Storage`; see §10). This is the literal meaning of "standalone" for this container: it is one deployable unit (frontend + backend together), decoupled from the local cluster's lifecycle, not two independently deployable halves.
+
+**Product development:** Compose-included exception documented in `contracts/local_development.md`. Web uses fixed local-admin auth (no Entra), domain repositories → `dev-support` (no Azure), and a local live feed (no PubSub negotiate). Webhook actions are dry-run only. This does not change production topology.
 
 `Web` gives administrators five things: a live operational snapshot (Dashboard), deep historical performance analysis (Performance), guild visibility (Guilds), a suggestion/ticket review-and-respond workflow (Suggestions), and a way to broadcast announcements/release notes to guild-configured Discord webhooks (Webhook). A sixth, minimal Home page exists as a landing/entry point.
 
@@ -20,7 +22,7 @@ See `architecture.md`'s Project File Structure for the authoritative on-disk tre
 
 - **Single container, single Dockerfile, multi-stage build.** Stage 1 (Node) runs `npm run build` under `frontend/`, producing static assets in `frontend/dist/`. Stage 2 (Python) copies `backend/` plus that `dist/` output, and runs FastAPI/Uvicorn as the only process. There is no separate frontend server, no reverse proxy, and no CORS configuration needed in production — the frontend and API share one origin.
 - **Frontend stack: React + TypeScript + Vite.** This corrects an earlier draft of `architecture.md`'s tree, which sketched plain per-page `.ts` files with no framework (closer to the legacy vanilla-JS dashboard's style). Given the number of interactive, stateful pages (live charts, filterable tables, a multi-action ticket workflow), a component framework was chosen deliberately over continuing that pattern — see `components.md` for how shared UI pieces are organized as a result.
-- **Dev vs. prod frontend serving.** In production, the backend serves the pre-built `dist/`. In `docker-compose.dev.yml`, the frontend can instead run Vite's own dev server (hot module reload) proxying API calls to the backend — this is a local convenience only, never how the shipped image runs.
+- **Dev vs. prod frontend serving.** In production, the backend serves the pre-built `dist/`. In `docker-compose.dev.yml`, the frontend can instead run Vite's own dev server (hot module reload) proxying API calls to the backend — this is a local convenience only, never how the shipped image runs. Product-development **data/auth** mode is separately governed by `contracts/local_development.md` (local admin + `dev-support`); Vite HMR alone is not that mode.
 - **`backend/routes/` maps roughly one file per page** (`dashboard.py`, `guilds.py`, `suggestions.py`, `webhook.py`), matching the legacy router split — see each page's own doc under `pages/` for its exact endpoints.
 
 ---
@@ -29,24 +31,28 @@ See `architecture.md`'s Project File Structure for the authoritative on-disk tre
 
 | Variable | Required | Default | Description |
 |---|---|---|---|
-| `WEB_HOST` | No | `0.0.0.0` | Bind host for the FastAPI/Uvicorn process. |
+| `DCA_RUNTIME_MODE` | Yes | — | `production` \| `development`. Fail-closed. Canonical: `contracts/local_development.md` §3. |
+| `DISCORD_DEVELOPMENT_GUILD_ID` | Yes in development; **also required in production** as the reserved guild id to reject | — | Shared with Bot/`dev-support`. Canonical: `contracts/local_development.md` §3–§4. |
+| `WEB_HOST` | No | `0.0.0.0` production; **must be `127.0.0.1` in development** | Bind host for the FastAPI/Uvicorn process. Development refuses non-loopback binds. |
 | `WEB_PORT` | No | `8000` | Bind port. |
 | `WEB_METRICS_DEFAULT_RANGE_MIN` | No | `1440` | Default look-back window (minutes) for the historical metrics endpoint when a page doesn't specify one (`pages/performance.md` §4). |
-| `WEB_ENTRA_TENANT_ID` | Yes | — | Entra tenant ID for admin login (`contracts/web_auth.md` §3). |
-| `WEB_ENTRA_CLIENT_ID` | Yes | — | SPA / app registration client ID (public; not a secret). |
-| `WEB_ENTRA_API_AUDIENCE` | Yes | — | Expected JWT `aud` (typically `api://{WEB_ENTRA_CLIENT_ID}`). |
-| `WEB_ENTRA_ADMIN_GROUP_ID` | Yes | — | Object ID of the Entra security group authorized as Web admins. |
-| `WEB_ENTRA_AUTHORITY` | No | `https://login.microsoftonline.com/{WEB_ENTRA_TENANT_ID}` | Authority URL override. |
-| `WEB_WEBHOOK_ALL_COOLDOWN_SEC` | No | `60` | Per-admin cooldown between successful ALL-guild webhook broadcasts. |
+| `WEB_ENTRA_TENANT_ID` | Yes in **production** | — | Entra tenant ID for admin login (`contracts/web_auth.md` §3). Absent/unused in development. |
+| `WEB_ENTRA_CLIENT_ID` | Yes in **production** | — | SPA / app registration client ID (public; not a secret). |
+| `WEB_ENTRA_API_AUDIENCE` | Yes in **production** | — | Expected JWT `aud` (typically `api://{WEB_ENTRA_CLIENT_ID}`). |
+| `WEB_ENTRA_ADMIN_GROUP_ID` | Yes in **production** | — | Object ID of the Entra security group authorized as Web admins. |
+| `WEB_ENTRA_AUTHORITY` | No | `https://login.microsoftonline.com/{WEB_ENTRA_TENANT_ID}` | Authority URL override. Production only. |
+| `WEB_LOCAL_ADMIN_OID` | Yes in **development** | `local-dev-admin` | Fixed local admin principal oid. Forbidden in production. |
+| `WEB_WEBHOOK_ALL_COOLDOWN_SEC` | No | `60` | Per-admin cooldown between successful ALL-guild webhook broadcasts (production). Development dry-run may still enforce cooldown for UX realism. |
 | `WEB_WEBHOOK_SELECTED_RATE_PER_MIN` | No | `10` | Per-admin rate limit for SELECTED webhook sends. |
-| `WEB_ADMIN_AUDIT_BLOB_CONTAINER` | No | `admin-audit` | Blob container for durable webhook broadcast audit objects. |
+| `WEB_ADMIN_AUDIT_BLOB_CONTAINER` | No | `admin-audit` | Blob container for durable webhook broadcast audit objects (production). Development may log dry-run audits locally via `dev-support`. |
 
-> **Azure configuration lives in `azure.md`, not here.** Per Section 10, `Web` depends on **Cosmos DB**, **Queue Storage**, **Web PubSub**, **Table Storage**, and **Blob Storage** (status document + admin audit). All Azure **Service Principal** authentication and endpoint variables are defined exactly once in `azure.md` §3 — this table only lists variables owned by `Web` itself. **Human admin auth** (`WEB_ENTRA_*`) is distinct from `WEB_AZURE_CLIENT_*` — see `contracts/web_auth.md` §10.
+> **Azure configuration lives in `azure.md`, not here.** Per Section 10, production `Web` depends on **Cosmos DB**, **Queue Storage**, **Web PubSub**, **Table Storage**, and **Blob Storage** (status document + admin audit). All Azure **Service Principal** authentication and endpoint variables are defined exactly once in `azure.md` §3 — this table only lists variables owned by `Web` itself. **Human admin auth** (`WEB_ENTRA_*`) is distinct from `WEB_AZURE_CLIENT_*` — see `contracts/web_auth.md` §10. Development selects local repositories and **must not** load Azure settings (`contracts/local_development.md`).
 >
-> **Authentication — resolved (P0.7):** Microsoft Entra ID (MSAL.js PKCE + Bearer JWT + admin group). Canonical contract: `contracts/web_auth.md`. All `/api/*` require a valid Bearer and admin-group membership; static SPA shell remains public. Unauthenticated → **401**; authenticated non-admin → **403**.
+> **Authentication — resolved (P0.7) for production:** Microsoft Entra ID (MSAL.js PKCE + Bearer JWT + admin group). Canonical contract: `contracts/web_auth.md`. All `/api/*` require a valid Bearer and admin-group membership; static SPA shell remains public. Unauthenticated → **401**; authenticated non-admin → **403**.
 >
-> **Web PubSub dashboard group — resolved (P0.6):** `HEAD_PUBSUB_DASHBOARD_GROUP` default `dashboard-live` (shared constant with Head; no separate `WEB_*` override required). Negotiate returns join/leave-only tokens for that group only, under the same Entra boundary (`contracts/pubsub_live.md` §4).
-
+> **Authentication — product development:** fixed local admin + visible DEVELOPMENT banner; no Entra. Canonical: `contracts/local_development.md` §8; `web_auth.md` links there rather than duplicating.
+>
+> **Web PubSub dashboard group — resolved (P0.6) for production:** `HEAD_PUBSUB_DASHBOARD_GROUP` default `dashboard-live`. Negotiate returns join/leave-only tokens for that group only, under the same Entra boundary (`contracts/pubsub_live.md` §4). Development replaces negotiate with a local live feed from `dev-support`.
 
 ---
 
@@ -83,26 +89,31 @@ Sending directly to a guild's Discord webhook URL requires no bot token and no g
 
 The backend is not a passive static file host — it serves two genuinely different kinds of traffic on the same origin:
 
-1. **The compiled app shell and assets** (`GET /`, `GET /assets/*`, other non-API SPA routes) — served via FastAPI's `StaticFiles`, **public** so the SPA can load and redirect to Entra login (`contracts/web_auth.md` §5).
-2. **The REST API** (`/api/*`) — one router per page, each documented in its own `pages/*.md`. **All `/api/*` require** a valid Entra Bearer token **and** admin-group membership (§6.2).
+1. **The compiled app shell and assets** (`GET /`, `GET /assets/*`, other non-API SPA routes) — served via FastAPI's `StaticFiles`, **public** so the SPA can load and redirect to Entra login (`contracts/web_auth.md` §5) in production, or show the DEVELOPMENT banner / local-admin entry in development.
+2. **The REST API** (`/api/*`) — one router per page, each documented in its own `pages/*.md`. **Production:** all `/api/*` require a valid Entra Bearer token **and** admin-group membership (§6.2). **Development:** local-admin credential only (`contracts/local_development.md` §8); repositories talk to `dev-support`.
 
-For **live data** (Dashboard's metric graphs and log console), the browser does **not** open a WebSocket to this backend. Instead:
+For **live data** (Dashboard's metric graphs and log console):
 
+**Production:**
 1. The frontend calls `GET /api/pubsub/negotiate` on page mount (with Bearer).
 2. The backend calls `pubsub.py`'s `get_client_access_token` (`azure.md` §5) scoped to `dashboard-live` with **join/leave only** (no send), TTL default 60 minutes, PubSub `user id` = Entra `oid` (`contracts/pubsub_live.md` §4), and returns `{ url, expires_at, group }`.
 3. The **browser** opens a WebSocket **directly to Azure Web PubSub** and joins `dashboard-live`. Leader `Head` always streams while leader — no listener detection. `Web` itself never listens to PubSub.
 
-Historical charts use REST → Table Storage (`contracts/telemetry.md` §3). Reconnect: re-negotiate; use `seq` to drop duplicates; no live backfill.
+**Development:** `GET /api/pubsub/negotiate` is replaced by a local live-feed endpoint backed by `dev-support` (no Azure PubSub). Dashboard/Performance consume that feed. This is not Free_F1 budget validation.
+
+Historical charts use REST → Table Storage in production (`contracts/telemetry.md` §3), or REST → `dev-support` metrics in development. Production reconnect: re-negotiate; use `seq` to drop duplicates; no live backfill.
 
 ### 6.2 Authentication middleware (Entra ID)
 
-Canonical: `contracts/web_auth.md`. Summary for implementers:
+Canonical production: `contracts/web_auth.md`. Summary for implementers:
 
 1. MSAL.js (Authorization Code + PKCE) in the browser; attach `Authorization: Bearer <access_token>` to every `/api/*` call.
 2. FastAPI validates JWT (issuer, audience, JWKS signature, `tid`, `exp`/`nbf`) then requires `WEB_ENTRA_ADMIN_GROUP_ID ∈ token.groups`.
 3. **401** → frontend triggers MSAL login; **403** → “not authorized” page (signed in, not admin).
 4. No cookie session / no BFF / **no CSRF token** for v1 (Bearer-only).
 5. Redact secrets per `web_auth.md` §6; webhook SSRF allowlist + broadcast controls per §7.
+
+**Development carve-out:** Entra middleware is disabled. Fixed local admin (`WEB_LOCAL_ADMIN_OID`) authenticates `/api/*`. Persistent DEVELOPMENT banner required. Webhook POST path becomes dry-run / preview only — no Discord HTTPS egress (`local_development.md` §7–§8). Production must refuse to start if local-admin auth is configured.
 
 ### 6.3 What legacy data this design can and can't reproduce
 
@@ -165,9 +176,10 @@ The legacy dashboard read several fields directly off an in-process `discord.py`
 | Azure Table Storage | Historical metrics (Dashboard/Performance) | See §9; `contracts/telemetry.md`. |
 | Azure Blob Storage | Status document identity/catalog RMW; webhook admin audit blobs | `contracts/status_document.md`; `contracts/web_auth.md` §7. |
 | `azure.md` | Client construction/auth for Azure resources above | Internal documentation dependency, not a runtime one. Distinct from Entra human auth (`contracts/web_auth.md` §10). |
-| Microsoft Entra ID | Human admin login + JWT validation | `contracts/web_auth.md` — required for all `/api/*`. |
-| Discord Webhook URLs (per-guild) | Announcements/updates | External to Azure entirely; allowlisted hosts only — see §9 / `web_auth.md` §7. |
-| **Not a dependency (explicit):** `Bot`, `Head`, `RabbitMQ`, `Mosquitto` | — | Confirmed by design (§1) — this is what "standalone" means for this container. |
+| Microsoft Entra ID | Human admin login + JWT validation (production) | `contracts/web_auth.md` — required for all production `/api/*`. Development uses local admin (`local_development.md` §8). |
+| Discord webhook URLs (per-guild) | Announcements/updates | External to Azure entirely; allowlisted hosts only — see §9 / `web_auth.md` §7. **Development:** dry-run only — no POST egress (`local_development.md` §7). |
+| **Not a dependency (explicit, production):** `Bot`, `Head`, `RabbitMQ`, `Mosquitto` | — | Confirmed by design (§1) — this is what "standalone" means for production Web. |
+| **Development-only:** `dev-support` | Guild/suggestion/status/metrics/live feed | Required when `DCA_RUNTIME_MODE=development`; forbidden in production. |
 
 ---
 
@@ -180,8 +192,9 @@ The legacy dashboard read several fields directly off an in-process `discord.py`
 ## 12. Versioning & Update Behavior
 
 - `Web` shares the coordinated version tag with `Bot`, `Head`, and `AI Worker` (per `Launcher.md` §12) — it does not version independently.
-- **Deployment is not driven by `Launcher`.** Per `architecture.md`, `Web` is excluded from `docker-compose.yml` and deployed independently (its own hosting target, not defined in any doc yet). How a new version of `Web` actually gets rolled out — and whether it needs the same drain/verify/rollback discipline `Launcher` gives the local cluster — is an open item, not addressed by any existing doc.
-- No in-place state to preserve across restarts — `Web` holds no local persistent state of its own (all state lives in Cosmos DB / Table Storage), so a fresh container instance starts cold with no migration concerns.
+- **Production deployment is not driven by `Launcher`.** Per `architecture.md`, production `Web` is excluded from `docker-compose.yml` and deployed independently (its own hosting target, not defined in any doc yet). How a new version of production `Web` actually gets rolled out — and whether it needs the same drain/verify/rollback discipline `Launcher` gives the local cluster — is an open item, not addressed by any existing doc.
+- **Product development** includes Web in the development Compose overlay (`contracts/local_development.md`); that path is for local UI exercise only and is not the production rollout mechanism.
+- **Production** holds no local persistent state of its own (all state lives in Cosmos DB / Table Storage / Blob), so a fresh container instance starts cold with no migration concerns. **Development** reads/writes durable state via `dev-support` SQLite (volume-backed until explicit reset).
 
 ---
 
@@ -198,3 +211,4 @@ The legacy dashboard read several fields directly off an in-process `discord.py`
 - **No health check contract defined** (§11).
 - **`Web`'s own deployment/rollout mechanism** is undefined — it's the one service `Launcher` doesn't manage (§12).
 - **Historical log replay** for the Dashboard console was deliberately deferred rather than designed in, to avoid taking on a Blob Storage log-read dependency before it's justified.
+- **Product-development mode** (Compose-included Web, local admin, `dev-support`, dry-run webhooks, local live feed) is resolved in `contracts/local_development.md` — see §1/§3/§6. Production standalone + Entra + Azure PubSub remain the shipped topology.

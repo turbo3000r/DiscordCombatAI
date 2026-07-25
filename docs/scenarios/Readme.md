@@ -5,6 +5,8 @@
 > Prefer linking to canonical contracts and container docs over inventing new behavior. Where a detail remains a P1 product rule (especially Quick Battle numbers), the scenario stays at architecture level and notes that P1.1 applies.
 >
 > **Phase 2:** S03, S04, S05, S07, S08, and S10 each include a **Phase 2 acceptance ownership** matrix labeling steps `complete`, `integration-only`, or `deferred`. Do not claim Discord slash-command recovery before the command phases.
+>
+> **Product development:** S14 proves local isolation (`contracts/local_development.md`). It is **not** a substitute for Azure coordination scenarios S01–S10 or production suggestion/webhook scenarios S12–S13.
 
 ## Purpose
 
@@ -29,6 +31,7 @@
 | S11 | [11_quick_battle_success_abort_timeout.md](11_quick_battle_success_abort_timeout.md) | Quick Battle success / abort / timeout |
 | S12 | [12_suggestion_duplicate_or_lost_queue.md](12_suggestion_duplicate_or_lost_queue.md) | Suggestion respond; duplicate or lost Queue |
 | S13 | [13_web_auth_and_all_guild_broadcast.md](13_web_auth_and_all_guild_broadcast.md) | Web Entra auth + ALL-guild webhook broadcast |
+| S14 | [14_local_development_isolation.md](14_local_development_isolation.md) | Product-dev isolation (separate Discord app, local providers, no Azure/webhook egress) |
 
 ## Canonical references (do not redefine here)
 
@@ -41,4 +44,5 @@
 | Web admin auth + broadcast controls | `contracts/web_auth.md` |
 | Head ↔ Launcher IPC | `contracts/launcher_ipc.md` |
 | Live PubSub | `contracts/pubsub_live.md` |
-| High-level narrative | `architecture.md` (Scenarios 1–5) |
+| Local product-development isolation | `contracts/local_development.md` |
+| High-level narrative | `architecture.md` (Scenarios 1–5; Environments section) |

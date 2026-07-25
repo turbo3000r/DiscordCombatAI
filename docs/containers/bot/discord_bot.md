@@ -59,8 +59,10 @@ src/bot/
 | Variable | Required | Default | Description |
 |---|---|---|---|
 | `APPLICATION_VERSION` | Yes | — | Exact coordinated release tag injected by Compose. Included in the canonical heartbeat and required to match `contracts/launcher_ipc.md` §4's grammar. Startup fails if absent/invalid. |
+| `DCA_RUNTIME_MODE` | Yes | — | `production` \| `development`. Fail-closed. Canonical: `contracts/local_development.md` §3. |
+| `DISCORD_DEVELOPMENT_GUILD_ID` | Yes in `development`; required in `production` as the reserved guild to reject | — | Discord snowflake of the designated development guild. Development: only accepted guild. Production: interactions/lifecycle for this id are rejected/ignored. |
 | `BOT_NODE_ID` | Yes | — | Host node identity. Must equal the deployment's `NODE_ID` / `HEAD_NODE_ID` / `AI_WORKER_NODE_ID`. Grammar `^[A-Za-z0-9._-]+$`, length 1–128. Compose injects from host `NODE_ID`. |
-| `DISCORD_BOT_TOKEN` | Yes | — | The Discord bot token used to connect to the Gateway. Never logged (§7). |
+| `DISCORD_BOT_TOKEN` | Yes | — | The Discord bot token used to connect to the Gateway. **Development requires a separate Discord application token** — never the production token (`local_development.md` §4). Never logged (§7). |
 | `BOT_MOSQUITTO_HOST` | No | `mosquitto` | Hostname of the local Mosquitto broker. |
 | `BOT_MOSQUITTO_PORT` | No | `1883` | Mosquitto broker port. |
 | `BOT_RABBITMQ_HOST` | No | `rabbitmq` | Hostname of the local RabbitMQ broker. |
@@ -81,7 +83,7 @@ src/bot/
 | `BOT_CONTROL_DRAIN_TIMEOUT_SEC` | No | `45` | Maximum bounded failure soft-stop drain. At expiry, Bot escalates autonomously to hard-stop unless safe control in the same term has been restored by a fresh grant. Separate from Head's planned-update drain timeout. |
 | `BOT_ACTIVATION_GRANT_MAX_TTL_SEC` | No | `60` | Reject any activation grant with a larger TTL. Normal default grant TTL is 45s and is renewed every 15s; canonical timer semantics are in `contracts/leadership_control.md` §3.2. |
 
-> **Azure configuration lives in `azure.md`, not here.** Per that doc's §4, `Bot` depends on **Queue Storage** and **Cosmos DB** — all Azure authentication and endpoint variables are defined once in `azure.md` §3.
+> **Azure configuration lives in `azure.md`, not here.** Per that doc's §4, production `Bot` depends on **Queue Storage** and **Cosmos DB** — all Azure authentication and endpoint variables are defined once in `azure.md` §3. In `DCA_RUNTIME_MODE=development`, Bot injects local repository adapters toward `dev-support` and **must not** construct Azure clients (`contracts/local_development.md` §5).
 >
 > **`GEMINI_API_KEY` is not a `Bot` environment variable.** Unlike `AI Worker` (`ai_worker.md` §3), `Bot` never holds a project-wide Gemini key — every Gemini call `Bot` itself makes (only `/config`'s model-listing call, `bot/commands/config.md` §6) uses the *guild's own* staged key, read from `contracts/guild_config.md`'s `api_key` field, never an environment variable.
 
@@ -149,18 +151,29 @@ The **only** activation authority is a fresh, non-retained `control/bot/activati
 On accepting a valid `active` grant:
 1. Connects to the Discord Gateway.
 2. Sets up localization (`self.l10n`, `tree.set_translator` — carried forward from legacy as-is, per `contracts/localization.md`).
-3. Syncs the slash command tree (`tree.sync()`).
-4. Starts the three background services under `modules/services/` (§6.2, §6.3, §6.6) and the Queue Storage poller (§6.6).
+3. Syncs the slash command tree:
+   - **Production:** global `tree.sync()`.
+   - **Development:** guild-scoped sync to `DISCORD_DEVELOPMENT_GUILD_ID` only — never global sync (`contracts/local_development.md` §4).
+4. Starts the three background services under `modules/services/` (§6.2, §6.3, §6.6) and the Queue Storage poller (§6.6). In development, suggestion queue poller/sweep DM delivery is **suppressed** (§6.6 / `local_development.md` §7); guild/status repositories talk to `dev-support`.
 5. Clears `bot.draining`; restoration is explicit through the fresh grant and does not depend on stale retained state.
+
+**Development activation source:** when `DCA_RUNTIME_MODE=development`, grants come from Compose-only `dev-support` over Mosquitto (same grant schema), not from Head/Blob Lease. Head is absent from the development stack. Production activation rules above are unchanged.
+
+### 6.1a Discord Guild Isolation
+
+Canonical rules: `contracts/local_development.md` §4.
+
+- **Development:** accept interactions and process guild lifecycle/sync **only** for `DISCORD_DEVELOPMENT_GUILD_ID`. Foreign guild events produce no repository writes. DMs / no-guild command exercise are rejected.
+- **Production:** if `DISCORD_DEVELOPMENT_GUILD_ID` is set, reject interactions and skip lifecycle writes for that reserved guild (defense in depth).
 
 ### 6.2 Guild Lifecycle & Config Persistence
 
-All guild state lives in the single Cosmos DB document defined by `contracts/guild_config.md` — no local files, per that contract's replacement of legacy's per-guild JSON. Writes use field-scoped Patch + ETag (`guild_config.md` §4a).
+All guild state lives in the single document defined by `contracts/guild_config.md` — no local files. Production persists via Cosmos (`guild_config.md` §2); development via `GuildRepository` → `dev-support` with the **same** document schema. Writes use field-scoped Patch + ETag semantics in production (`guild_config.md` §4a); development adapters preserve method semantics with SQLite optimistic concurrency appropriate to single-node use.
 
-- **`on_guild_join` / rejoin:** call `guilds.py` create-or-reactivate (`contracts/guild_config.md` §7). Fresh create uses defaults (§5 there) plus Discord metadata. Rejoin clears `left_at`, refreshes metadata, preserves `created_at` and admin config. Also sends the existing legacy welcome flow (`WelcomeView`/`WelcomeLocaleSelect`, unchanged — see `bot/visuals.md`'s component catalog).
-- **`on_guild_update`:** Patch only Discord-sourced fields that changed (name/icon/owner) — never touches admin-configured fields.
+- **`on_guild_join` / rejoin:** call guild repository create-or-reactivate (`contracts/guild_config.md` §7), subject to §6.1a isolation. Fresh create uses defaults (§5 there) plus Discord metadata. Rejoin clears `left_at`, refreshes metadata, preserves `created_at` and admin config. Also sends the existing legacy welcome flow (`WelcomeView`/`WelcomeLocaleSelect`, unchanged — see `bot/visuals.md`'s component catalog).
+- **`on_guild_update`:** Patch only Discord-sourced fields that changed (name/icon/owner) — never touches admin-configured fields. Ignored for foreign guilds in development / reserved guild in production.
 - **`on_guild_remove`:** Patch `left_at` to now. **Does not delete** — soft-delete confirmed (`guild_config.md` §7).
-- **Periodic reconciliation sweep** (`modules/services/guild_sync.py`, every `BOT_GUILD_SYNC_INTERVAL_SEC`): iterates `bot.guilds` and Patches Discord-sourced fields for every currently joined guild. Catching Cosmos rows for guilds **absent** from `bot.guilds` (missed removals while offline) remains a remaining P1.3 item — not required to scaffold `guilds.py`.
+- **Periodic reconciliation sweep** (`modules/services/guild_sync.py`, every `BOT_GUILD_SYNC_INTERVAL_SEC`): iterates `bot.guilds` and Patches Discord-sourced fields for every currently joined guild that §6.1a allows. Catching Cosmos rows for guilds **absent** from `bot.guilds` (missed removals while offline) remains a remaining P1.3 item — not required to scaffold `guilds.py`.
 
 **AI locale:** when publishing `ai_tasks`, map `language` → `language_locale` per `contracts/localization.md` §4 (`ua` → `uk-UA`).
 
@@ -237,6 +250,8 @@ Strict at-most-one Gateway connection is **not guaranteed** in every partition/d
 
 **Canonical contract: `contracts/suggestion.md`.** This subsection is the Bot runtime; schemas and the claim state machine live there.
 
+**Product development:** when `DCA_RUNTIME_MODE=development`, do **not** start the Azure Queue poller or the DM reconciliation sweep. Local `/suggest` and Web suggestion CRUD persist via `SuggestionRepository` → `dev-support` only; no Discord response DMs and no queue enqueue/claim (`contracts/local_development.md` §7). Production behavior below is unchanged.
+
 `modules/commands/suggestions/service/queue_poller.py` polls Azure Queue Storage every `BOT_QUEUE_POLL_INTERVAL_SEC` (fast path). Queue message shape, visibility timeout (60s), poison after 5 dequeues, and delete-only-after-`sent`/`failed` rules are in the contract §4.
 
 On a notification event, `Bot`:
@@ -299,7 +314,8 @@ Business counters such as `commands_invoked_total`, `ai_tasks_published_total`, 
 | Azure Blob Storage (`status.py` document) | Status snapshot push (§6.3) | Not specified beyond the generic Blob Storage failure mode already in `azure.md` §9 — a failed push simply means `Web`'s Dashboard sees a stale `updated_at` until the next successful cycle. |
 | Google Gemini API (direct, not via `AI Worker`) | `/config`'s model-listing call only (`bot/commands/config.md` §6) | See that doc's own §12 — unrelated to `AI Worker`'s separate Gemini usage. |
 | `discord.py >= 2.6` | Gateway connection, Components V2 UI (`bot/visuals.md` §1) | Hard dependency, not something the system degrades gracefully without. |
-| `Head` (local, via Mosquitto only — no direct call) | Activation/drain/stop signals (§6.1, §6.5) | Without `Head` ever signaling `activate`, `Bot` simply never connects to Discord at all — this is by design, not a failure mode to recover from. |
+| `Head` (local, via Mosquitto only — no direct call) | Activation/drain/stop signals (§6.1, §6.5) — **production** | Without `Head` ever signaling `activate`, production `Bot` simply never connects to Discord at all — this is by design, not a failure mode to recover from. |
+| `dev-support` (Compose-only) | Development grants + local repositories | Required when `DCA_RUNTIME_MODE=development`; forbidden in production (`contracts/local_development.md`). |
 
 ---
 
@@ -332,3 +348,4 @@ No HTTP endpoint — unlike `Head`/`Launcher`, `Bot` exposes nothing for another
 - Bot heartbeat dependency health and staleness are resolved in `contracts/telemetry.md` §2 (§11).
 - The exact copy/localization key for the "temporarily unavailable during drain" response (§6.4) hasn't been written yet — deferred with `ProcessCommand` to command phases.
 - **Phase 2 concurrency, node identity, Celery task name, and transport-shell trigger rules are resolved** — see §6.0 and `docs/to_resolve.md` → Phase 2.
+- **Product-development mode** (separate Discord app, guild isolation, `dev-support` grants/providers, suppressed suggestion DM/queue delivery) is resolved in `contracts/local_development.md` and mirrored in §3 / §6.1 / §6.1a. Implementation sequence lives in `to_resolve.md`.
