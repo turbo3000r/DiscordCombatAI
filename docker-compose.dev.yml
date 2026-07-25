@@ -13,10 +13,16 @@ services:
       - ./src:/app/src
 
   bot:
+    build:
+      context: .
+      dockerfile: src/bot/Dockerfile
     volumes:
       - ./src:/app/src
 
   ai_worker:
+    build:
+      context: .
+      dockerfile: src/ai_worker/Dockerfile
     volumes:
       - ./src:/app/src
       - ./prompts:/app/prompts:ro

@@ -27,14 +27,16 @@ services:
       - ./infra/rabbitmq/enabled_plugins:/etc/rabbitmq/enabled_plugins:ro
       - ./infra/rabbitmq/rabbitmq.conf:/etc/rabbitmq/rabbitmq.conf:ro
       - ./infra/rabbitmq/definitions.json:/etc/rabbitmq/definitions.json:ro
+      - ./infra/rabbitmq/ensure_app_user_entrypoint.sh:/ensure_app_user_entrypoint.sh:ro
+    entrypoint: ["/bin/bash", "/ensure_app_user_entrypoint.sh"]
     networks:
       - dca-internal
     healthcheck:
       test: ["CMD", "rabbitmq-diagnostics", "-q", "check_running"]
       interval: 10s
       timeout: 5s
-      retries: 5
-      start_period: 30s
+      retries: 8
+      start_period: 90s
 
   head:
     image: ${LAUNCHER_GHCR_NAMESPACE:-discord-combat-ai}/head:${APPLICATION_VERSION:-local}
@@ -88,6 +90,7 @@ services:
         condition: service_healthy
     environment:
       APPLICATION_VERSION: ${APPLICATION_VERSION:-}
+      NODE_ID: ${NODE_ID:-node-local}
       BOT_NODE_ID: ${NODE_ID:-node-local}
       DISCORD_BOT_TOKEN: ${DISCORD_BOT_TOKEN:-replace-me-in-env}
       BOT_MOSQUITTO_HOST: ${BOT_MOSQUITTO_HOST:-mosquitto}
@@ -98,10 +101,23 @@ services:
       BOT_RABBITMQ_PASS: ${BOT_RABBITMQ_PASS:-change-me-in-env}
       RABBITMQ_DEFAULT_VHOST: ${RABBITMQ_DEFAULT_VHOST:-/discordcombatai}
       BOT_DRAIN_PROGRESS_INTERVAL_SEC: ${BOT_DRAIN_PROGRESS_INTERVAL_SEC:-5}
-      BOT_QUEUE_POLL_INTERVAL_SEC: ${BOT_QUEUE_POLL_INTERVAL_SEC:-300}
       BOT_AI_TASK_STALL_TIMEOUT_SEC: ${BOT_AI_TASK_STALL_TIMEOUT_SEC:-120}
       BOT_AI_TASK_TIMEOUT_SEC: ${BOT_AI_TASK_TIMEOUT_SEC:-900}
+      BOT_GUILD_SYNC_INTERVAL_SEC: ${BOT_GUILD_SYNC_INTERVAL_SEC:-3600}
       BOT_HEARTBEAT_INTERVAL_SEC: ${BOT_HEARTBEAT_INTERVAL_SEC:-30}
+      BOT_STATUS_PUSH_INTERVAL_SEC: ${BOT_STATUS_PUSH_INTERVAL_SEC:-60}
+      BOT_SHUTDOWN_GRACE_SEC: ${BOT_SHUTDOWN_GRACE_SEC:-30}
+      BOT_CONTROL_DRAIN_TIMEOUT_SEC: ${BOT_CONTROL_DRAIN_TIMEOUT_SEC:-45}
+      BOT_ACTIVATION_GRANT_MAX_TTL_SEC: ${BOT_ACTIVATION_GRANT_MAX_TTL_SEC:-60}
+      AZURE_TENANT_ID: ${AZURE_TENANT_ID:-}
+      BOT_AZURE_CLIENT_ID: ${BOT_AZURE_CLIENT_ID:-}
+      BOT_AZURE_CLIENT_SECRET: ${BOT_AZURE_CLIENT_SECRET:-}
+      AZURE_COSMOS_ENDPOINT: ${AZURE_COSMOS_ENDPOINT:-}
+      AZURE_COSMOS_DATABASE: ${AZURE_COSMOS_DATABASE:-DiscordCombatAI}
+      AZURE_STORAGE_ACCOUNT_NAME: ${AZURE_STORAGE_ACCOUNT_NAME:-}
+      AZURE_QUEUE_NAME: ${AZURE_QUEUE_NAME:-suggestions}
+      AZURE_STATUS_BLOB_CONTAINER: ${AZURE_STATUS_BLOB_CONTAINER:-coordination}
+      AZURE_STATUS_BLOB_NAME: ${AZURE_STATUS_BLOB_NAME:-bot_status.json}
     networks:
       - dca-internal
 
@@ -116,6 +132,7 @@ services:
         condition: service_healthy
     environment:
       APPLICATION_VERSION: ${APPLICATION_VERSION:-}
+      NODE_ID: ${NODE_ID:-node-local}
       AI_WORKER_NODE_ID: ${NODE_ID:-node-local}
       AI_WORKER_MOSQUITTO_HOST: ${AI_WORKER_MOSQUITTO_HOST:-mosquitto}
       AI_WORKER_MOSQUITTO_PORT: ${AI_WORKER_MOSQUITTO_PORT:-1883}
