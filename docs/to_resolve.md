@@ -238,14 +238,15 @@ Per-scenario step matrices live in `docs/scenarios/03`, `04`, `05`, `07`, `08`, 
 
 Canonical: `contracts/local_development.md`. Acceptance: `scenarios/14_local_development_isolation.md`.
 
-- **Mode:** fail-closed `DCA_RUNTIME_MODE=production|development` plus shared `DISCORD_DEVELOPMENT_GUILD_ID`.
-- **Discord:** separate Discord application required in development; guild-scoped command sync; accept only the designated guild; production rejects the reserved development guild.
+- **Mode:** fail-closed `DCA_RUNTIME_MODE=production|development` plus **mandatory** `DISCORD_DEVELOPMENT_GUILD_ID` in both modes.
+- **Discord:** separate Discord application required in development; mandatory `DISCORD_DEVELOPMENT_APPLICATION_ID` verified against the authenticated app before sync; guild-scoped command sync; accept only the designated guild; production always rejects the reserved development guild.
 - **Providers:** domain repositories selected at composition root. Production adapters wrap `src/shared/azure/services/*`. Development adapters call Compose-only `dev-support` (SQLite). **Rejected:** Azure-protocol emulator / “mirror Azure API” container as the Bot↔Web plane.
-- **Topology:** development = Mosquitto + RabbitMQ + Bot + AI Worker + Web + `dev-support` (no Head/Launcher). `docker-compose.dev.yml` is the explicit opt-in overlay, not isolation by itself.
+- **Topology:** development = Mosquitto + RabbitMQ + Bot + AI Worker + `dev-support` (no Head/Launcher). Web is Compose-included when implemented. `docker-compose.dev.yml` is the explicit opt-in overlay, not isolation by itself.
 - **Activation:** `dev-support` publishes short-lived Mosquitto grants; does not simulate Blob Lease / PubSub leadership.
-- **Web:** fixed local admin + DEVELOPMENT banner; loopback-only; local live feed (no Entra, no Azure PubSub).
-- **Side effects:** local `/config`, `/quick-battle`, suggestion CRUD/UI allowed; suggestion queue/DM delivery suppressed; webhooks dry-run only (no Discord webhook POST).
+- **Web (deferred relative to spine):** fixed local admin + DEVELOPMENT banner; Compose publishes only host-loopback; local live feed (no Entra, no Azure PubSub).
+- **Side effects:** local `/config`, `/quick-battle`, suggestion CRUD/UI allowed when commands/Web exist; suggestion queue/DM delivery suppressed; webhooks dry-run only (no Discord webhook POST).
 - **Non-goal:** S14 never substitutes for S01–S10 Azure coordination acceptance.
+- **Egress:** development may call the development Discord app and Gemini; Azure/Entra/webhook/production Discord identity remain forbidden.
 
 Propagated to `architecture.md`, `azure.md`, `bot/discord_bot.md`, `web/web.md`, `web_auth.md`, `guild_config.md`, `suggestion.md`, `status_document.md`, `pubsub_live.md`, `docs/Readme.md`, `scenarios/Readme.md`.
 
@@ -517,20 +518,28 @@ Build these in parallel around the **transport shell** (`graph="environment"` ca
 
 **Gate:** a harness-driven dummy `ai_task` must complete Bot → RabbitMQ → AI Worker → result/progress → Bot. Then validate the Phase 2-owned steps of S03, S04, S05, S07, S08, and S10.
 
-## Phase 2.5 — Local product-development spine (documentation closed)
+## Phase 2.5 — Local product-development spine (documentation closed; implementation in progress)
 
 Build after domain models exist; can proceed in parallel with Phase 2 transport once repository protocols are defined. Does **not** replace Phase 1 Azure fencing validation.
 
-1. **Domain ports + factory:** `GuildRepository` / `SuggestionRepository` / `StatusRepository` / `MetricsRepository` (+ live-feed adapter) with production Azure adapters and development HTTP adapters; composition root keyed by `DCA_RUNTIME_MODE`.
-2. **`dev-support`:** FastAPI internal API + SQLite volume + Mosquitto grant publisher + local live feed + status seed.
-3. **Bot wiring:** mode/guild env guards; guild-scoped sync; interaction/lifecycle filtering; inject local repositories; suppress suggestion queue/DM path in development; accept `dev-support` grants.
-4. **Web wiring:** Compose inclusion in development overlay; local-admin auth + banner; loopback bind guard; repositories → `dev-support`; webhook dry-run; local live transport replacing PubSub negotiate.
-5. **Command slices:** port/exercise `/config`, `/suggest`, `/quick-battle` UI against the development guild (depends on command-phase readiness).
-6. **Tests:** unit tests for mode guards and guild filters; integration for `dev-support` persistence/reset; acceptance S14. Keep S01–S10 on real Azure.
+**Foundation spine (implement now):**
+
+1. **Runtime guards:** `DCA_RUNTIME_MODE`, mandatory `DISCORD_DEVELOPMENT_GUILD_ID`, development `DISCORD_DEVELOPMENT_APPLICATION_ID` + overlay/`DEV_SUPPORT_URL` checks; derive `STORAGE_PROVIDER`; refuse Azure leakage in development.
+2. **Domain ports + factory:** narrow `GuildRepository` / `SuggestionRepository` / `StatusRepository` / `MetricsRepository` with production Azure adapters and development HTTP adapters; composition root keyed by runtime mode.
+3. **`dev-support`:** FastAPI internal API + SQLite volume + Mosquitto grant publisher + status seed. Reset via volume removal only (no host-published reset API).
+4. **Bot wiring:** composition root; application-id verification before sync; guild-scoped sync; interaction/lifecycle filtering; inject local repositories; suppress suggestion queue/DM path in development; accept `dev-support` grants.
+5. **Compose/packaging:** development overlay brings up `dev-support`, excludes Head from the merged development stack, maps `DISCORD_DEVELOPMENT_BOT_TOKEN` → Bot token, sets overlay marker.
+6. **Tests:** unit tests for mode guards and guild filters; integration for `dev-support` persistence/grants; **partial S14 spine** acceptance. Keep S01–S10 on real Azure.
+
+**Deferred (not spine gate):**
+
+- Web wiring (local-admin auth, banner, loopback host publish, live feed, webhook dry-run) until `src/web/` / P1.6.
+- `/config`, `/suggest`, `/quick-battle` command exercise until command phases / P1.1–P1.4.
+- Full S14 steps that require commands/Web.
 
 **Documentation gate:** Resolved → Local product-development architecture is closed. Implement against `contracts/local_development.md`; do not invent an Azure emulator.
 
-**Gate:** S14 invariants hold on a laptop stack with zero Azure/Entra/webhook egress.
+**Gate:** S14 spine invariants hold on a laptop stack with zero Azure/Entra/webhook egress (Discord development app + Gemini allowed).
 
 ## Phase 3 — Configuration and suggestions vertical slices
 

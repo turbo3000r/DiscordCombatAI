@@ -33,7 +33,7 @@ See `architecture.md`'s Project File Structure for the authoritative on-disk tre
 |---|---|---|---|
 | `DCA_RUNTIME_MODE` | Yes | — | `production` \| `development`. Fail-closed. Canonical: `contracts/local_development.md` §3. |
 | `DISCORD_DEVELOPMENT_GUILD_ID` | Yes in development; **also required in production** as the reserved guild id to reject | — | Shared with Bot/`dev-support`. Canonical: `contracts/local_development.md` §3–§4. |
-| `WEB_HOST` | No | `0.0.0.0` production; **must be `127.0.0.1` in development** | Bind host for the FastAPI/Uvicorn process. Development refuses non-loopback binds. |
+| `WEB_HOST` | No | `0.0.0.0` | Bind host for the FastAPI/Uvicorn process **inside the container**. Development may bind `0.0.0.0` in-container; Compose must publish only `127.0.0.1:HOST:CONTAINER` to the host (`contracts/local_development.md` §3/§8). |
 | `WEB_PORT` | No | `8000` | Bind port. |
 | `WEB_METRICS_DEFAULT_RANGE_MIN` | No | `1440` | Default look-back window (minutes) for the historical metrics endpoint when a page doesn't specify one (`pages/performance.md` §4). |
 | `WEB_ENTRA_TENANT_ID` | Yes in **production** | — | Entra tenant ID for admin login (`contracts/web_auth.md` §3). Absent/unused in development. |

@@ -60,9 +60,12 @@ src/bot/
 |---|---|---|---|
 | `APPLICATION_VERSION` | Yes | — | Exact coordinated release tag injected by Compose. Included in the canonical heartbeat and required to match `contracts/launcher_ipc.md` §4's grammar. Startup fails if absent/invalid. |
 | `DCA_RUNTIME_MODE` | Yes | — | `production` \| `development`. Fail-closed. Canonical: `contracts/local_development.md` §3. |
-| `DISCORD_DEVELOPMENT_GUILD_ID` | Yes in `development`; required in `production` as the reserved guild to reject | — | Discord snowflake of the designated development guild. Development: only accepted guild. Production: interactions/lifecycle for this id are rejected/ignored. |
+| `DISCORD_DEVELOPMENT_GUILD_ID` | **Yes in both modes** | — | Discord snowflake of the designated development guild. Development: only accepted guild. Production: interactions/lifecycle for this id are always rejected/ignored. |
+| `DISCORD_DEVELOPMENT_APPLICATION_ID` | Yes in `development` | — | Expected Discord application id. Verified against the authenticated application before guild-scoped sync. Forbidden in production. |
+| `DEV_SUPPORT_URL` | Yes in `development` | — | Internal Compose URL for `dev-support` (e.g. `http://dev-support:8080`). Forbidden in production. |
+| `DEV_COMPOSE_OVERLAY_ACTIVE` | Yes in `development` | — | Must be `true` when started via `docker-compose.dev.yml`. Forbidden in production. |
 | `BOT_NODE_ID` | Yes | — | Host node identity. Must equal the deployment's `NODE_ID` / `HEAD_NODE_ID` / `AI_WORKER_NODE_ID`. Grammar `^[A-Za-z0-9._-]+$`, length 1–128. Compose injects from host `NODE_ID`. |
-| `DISCORD_BOT_TOKEN` | Yes | — | The Discord bot token used to connect to the Gateway. **Development requires a separate Discord application token** — never the production token (`local_development.md` §4). Never logged (§7). |
+| `DISCORD_BOT_TOKEN` | Yes | — | The Discord bot token used to connect to the Gateway. **Development Compose maps `DISCORD_DEVELOPMENT_BOT_TOKEN` into this slot** — never the production token (`local_development.md` §4). Never logged (§7). |
 | `BOT_MOSQUITTO_HOST` | No | `mosquitto` | Hostname of the local Mosquitto broker. |
 | `BOT_MOSQUITTO_PORT` | No | `1883` | Mosquitto broker port. |
 | `BOT_RABBITMQ_HOST` | No | `rabbitmq` | Hostname of the local RabbitMQ broker. |
@@ -163,8 +166,8 @@ On accepting a valid `active` grant:
 
 Canonical rules: `contracts/local_development.md` §4.
 
-- **Development:** accept interactions and process guild lifecycle/sync **only** for `DISCORD_DEVELOPMENT_GUILD_ID`. Foreign guild events produce no repository writes. DMs / no-guild command exercise are rejected.
-- **Production:** if `DISCORD_DEVELOPMENT_GUILD_ID` is set, reject interactions and skip lifecycle writes for that reserved guild (defense in depth).
+- **Development:** accept interactions and process guild lifecycle/sync **only** for `DISCORD_DEVELOPMENT_GUILD_ID`. Foreign guild events produce no repository writes. DMs / no-guild command exercise are rejected. Authenticated application id must equal `DISCORD_DEVELOPMENT_APPLICATION_ID` before sync.
+- **Production:** `DISCORD_DEVELOPMENT_GUILD_ID` is always required; reject interactions and skip lifecycle writes for that reserved guild (defense in depth).
 
 ### 6.2 Guild Lifecycle & Config Persistence
 

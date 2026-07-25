@@ -59,18 +59,22 @@ Compose (dev overlay required):         Compose (production):
 | Variable | Required | Values | Owner |
 |---|---|---|---|
 | `DCA_RUNTIME_MODE` | Yes | `production` \| `development` | Shared — every Azure-consuming or Discord-facing process |
-| `DISCORD_DEVELOPMENT_GUILD_ID` | Yes when mode is `development`; **also required in production** as the reserved guild id to reject | Discord snowflake string | Shared Bot + Web + `dev-support` |
-| `DISCORD_BOT_TOKEN` | Yes | Dev application token in development; prod application token in production | Bot |
-| `STORAGE_PROVIDER` | No (derived) | Must resolve to `local` when mode is `development`, `azure` when `production` | Composition-root factory |
+| `DISCORD_DEVELOPMENT_GUILD_ID` | **Yes in both modes** | Discord snowflake string | Shared Bot + Web + `dev-support`. Development: only accepted guild. Production: reserved guild always rejected. |
+| `DISCORD_DEVELOPMENT_APPLICATION_ID` | Yes in `development` | Discord application snowflake | Bot (development). Verified against the authenticated application before command sync / Gateway use. Forbidden / unused in production. |
+| `DISCORD_BOT_TOKEN` | Yes | In development Compose, map from `DISCORD_DEVELOPMENT_BOT_TOKEN` into the Bot's runtime token slot. Production uses the production application token. | Bot |
+| `DEV_SUPPORT_URL` | Yes in `development` for Bot/Web | Internal Compose URL (e.g. `http://dev-support:8080`) | Bot + Web. Forbidden in production. |
+| `DEV_COMPOSE_OVERLAY_ACTIVE` | Yes in `development` | Must be `true` when started via the development overlay | Bot + Web + `dev-support`. Forbidden in production. |
+| `STORAGE_PROVIDER` | No (derived) | Must resolve to `local` when mode is `development`, `azure` when `production`. **Not** a free-form operator override. | Composition-root factory |
 
 **Fail-closed rules:**
 
 1. Missing/invalid `DCA_RUNTIME_MODE` → refuse to start.
-2. `development` without `DISCORD_DEVELOPMENT_GUILD_ID` → refuse to start.
-3. `development` with Azure provider selected, Azure SP env vars required for clients, or Azure endpoints configured for use → refuse to start (do not construct Azure clients).
-4. `production` with local provider, `dev-support` URL, or local-admin Web auth settings active → refuse to start.
-5. `development` Web bind must be loopback-only (`127.0.0.1`); non-loopback exposure → refuse to start.
-6. Operator convention (recommended startup guard): if `DCA_RUNTIME_MODE=development` and `DISCORD_BOT_TOKEN` / application id match a configured production-identity denylist (env or local config), refuse to start. Exact denylist mechanism is implementation detail; the invariant is **no production Discord identity in development**.
+2. Missing/invalid `DISCORD_DEVELOPMENT_GUILD_ID` in either mode → refuse to start.
+3. `development` without `DISCORD_DEVELOPMENT_APPLICATION_ID`, `DEV_SUPPORT_URL`, or `DEV_COMPOSE_OVERLAY_ACTIVE=true` → refuse to start.
+4. `development` with Azure provider selected, Azure SP env vars required for the calling service, or Azure endpoints configured for use → refuse to start (do not construct Azure clients).
+5. `production` with local provider, `DEV_SUPPORT_URL`, `WEB_LOCAL_ADMIN_OID`, `DISCORD_DEVELOPMENT_APPLICATION_ID`, or `DEV_COMPOSE_OVERLAY_ACTIVE` → refuse to start.
+6. **Discord identity check (development):** after Discord login and before command sync / Gateway command exercise, Bot compares the authenticated application id to `DISCORD_DEVELOPMENT_APPLICATION_ID`. Mismatch → abort (no sync, no continued Gateway use for product work).
+7. **Web host exposure (development):** the Web process may bind `0.0.0.0` **inside** the container (required for Docker networking). Compose **must** publish Web only as `127.0.0.1:HOST:CONTAINER`. `dev-support` must **not** publish a host port. Non-loopback host publish for Web is a configuration failure.
 
 ---
 
@@ -79,6 +83,8 @@ Compose (dev overlay required):         Compose (production):
 ### 4.1 Separate Discord application (required)
 
 Local development **must** use a Discord Application and bot token that are not the production application. The production bot must not be invited into the development guild as the development test bot; the development bot must not be invited into production guilds.
+
+**Verification:** development requires `DISCORD_DEVELOPMENT_APPLICATION_ID`. Bot authenticates with the development token, then verifies `client.application_id` (or equivalent) equals that value before guild-scoped command sync. A mismatch is a hard startup/activation failure.
 
 ### 4.2 Development mode
 
@@ -95,7 +101,7 @@ Local development **must** use a Discord Application and bot token that are not 
 | Concern | Behavior |
 |---|---|
 | Command sync | Global sync (unchanged production behavior). |
-| Reserved guild | If `DISCORD_DEVELOPMENT_GUILD_ID` is set, production Bot **rejects** interactions from that guild and skips guild-lifecycle writes for it. |
+| Reserved guild | `DISCORD_DEVELOPMENT_GUILD_ID` is **always required**. Production Bot **rejects** interactions from that guild and skips guild-lifecycle writes for it. |
 | Purpose | Prevents a reserved test server from being served by a production Bot if someone invites the prod bot there by mistake. |
 
 Canonical owner for Bot-side wiring: `containers/bot/discord_bot.md`. This contract owns the isolation rules; that file owns env tables and lifecycle hooks.
@@ -154,7 +160,7 @@ Compose-only container. Not present in production compose. Not a substitute for 
 |---|---|---|
 | Guild / suggestion / status / metrics | SQLite file on named volume (e.g. `dev-support-data`) | Survives container restart until **explicit** volume delete/reset |
 | In-flight AI tasks | Unchanged: RabbitMQ + Bot memory | Same as production local node |
-| Reset | Documented operator action: remove the volume / call a guarded reset endpoint only on loopback | No automatic wipe on restart |
+| Reset | Documented operator action: remove the named Compose volume (`dev-support-data`) | No automatic wipe on restart; no public reset HTTP API |
 
 ### 6.4 Activation grants
 
@@ -191,7 +197,7 @@ Exact OpenAPI paths are implementation detail; adapters must preserve domain met
 | Entra login | **Disabled** — fixed local admin | Required |
 | Azure SP / Cosmos / PubSub / Table | **Forbidden** | Required |
 
-**Gemini note:** product-workflow mode still performs real Google API calls when a guild has a configured key. That is intentional for UI/AI testing. It is not Azure and does not use production Discord webhooks/DMs for suggestions/announcements.
+**Allowed egress (development):** only (1) the separate development Discord application (Gateway + REST for that app) and (2) configured Gemini/Google AI calls when a guild key is present. **Forbidden egress:** Azure, Entra, Discord webhook HTTPS POSTs, and any use of the production Discord application identity.
 
 ---
 
@@ -207,7 +213,8 @@ Canonical auth carve-out lives here; `contracts/web_auth.md` links here for deve
 | Data | Repository adapters → `dev-support` only. |
 | Live charts/logs | Local live transport from `dev-support`; negotiate must **not** call Azure PubSub. |
 | Webhooks page | Dry-run only (§7). |
-| Compose | Included in development stack (exception to production “Web excluded from compose”). |
+| Network | Process may bind `0.0.0.0` in-container; Compose publishes **only** `127.0.0.1:HOST:CONTAINER` to the host. |
+| Compose | Included in development stack (exception to production “Web excluded from compose”). Deferred for the Phase 2.5 foundation spine until `src/web/` exists — see S14 staging. |
 
 ---
 
@@ -217,17 +224,18 @@ Every Bot/Web/`dev-support` process in development must verify before serving:
 
 1. `DCA_RUNTIME_MODE=development`
 2. `DISCORD_DEVELOPMENT_GUILD_ID` present and well-formed
-3. Storage provider is `local`; no Azure client construction
-4. Bot token is the development application token (operator denylist / documented separation)
-5. Web listens on loopback only
-6. `dev-support` is reachable on the Compose network before Bot accepts grants / Web serves data pages
+3. `DISCORD_DEVELOPMENT_APPLICATION_ID` present (Bot); authenticated application id matches before sync
+4. `DEV_COMPOSE_OVERLAY_ACTIVE=true` and `DEV_SUPPORT_URL` present (Bot/Web)
+5. Storage provider is `local`; no Azure client construction
+6. Web host publish is loopback-only (Compose mapping); `dev-support` has no host publish
+7. `dev-support` is reachable on the Compose network before Bot accepts grants / Web serves data pages
 
 Production checklist:
 
 1. `DCA_RUNTIME_MODE=production`
-2. Azure settings load successfully
-3. Local provider / local-admin auth / `dev-support` URL absent
-4. If `DISCORD_DEVELOPMENT_GUILD_ID` set, reserved-guild rejection enabled
+2. `DISCORD_DEVELOPMENT_GUILD_ID` present; reserved-guild rejection enabled
+3. Azure settings load successfully
+4. Local provider / local-admin auth / `DEV_SUPPORT_URL` / `DISCORD_DEVELOPMENT_APPLICATION_ID` / overlay marker absent
 
 ---
 
@@ -236,7 +244,7 @@ Production checklist:
 | Event | Behavior |
 |---|---|
 | Container restart | SQLite state preserved |
-| Explicit reset | Operator removes `dev-support` volume (or invokes guarded reset); status seed re-runs on next start |
+| Explicit reset | Operator removes the `dev-support-data` volume; status seed re-runs on next start |
 | `dev-support` crash | Bot loses grant renewals → hard-stop; Web data APIs fail closed with clear errors |
 | Broker crash | Same reconnect semantics as production local node (`rabbitmq.md` / `mosquitto.md`) |
 
@@ -246,12 +254,12 @@ Production checklist:
 
 See `scenarios/14_local_development_isolation.md`. Summary invariants:
 
-1. Development processes make **zero** Azure, Entra, or Discord-webhook egress calls.
-2. Only the separate development Discord application is used; commands appear only in the designated guild.
+1. Development processes make **zero** Azure, Entra, or Discord-webhook egress calls (Discord Gateway/REST for the **development** app and Gemini remain allowed).
+2. Only the separate development Discord application is used; authenticated application id must match `DISCORD_DEVELOPMENT_APPLICATION_ID`; commands sync only to the designated guild.
 3. Foreign-guild interactions and lifecycle events are rejected/ignored with no repository writes.
-4. Production Bot rejects the reserved development guild when configured.
-5. Local suggestion CRUD works without queue/DM delivery; webhooks are dry-run only.
-6. State persists across restart until explicit reset.
+4. Production Bot always rejects the reserved development guild (`DISCORD_DEVELOPMENT_GUILD_ID` required).
+5. Local suggestion CRUD works without queue/DM delivery; webhooks are dry-run only (full Web/command steps may be deferred — see S14 staging).
+6. State persists across restart until explicit volume reset.
 7. Passing S14 does **not** claim S01–S10 Azure coordination fidelity.
 
 ---
