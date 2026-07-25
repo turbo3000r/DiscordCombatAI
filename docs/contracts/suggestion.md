@@ -126,9 +126,10 @@ class SuggestionDocument(TypedDict):
 
 ### On Web `/respond`
 
-- Append one outgoing staff `conversation` entry (`author_role = "staff"`, `direction = "outgoing"`, `source = "web_panel"`) with `mode` (and optional `response_type` / `sent`) in `metadata`, plus `acted_by_oid` / `acted_by_upn` on that entry.
-- Update ticket-level `response_text`, `status`, notification fields (§3), and ticket-level `acted_by_*` / `acted_at` from the validated Entra token (`contracts/web_auth.md` §5/§9).
-- Claim machine (`notification_status`) unchanged from §3.
+- Append one outgoing staff `conversation` entry (`author_role = "staff"`, `direction = "outgoing"`, `source = "web_panel"`) with `mode` (and optional `response_type` / `sent` / retry marker) in `metadata`, plus `acted_by_oid` / `acted_by_upn` on that entry — except pure Idempotency-Key replays (§3a).
+- Update ticket-level `response_text`, `status`, notification fields (§3 / §3a), and ticket-level `acted_by_*` / `acted_at` from the validated Entra token (`contracts/web_auth.md` §5/§9) or local-admin principal in development.
+- Require `Idempotency-Key` on mutating `/respond` (§3a).
+- Claim machine (`notification_status`) unchanged from §3 except admin failed-notification retry (§3a).
 
 **Obsolete fields — do not store:** `responses` (thin admin-only list), `responded`, `response_given`. Derive “has staff response” / “done” from `status`, `conversation`, and `notification_status`.
 
@@ -141,10 +142,10 @@ class SuggestionDocument(TypedDict):
 | State | Meaning | Who may enter |
 |---|---|---|
 | `null` | No DM delivery intended (ticket just filed, or admin chose `done_no_feedback`) | Bot on create; Web on `done_no_feedback` |
-| `pending` | Delivery intended; eligible for queue poller or sweep | Web on `send` / `done_auto_feedback`; Bot on failed attempt when attempts &lt; max |
+| `pending` | Delivery intended; eligible for queue poller or sweep | Web on `send` / `done_auto_feedback` / failed-notification retry (§3a); Bot on failed attempt when attempts &lt; max |
 | `claiming` | One Bot instance has atomically claimed the ticket and is sending the DM | Bot (poller or sweep) via ETag-conditional patch |
 | `sent` | DM delivered successfully | Claiming Bot only |
-| `failed` | Attempts exhausted; no further automatic delivery | Claiming Bot only |
+| `failed` | Attempts exhausted; no further **automatic** delivery until admin retry (§3a) | Claiming Bot only; Web may re-enter `pending` via §3a |
 
 ### Atomic claim (mandatory)
 
@@ -155,19 +156,45 @@ Both the **queue poller** and the **reconciliation sweep** (`bot/discord_bot.md`
 - After successful DM → set `sent`, then delete the Queue message (if one was being processed).
 - On DM failure: increment `notification_attempts`, set `notification_last_error`; if `notification_attempts < BOT_SUGGESTION_MAX_DM_ATTEMPTS` → back to `pending`; else → `failed`.
 
+### Claim expiry / abandoned-claim recovery
+
+If `notification_status == "claiming"` and `notification_claimed_at` is older than `BOT_SUGGESTION_CLAIM_TIMEOUT_SEC` (default **`120`**, must exceed Queue visibility **60s**), the reconciliation sweep MAY ETag-conditionally reset `claiming` → `pending` (clear claim fields). A later poller/sweep cycle then re-claims normally. Do not send a DM without holding a fresh claim.
+
 ### Sweep eligibility
 
-Sweep selects tickets where `notification_status == "pending"` **and** `updated_at` (or last transition into `pending`) is older than `BOT_SUGGESTION_SWEEP_MIN_AGE_SEC` (default **`600`**). This avoids racing the fast path on brand-new responses.
+Sweep selects tickets where `notification_status == "pending"` **and** age since last transition into `pending` (or `updated_at` when that is the documented pending marker) is older than `BOT_SUGGESTION_SWEEP_MIN_AGE_SEC` (default **`600`**). This avoids racing the fast path on brand-new responses. Abandoned-claim recovery (§ above) is a separate query.
+
+### Delivery guarantee
+
+**Cosmos is authoritative; Queue is a fast-path hint only.** Outcomes are **at-least-once** toward Discord with ETag claim aiming for effectively-once. **Exactly-once DM delivery is not guaranteed:** if Bot crashes after Discord accepts the DM but before Cosmos records `sent`, claim-timeout recovery can produce a **bounded duplicate DM**. Acceptance: S12.
 
 ### Web `/respond` modes
 
-| Mode | Ticket `status` | `notification_status` | Queue enqueue |
-|---|---|---|---|
-| `send` | `done` | `pending` | Yes |
-| `done_auto_feedback` | `done` | `pending` | Yes |
-| `done_no_feedback` | `done` | stays `null` | No |
+| Mode | Preconditions | Ticket `status` | `notification_status` | Queue enqueue |
+|---|---|---|---|---|
+| `send` (first response) | `status=pending` | `done` | `pending` | Yes (production) |
+| `done_auto_feedback` | `status=pending` | `done` | `pending` | Yes (production) |
+| `done_no_feedback` | `status=pending` | `done` | stays `null` | No |
+| `send` (**failed-notification retry**, §3a) | `status=done` **and** `notification_status=failed` | stays `done` | `pending` (reset) | Yes (production) |
 
-Web appends a staff `ConversationEntry` and updates `response_text` / `updated_at` in the same Cosmos write that sets notification fields. Exact multi-admin concurrency remains P1.4; v1 assumes single-admin use.
+Web appends a staff `ConversationEntry` and updates `response_text` / `updated_at` in the same Cosmos write that sets notification fields (except pure idempotent replays — §3a).
+
+**Development:** repository write allowed; **Queue enqueue and Bot DM delivery suppressed** (`contracts/local_development.md` §7).
+
+### 3a. Terminal `failed` notification recovery (Phase 3)
+
+An administrator may retry delivery when `notification_status=failed` (ticket may already be `status=done`):
+
+1. Web `POST .../respond` with `mode=send`.
+2. Reject if `notification_status` is already `sent`, or if `status=done` with `notification_status=null` from `done_no_feedback` (no delivery intended), or if `status=pending` (use normal first-response path).
+3. Require a **new or confirmed** response body (`response_text` non-empty after trim).
+4. Append a staff `conversation` entry for the administrator action (`metadata` includes retry marker / mode).
+5. **Reset** `notification_attempts` to **`0`**, clear `notification_last_error`, set `notification_status=pending`, update `acted_by_*` / `acted_at` / `updated_at`.
+6. Enqueue a new Queue notification reference (production only).
+7. Protect the transition with **ETag** concurrency (412 → reload and require retry).
+8. **Duplicate Web submissions are idempotent:** require `Idempotency-Key` on mutating `/respond`; replay of the same key returns the prior success body without appending a second conversation entry or enqueuing a second message. Concurrent duplicate posts without a shared key: ETag loser receives conflict and must reload.
+
+Unrestricted multi-admin editing beyond ETag + idempotency is **not** resolved further in v1.
 
 ---
 
@@ -214,4 +241,5 @@ Per `contracts/drain_status.md` §5 (applied project-wide by P0.5.5):
 | Bot poller / sweep runtime | `bot/discord_bot.md` §6.6 |
 | Web respond UI/API | `web/pages/suggestions.md` |
 | Admin auth + audit identity | `contracts/web_auth.md` |
-| Remaining delivery edge cases | `to_resolve.md` P1.4 |
+| Local-dev suppression of queue/DM | `contracts/local_development.md` §7 |
+| Acceptance | `scenarios/12_suggestion_duplicate_or_lost_queue.md` |

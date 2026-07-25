@@ -97,7 +97,7 @@ categories = [
 | Malformed JSON / wrong shape | Log **ERROR**, **refuse overwrite** without an operator-driven backup/repair. Do not silently replace a corrupt blob with defaults. |
 | Concurrent section updates | Every writer does read-modify-write with **ETag `If-Match`**. On conflict, re-read and retry with bounded attempts (**5**, with jitter). Update only the writer’s own section. |
 
-`status.py` exposes typed accessors (`get_identity`, `update_identity`, `get_status`, `update_status`, `get_suggestion_catalog`, `update_suggestion_catalog`) so callers never patch raw JSON ad hoc.
+`status.py` / `StatusService` exposes typed accessors (`get_identity`, `update_identity`, `get_status`, `update_status`, `get_suggestion_catalog`, `update_suggestion_catalog`) so callers never patch raw JSON ad hoc. **`/suggest` must call `get_suggestion_catalog()`** on every new invocation (`bot/commands/suggest.md` §6) — fail closed if missing/malformed; no hardcoded fallback.
 
 **Web identity/catalog writes (P0.7):** when Web updates `identity` or `suggestion_catalog`, log the acting Entra `oid` at INFO (`contracts/web_auth.md` §7). Optional `updated_by_oid` on the document is allowed but not required for v1.
 

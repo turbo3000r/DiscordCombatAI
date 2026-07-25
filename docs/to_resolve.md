@@ -17,7 +17,7 @@
 
 This does **not** mean every subsystem is ready to implement. In particular, `/quick-battle`, the real LangGraph graphs, remaining guild lifecycle edges, suggestion edge cases, and Web API schemas still require the open P1 items below. None of those gaps changes the global service topology or already-resolved cross-service wire contracts.
 
-**Phase 0 implementation-ready now:** scaffold/Compose skeleton, shared typed models from contracts (including `language` enum + mapping), shared Azure credential/client layer, RabbitMQ + Mosquitto configuration. **Phase 1 coordination Slice 0 documentation is reconciled:** Launcher/Head versioning, image/recreate ownership, interrupted-operation recovery, verification/rollback, Blob-renew recovery, and P1.8 heartbeat/buffer/live-cap contracts are closed. **Phase 2 documentation is reconciled:** transport-shell (`graph="environment"` canned path), host `NODE_ID` injection, Celery/RabbitMQ wiring (definitions-owned topology, task name, broker URL/vhost), Bot asyncio vs Celery/MQTT concurrency, Phase 2 Bot scope (no slash commands), and S03/S04/S05/S07/S08/S10 acceptance ownership. **Local product-development architecture is reconciled:** `contracts/local_development.md` + S14 (separate Discord app, domain providers, `dev-support`, local Web admin; not Azure emulation). **Still deferred for later phases:** remaining P1.3 command/lifecycle items, P1.1–P1.2, P1.4 leftovers, P1.6, real LangGraph behavior, `/config`/`/suggest`/`/quick-battle`, Web product slices, and all P2 items.
+**Phase 0 implementation-ready now:** scaffold/Compose skeleton, shared typed models from contracts (including `language` enum + mapping), shared Azure credential/client layer, RabbitMQ + Mosquitto configuration. **Phase 1 coordination Slice 0 documentation is reconciled:** Launcher/Head versioning, image/recreate ownership, interrupted-operation recovery, verification/rollback, Blob-renew recovery, and P1.8 heartbeat/buffer/live-cap contracts are closed. **Phase 2 documentation is reconciled:** transport-shell (`graph="environment"` canned path), host `NODE_ID` injection, Celery/RabbitMQ wiring (definitions-owned topology, task name, broker URL/vhost), Bot asyncio vs Celery/MQTT concurrency, Phase 2 Bot scope (no slash commands), and S03/S04/S05/S07/S08/S10 acceptance ownership. **Local product-development architecture is reconciled:** `contracts/local_development.md` + S14 (separate Discord app, domain providers, `dev-support`, local Web admin; not Azure emulation). **Phase 3 documentation is reconciled:** ProcessCommand, `/config` (first-use + Apply partial-field policy + Google list/probe), `/suggest` (catalog fail-closed, prod vs dev), Queue/sweep/DM delivery (honest at-least-once), minimal Web Suggestions slice, S12, and SKILL boundaries. **Still deferred for later phases:** offline guild-removal sweep, P1.1–P1.2, remaining P1.6 Web polish, real LangGraph behavior, `/quick-battle`, non-Suggestions Web pages, webhook/S13, and all P2 items.
 
 ---
 
@@ -127,7 +127,7 @@ This does **not** mean every subsystem is ready to implement. In particular, `/q
 
 - Canonical: `contracts/guild_config.md` §4a/§7; `azure.md` `guilds.py` note; `discord_bot.md` §6.2; `guilds.md` list filter.
 - Field-scoped Cosmos Patch + ETag (≤5 on 412); soft-delete confirmed unbounded v1; rejoin preserves `created_at` + admin fields; default lists exclude `left_at != null`.
-- **Still open under P1.3:** offline removal sweep, Apply atomicity for invalid key/model, model-catalog pagination/25-cap, command recovery beyond Cosmos Apply already specified.
+- **Still open under P1.3 after shared-client pass:** offline removal sweep (still deferred after Phase 3), Apply atomicity / 25-cap / first-use — **closed in Phase 3** (see Resolved → Phase 3).
 
 ## Phase 1 Slice 0 — Launcher/Head coordination reconciliation (resolved)
 
@@ -250,6 +250,50 @@ Canonical: `contracts/local_development.md`. Acceptance: `scenarios/14_local_dev
 
 Propagated to `architecture.md`, `azure.md`, `bot/discord_bot.md`, `web/web.md`, `web_auth.md`, `guild_config.md`, `suggestion.md`, `status_document.md`, `pubsub_live.md`, `docs/Readme.md`, `scenarios/Readme.md`.
 
+## Phase 3 — `/config` and `/suggest` (resolved)
+
+Documentation gate for implementing Phase 3. Canonical detail lives in the linked docs; this section records the decisions only.
+
+### Scope
+
+**Includes:** ProcessCommand; Bot localization required by `/config` and `/suggest`; those two commands; command-specific Components V2 UIs; production suggestion Queue polling + reconciliation sweep; Discord DM response delivery; minimal authenticated Web Suggestions list/detail/respond path; S12 acceptance.
+
+**Excludes:** real AI graphs; `/quick-battle`; offline guild-removal sweep; Dashboard and Performance; webhook broadcasting and S13; general Web completion; Head or Launcher redesign.
+
+### ProcessCommand
+
+Normative: `containers/bot/discord_bot.md` §6.4. Decorator/wrapper owns acknowledgement for denials; per-command flags for `required_guild`, `required_guild_enabled`, permissions, `blocked_during_drain`; production vs development guild filtering (`local_development.md`); typed guild-config load; ephemeral localized denials; logging fields; expected vs unexpected exceptions; modal/autocomplete compatibility; no legacy developer bypass; no blocking SDK on the Discord event loop.
+
+| Command | Guild | Enabled gate | Permissions | During drain |
+|---|---|---|---|---|
+| `/config` | guild-only | no | administrator | available |
+| `/suggest` | production guild-or-DM; development guild-only (reject DM) | no | none | available |
+
+### `/config`
+
+- First-use: `ensure_active_guild()` then load panel; never unpersisted fake docs (`guild_config.md` §7a, `config.md` §6).
+- Apply: one authoritative partial-field ETag Patch (`guild_config.md` §8) — valid `language`/webhook may commit even if new key/model fails; invalid fields excluded with inline errors; never replace previous key/model on failed validation; `enabled=true` only when resulting config has validated key+model; ETag conflict → reload/retry; Cosmos failure → no success, preserve staged state.
+- `api_key` stored **plaintext** in Cosmos (v1); Web redacts.
+- Google: `google-genai` via `asyncio.to_thread`; list on key stage (gemini+generateContent, sort by id, truncate 25, truncation notice+WARN); one minimal `generateContent` probe at Apply before accepting replacement key/model; map errors to localized invalid-key / unavailable-model / rate-limit / transient-service; never log key/prompt/raw provider exception.
+
+### `/suggest`
+
+- Catalog: `StatusService.get_suggestion_catalog()` every new invocation; optional cache ≤600s view lifetime; fail closed; no hardcoded fallback; re-validate on modal submit; store values not labels (`suggest.md`, `status_document.md`).
+- Create failures: Cosmos success required before ticket UID; transient/permanent distinct; no success after failure; duplicate interaction must not double-create; no notification enqueue on create.
+- Production preserves guild+DM; development rejects DM and suppresses Queue/DM side effects (`local_development.md`).
+
+### Suggestion delivery + Web slice
+
+- Failed-notification recovery via Web `mode=send`, reset attempts to 0, ETag + Idempotency-Key (`suggestion.md` §3a, `suggestions.md`).
+- Queue/sweep/claim-timeout/`BOT_SUGGESTION_CLAIM_TIMEOUT_SEC=120`; Cosmos authoritative; at-least-once DM with **bounded duplicate** possible after crash-after-DM-before-Cosmos — not exactly-once (`discord_bot.md` §6.6, S12).
+- Phase 3 Web: auth shell + Suggestions list/detail/respond + shared response service + Queue enqueue + catalog seed if needed; target `src/web/`; legacy root `web/` reference-only (`web.md`).
+
+### SKILL boundaries
+
+- `discord-combat-ai-bot`: Phase 3 ProcessCommand, `/config`, `/suggest`, Components V2, localization, Google off-loop, poller/sweep/DM, S12, local-dev suppression.
+- `discord-combat-ai-web`: Phase 3 minimal Suggestions slice; all other Web slices deferred.
+- `discord-combat-ai-scenario-testing`: explicit S12 Phase 3 coverage note.
+
 ---
 
 # P0 — Global architecture and contract blockers
@@ -332,42 +376,43 @@ Prompt file authoring and physical migration remain implementation tasks once th
 
 ## P1.3 Guild configuration lifecycle and concurrency
 
-**Evidence:** `contracts/guild_config.md` §3–§8; `bot/discord_bot.md` §6.2; `bot/commands/config.md` §6/§9/§12.
+**Evidence:** `contracts/guild_config.md` §3–§9; `bot/discord_bot.md` §6.2/§6.4; `bot/commands/config.md`.
 
-**Resolved for shared Azure clients (this revision):**
+**Resolved for shared Azure clients + Phase 3 `/config`:**
 
 1. ~~Field-scoped Cosmos PATCH + ETag/concurrency~~ — **resolved:** `guild_config.md` §4a.
 2. ~~Rejoin semantics~~ — **resolved:** `guild_config.md` §7.
+3. ~~First-use `/config` when document missing~~ — **resolved (Phase 3):** `ensure_active_guild` then panel (`guild_config.md` §7a, `config.md` §6).
 4. ~~Whether lists/counts exclude `left_at != null`~~ — **resolved:** default exclude; `guild_config.md` §7 / `guilds.md`.
+5. ~~Apply semantics when staged API key/model is invalid~~ — **resolved (Phase 3):** partial-field transaction (`guild_config.md` §8, `config.md` §6/§12).
+6. ~~Model-catalog timeout/pagination and Discord's 25-option Select~~ — **resolved (Phase 3):** truncate to 25, no pagination v1, truncation notice (`config.md` §6.3).
 7. ~~Webhook URL validation~~ — **resolved (P0.7).**
 8. ~~Soft-delete policy / retention~~ — **resolved:** soft-delete confirmed, unbounded v1 (`guild_config.md` §7).
-   `/config` Cosmos Apply user-visible recovery — **resolved with P1.7:** `config.md` §12.
+9. ~~`/config` Cosmos Apply user-visible recovery~~ — **resolved (P1.7 + Phase 3):** `config.md` §12 / `guild_config.md` §8.6.
 
-**Still resolve before full `/config` + guild lifecycle implementation (not required for Phase 0 Azure clients):**
+**Still deferred (not Phase 3):**
 
-3. Detection of guild removals missed while Bot was offline; iterating only current `bot.guilds` cannot mark absent documents left.
-5. Behavior when guild document creation failed but a command arrives (beyond Apply error already specified).
-6. Apply semantics when a staged API key/model is invalid: which fields commit atomically, whether the invalid key is stored, and what happens to the previously valid model/key.
-9. Model-catalog timeout/pagination and Discord's 25-option Select limit, without blocking the async Discord event loop.
-
-The exact reconciliation scheduling algorithm is implementation detail after its correctness semantics are fixed.
+- Detection of guild removals missed while Bot was offline (mark `left_at` for Cosmos docs absent from `bot.guilds`).
+- Reconciliation **scheduling algorithm** — implementation detail after semantics above.
 
 ---
 
 ## P1.4 Suggestion delivery correctness
 
-Depends on `contracts/suggestion.md` from P0.5.1 — **contract exists**; remaining items are implementation-edge refinements:
+Depends on `contracts/suggestion.md` from P0.5.1 — **contract exists**; Phase 3 closed the remaining delivery-edge items below:
 
-1. ~~Atomic claim preventing queue poller and sweep from sending the same DM~~ — **specified** in `contracts/suggestion.md` §3; verify in code when implementing.
-2. Azure Queue at-least-once delivery, duplicate events, visibility renewal — poison/delete rules are in the contract; visibility *renewal* mid-DM still an implementation detail if DM can exceed 60s.
-3. Attempt-count persistence and retry/backoff semantics — attempts + max are specified; exponential backoff between retries is optional/implementation.
-4. Multiple/concurrent admin response behavior and idempotency of `/respond`.
-5. DM invocation locale/guild fields and auto-feedback fallback — structured `LocaleInfo` exists on the ticket; resolution order for edge cases still to nail.
-6. Terminal `failed` recovery/retry by an administrator.
-7. Pagination/continuation tokens for suggestion list and conversation history.
-8. ~~Shared catalog bootstrap/ownership~~ — **resolved P0.5.3**; catalog is `{value, label}`; cache/fallback on read failure still open.
+1. ~~Atomic claim preventing queue poller and sweep from sending the same DM~~ — **resolved** in `contracts/suggestion.md` §3; verify in code when implementing.
+2. ~~Azure Queue at-least-once, duplicate events, visibility~~ — **resolved:** visibility 60s; no mid-DM renewal in v1; poison/delete rules + claim timeout (`suggestion.md`, `discord_bot.md` §6.6).
+3. ~~Attempt-count persistence and retry~~ — **resolved:** attempts + max; admin retry resets to 0 (`suggestion.md` §3a).
+4. ~~`/respond` idempotency~~ — **resolved (Phase 3):** `Idempotency-Key` + ETag; unrestricted multi-admin editing beyond that remains deferred.
+5. ~~DM invocation locale/guild fields~~ — structured `LocaleInfo` on ticket; production DM allowed; development rejects DM (`suggest.md` §4).
+6. ~~Terminal `failed` recovery/retry by an administrator~~ — **resolved (Phase 3):** `suggestion.md` §3a / `suggestions.md`.
+7. Pagination/continuation tokens for suggestion list and conversation history — **deferred to P1.6** (not required for Phase 3 minimal list/detail).
+8. ~~Shared catalog bootstrap/ownership + Bot read failure~~ — **resolved:** Web seeds; Bot `get_suggestion_catalog()` fail-closed; cache ≤600s view lifetime (`suggest.md` §6, `status_document.md`).
 9. ~~Sweep minimum pending age~~ — **resolved:** `BOT_SUGGESTION_SWEEP_MIN_AGE_SEC` default 600.
-10. Queue polling failure behavior: define whether Bot skips a cycle, how it backs off, which health/status field becomes stale or degraded, and how recovery resumes without duplicating delivery.
+10. ~~Queue polling failure behavior~~ — **resolved (P1.7):** skip cycle; degraded after 3 consecutive failures; sweep independent (`azure.md` §6a, `discord_bot.md` §9).
+
+**Honest delivery guarantee (Phase 3):** Cosmos authoritative; Queue is a hint; at-least-once DM with possible **bounded duplicate** after crash-after-DM-before-Cosmos — S12.
 
 ---
 
@@ -387,7 +432,7 @@ Resolve before Web implementation:
 2. `/api/metrics` and history fields after the telemetry contract is fixed; omit unsupported fields rather than fabricate/null them inconsistently.
    Define whether stale retained values are visibly marked when either metrics request fails.
 3. PubSub negotiate errors/token expiry/reconnect behavior (auth boundary itself is **resolved P0.7** / `contracts/web_auth.md`).
-4. ~~Idempotency and confirmation for broadcasts~~ — **resolved (P0.7)** for webhook send/update; suggestion mutation concurrency/idempotency remains P1.4.
+4. ~~Idempotency and confirmation for broadcasts~~ — **resolved (P0.7)** for webhook send/update; suggestion `/respond` Idempotency-Key + ETag **resolved (Phase 3)**; unrestricted multi-admin editing beyond that remains deferred.
 5. Webhook broadcast concurrency limits, timeout, retry policy, and result schema (rate/cooldown/idempotency/audit **resolved P0.7**; remaining: Discord POST timeout/retry detail).
 6. Health/readiness contract and deployment target/rollout/rollback mechanism.
 7. Web logging destination and retention. Web self-metrics are optional unless selected for v1 operations.
@@ -454,12 +499,12 @@ These edits are mechanical after the decisions above; they should be completed b
 11. ~~Reconcile `task_progress.md`'s `queued` publisher~~ — **done (Phase 0 Slice 0).**
 12. Remove stale wording that Web PubSub group presence is used for leader election; it is only heartbeat transport after the Blob Lease redesign — remaining stray mentions only if found.
 13. ~~Correct `Readme.md` and `web/pages/home.md` claims that Bot status writes resolve/maintain identity~~ — **done, P0.5.3**.
-14. Correct `bot/commands/suggest.md` §5's claim that the `WizardView` correction is unapplied — **deferred to suggestion/command docs hygiene** (not Phase 2).
+14. ~~Correct `bot/commands/suggest.md` §5's claim that the `WizardView` correction is unapplied~~ — **done (Phase 3):** `visuals.md` / `suggest.md` aligned on `SuggestionView`.
 15. ~~Reconcile the high-level project tree with detailed service trees (Celery app path, Bot services, definitions as topology owner)~~ — **done, Phase 2 doc pass**.
 16. ~~Remove conditional live streaming / “Web listens to PubSub” / unnamed dashboard group~~ — **done, P0.6**.
 17. ~~Remove “auth deferred / no auth / Auth Placeholder / not publicly safe until P0.7”~~ — **done, P0.7**.
 18. ~~Remove `ai_worker.md` §9's dangling “see next row for the open question” reference~~ — **done, Phase 2 doc pass**.
-19. Replace `bot/visuals.md`'s stale statement that the suggestion catalog is “moving off” a hardcoded list — **deferred** (visuals/catalog hygiene; not Phase 2 transport).
+19. ~~Replace `bot/visuals.md`'s stale statement that the suggestion catalog is “moving off” a hardcoded list~~ — **done (Phase 3):** catalog owned by `status_document.md`; fail-closed.
 20. Reconcile `web/pages/home.md`'s documented `version` response with the canonical status document — **deferred to P1.6 / Web**.
 21. Remove or update stale self-marked “resolved” prose in task_progress after canonical text is corrected — **done for the quick-battle stub tombstone this pass**.
 22. ~~Correct `azure.md` and `web.md` Queue-failure wording~~ — **done with P1.7**.
@@ -475,9 +520,9 @@ These edits are mechanical after the decisions above; they should be completed b
 2. ~~**Suggestion, telemetry, status, archive, and schema-evolution contracts** (P0.5)~~ — **resolved**.
 3. ~~**Web PubSub topology** (P0.6)~~ and ~~**Web security boundary** (P0.7)~~ — **resolved**.
 4. ~~**End-to-end scenarios** (P0.8)~~ — **resolved** (`docs/scenarios/`) + cleanup pass.
-5. **Quick Battle + AI graph bounded behavior** (P1.1–P1.2). Locale mapping is done (P1.9).
-6. **Remaining guild/suggestion concurrency** (leftover P1.3 items, P1.4).
-7. **Web details** (P1.6). Observability (P1.8), brokers (P1.5), and Azure clients (P1.7) are done.
+5. **Quick Battle + AI graph bounded behavior** (P1.1–P1.2). Locale mapping is done (P1.9). Phase 3 `/config`/`/suggest` docs are closed.
+6. ~~**Remaining guild/suggestion concurrency** (leftover P1.3 items, P1.4)~~ — **Phase 3 closed** except offline guild-removal sweep (deferred) and suggestion list pagination (P1.6).
+7. **Web details** (P1.6) for non-Suggestions pages and operational polish. Observability (P1.8), brokers (P1.5), and Azure clients (P1.7) are done.
 
 When all P0 items and the P1 items for a target subsystem are closed, that subsystem's docs can be considered ready for implementation. “All docs ready” requires every P0 and P1 item to be either resolved or explicitly removed from v1 scope with affected fields/endpoints/flows deleted from the specification.
 
@@ -534,7 +579,7 @@ Build after domain models exist; can proceed in parallel with Phase 2 transport 
 **Deferred (not spine gate):**
 
 - Web wiring (local-admin auth, banner, loopback host publish, live feed, webhook dry-run) until `src/web/` / P1.6.
-- `/config`, `/suggest`, `/quick-battle` command exercise until command phases / P1.1–P1.4.
+- `/config`, `/suggest` command exercise — **Phase 3 docs closed**; implement in Phase 3. `/quick-battle` remains until command phase / P1.1–P1.2.
 - Full S14 steps that require commands/Web.
 
 **Documentation gate:** Resolved → Local product-development architecture is closed. Implement against `contracts/local_development.md`; do not invent an Azure emulator.
@@ -543,10 +588,16 @@ Build after domain models exist; can proceed in parallel with Phase 2 transport 
 
 ## Phase 3 — Configuration and suggestions vertical slices
 
-1. Close remaining P1.3 leftovers if needed for production `/config`, plus P1.9 (**done**) before treating config as complete; use `/config` to establish valid guild/key/model data before any real AI command.
-2. Implement `/suggest` ticket creation and Bot delivery claim/sweep together with Web's Suggestions response path; validate S12.
+**Documentation gate:** Phase 3 decisions in this file’s Resolved section are closed. Implement against `discord_bot.md` §6.4/§6.6, `guild_config.md` §7a/§8, `config.md`, `suggest.md`, `suggestion.md` §3/§3a, `web.md` Phase 3 slice, `suggestions.md`, and S12 — do not invent Apply atomicity, catalog fallbacks, or exactly-once DM delivery.
 
-These slices give useful functionality without depending on the unresolved battle graphs. `/config` and suggestion work can proceed in parallel after their shared Cosmos/Queue services exist.
+1. Implement `ProcessCommand` + localization keys needed by the two commands.
+2. Implement `/config` (ensure_active, staged UI, Google list/probe off-loop, partial Apply Patch).
+3. Implement `/suggest` ticket creation (catalog fail-closed) and Bot delivery claim/sweep/DM together with Web’s minimal Suggestions respond path; validate S12.
+4. Use `/config` to establish valid guild/key/model data before any later real AI command phase.
+
+These slices give useful functionality without depending on the unresolved battle graphs. `/config` and suggestion work can proceed in parallel after their shared Cosmos/Queue (or `dev-support`) services exist.
+
+**Gate:** S12 invariants hold for production delivery paths; development suppresses Queue/DM per `local_development.md`.
 
 ## Phase 4 — AI graphs
 

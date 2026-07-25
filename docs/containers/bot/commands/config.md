@@ -1,29 +1,31 @@
 # Command: Config
 
-> **Rewritten from scratch, legacy is reference only** (project owner) — `modules/ConfigurationHandler.py`'s `ConfigView`/`_pending_changes` flow is the source for *which staged-settings shape already exists* (per-field staging + one explicit Apply), not a spec to port 1:1. One behavior below deliberately diverges from legacy: Model selection is no longer free text typed alongside the API key — it becomes its own live-populated Select, sourced directly from Google's own model catalog (§6). Everything else (Language, Webhook, Apply gate) carries forward unchanged.
+> **Rewritten from scratch, legacy is reference only** (project owner) — `modules/ConfigurationHandler.py`'s `ConfigView`/`_pending_changes` flow is the source for *which staged-settings shape already exists* (per-field staging + one explicit Apply), not a spec to port 1:1. Model selection is a live-populated Select from Google's model catalog (§6), not free text. Apply semantics are normative in `contracts/guild_config.md` §8.
 
 ## 1. Purpose & Scope
 
-Admin-only guild configuration panel: language, AI (Google API key + model), and webhook URL, all staged in-memory and committed together via one explicit Apply step (legacy's `_pending_changes` dict, now the `StagedSettingsView` pattern — `visuals.md` §3). Only the invoking guild's `administrator`s can run it (§4); guild-only, no DM support, and does **not** require the guild to already be enabled (`/config` is how a guild becomes enabled in the first place — same carve-out legacy applies). No subcommands, no options — entirely Select/modal driven.
+Admin-only guild configuration panel: language, AI (Google API key + model), and webhook URL, all staged in-memory and committed via one explicit Apply (`StagedSettingsView` — `visuals.md` §3). Guild-only, administrator permission, does **not** require the guild to already be enabled. Available during drain (`ProcessCommand` `blocked_during_drain=False` — `discord_bot.md` §6.4). No subcommands, no options — entirely Select/modal driven.
+
+**Phase 3:** this command is in scope. Offline guild-removal sweep is not.
 
 ## 2. File Structure
 
 ```
 commands/config/
-├── command.py                  # /config registration + admin permission check (§4)
-├── models.py                   # StagedConfigChanges — in-memory staged edits, mirrors legacy's _pending_changes dict
+├── command.py                  # /config registration + ProcessCommand gates (§4)
+├── models.py                   # StagedConfigChanges — in-memory staged edits
 ├── UI/
 │   ├── modals/
-│   │   ├── api_key_modal.py    # Google API key ONLY now — Model moved off this modal onto the main view (§6)
-│   │   └── webhook_modal.py    # Webhook URL — unchanged from legacy's WebhookConfigModal
+│   │   ├── api_key_modal.py    # Google API key ONLY — Model on main view (§6)
+│   │   └── webhook_modal.py    # Webhook URL
 │   └── views/
-│       ├── language_select.py  # Command-specific Select — options en|es|ua (contracts/localization.md §3a)
-│       └── model_select.py     # Command-specific Select — options fetched live via service/model_catalog.py (§6)
+│       ├── language_select.py  # Options en|es|ua (contracts/localization.md §3a)
+│       └── model_select.py     # Options from service/model_catalog.py (§6)
 └── service/
-    └── model_catalog.py        # Wraps Google's client.models.list(), applies the gemini+generateContent filter (§6)
+    └── model_catalog.py        # google-genai list + filter + Apply probe (§6)
 ```
 
-`StagedSettingsView` (the base container: staged in-memory changes + a single Apply button) is **shared** — defined once in `bot/modules/UI/views/staged_settings.py` per `visuals.md` §3; this command supplies its own child components (`LanguageSelect`, `ModelSelect`, the two modal-trigger buttons) into that base rather than reimplementing the stage/apply mechanics itself.
+`StagedSettingsView` is **shared** (`bot/modules/UI/views/staged_settings.py` per `visuals.md` §3).
 
 ## 3. Invocation & Options
 
@@ -33,116 +35,152 @@ commands/config/
 | **Subcommands** | None |
 | **Source** | `bot/modules/commands/config/command.py` |
 
-**Options:** None. The entire configuration surface is Select/modal driven inside the panel itself, carried forward 1:1 from legacy.
+**Options:** None.
 
 ## 4. Permissions & Access Control
 
-Requires the Discord `administrator` permission (`allowed_permissions={discord.Permissions.administrator: True}`, carried forward 1:1 from legacy `ConfigurationHandler.py`). Guild-only (`required_guild=True`); deliberately **does not** require the guild to already be enabled (`required_guild_enabled=False`) — this is how a guild first becomes enabled, so gating it on "already enabled" would be circular. A non-admin invoking it sees an explicit ephemeral permission-denied message (`ProcessCommand`'s existing behavior, `modules/utils.py`), never a silent failure. No cooldown, matching legacy.
+Via `ProcessCommand` (`discord_bot.md` §6.4):
+
+| Flag | Value |
+|---|---|
+| `required_guild` | `True` |
+| `required_guild_enabled` | `False` |
+| `allowed_permissions` | administrator |
+| `blocked_during_drain` | `False` |
+
+Non-admin → ephemeral permission-denied. Development mode: only `DISCORD_DEVELOPMENT_GUILD_ID`; DMs rejected by `required_guild`. No legacy developer bypass. No cooldown.
 
 ## 5. Visuals Used
 
-Per `visuals.md` §1's confirmed decision, this is a multi-field settings panel — more than a single trivial response — so it targets **Components V2**: `StagedSettingsView` becomes a `LayoutView`/`Container` (not legacy's classic `Embed`+`View`), with one `Section` per setting (Language, AI, Webhook) and the same Apply-button gate at the bottom.
+Components V2: `StagedSettingsView` as `LayoutView`/`Container` with one `Section` per setting (Language, AI, Webhook) and Apply at the bottom.
 
 | Piece | Shared or command-specific | Notes |
 |---|---|---|
-| `StagedSettingsView` | Shared (`visuals.md` §3) | Base container: staged in-memory dict + Apply button. This command is currently its only consumer — kept in the shared catalog on the expectation any future "N settings staged then applied" command reuses it, the same reasoning `quick-battle.md` §2 already applies to `LobbyView`/`SequentialCollector` despite those also having one consumer today |
-| `LanguageSelect` | Command-specific (this doc) | Options = closed v1 enum `en` \| `es` \| `ua` (`contracts/localization.md` §3a) |
-| `ModelSelect` | Command-specific (this doc) | **New** — replaces legacy's free-text Model field inside `AIConfigModal`. Disabled with a placeholder until a valid API key is staged; populated live from `service/model_catalog.py` (§6) |
-| `api_key_modal.py` | Command-specific | Single-field modal (API key only) — Model split out onto `ModelSelect` (§6); the one structural UI change from legacy's combined `AIConfigModal` |
-| `webhook_modal.py` | Command-specific | Unchanged from legacy's `WebhookConfigModal` |
+| `StagedSettingsView` | Shared (`visuals.md` §3) | Staged in-memory dict + Apply |
+| `LanguageSelect` | Command-specific | `en` \| `es` \| `ua` |
+| `ModelSelect` | Command-specific | Disabled until listing succeeds; max 25 options (§6) |
+| `api_key_modal.py` | Command-specific | API key only |
+| `webhook_modal.py` | Command-specific | Allowlist on stage/Apply |
 
 ## 6. Interaction Flow
 
-**Confirmed decisions baked into this flow** (project owner, this session):
-- Model selection is promoted out of the API-key modal onto its own persistent Select on the main view (`ModelSelect`) — a Discord modal cannot populate a dynamic dropdown from a value entered in that same submission, so listing and picking a model must be separate round-trips.
-- Before an API key is staged, or if the model-listing call fails (bad key, network error, zero results), `ModelSelect` stays disabled with an explicit placeholder/error message — there is **no** hardcoded fallback model list.
-- Listed models are filtered to those where `supported_actions` includes `generateContent` **and** the model name contains `gemini` — mirrors `AIHandler`'s actual usage (`modules/AIHandler.py`) and excludes embedding-only/vision-only/legacy-PaLM models Google's API may also return.
+### 6.1 First-use document ensure
 
-**Step-by-step:**
+1. Admin invokes `/config` (gates §4).
+2. If no active guild document: call `ensure_active_guild()` with current Discord metadata, create/reactivate with defaults (`contracts/guild_config.md` §5/§7/§7a), then load.
+3. Transient Cosmos error → ephemeral retry message; permanent → operator-facing error; **never** render a panel on an unpersisted fake document.
+4. On success, render `StagedSettingsView` (ephemeral): `LanguageSelect` from stored language; `ModelSelect` populated from listing with the *currently stored* key if present and listable, else disabled; Set API Key / Set Webhook / Apply.
 
-1. Admin invokes `/config` (admin-permission gate, §4). Bot reads the guild's current config (Cosmos DB, §9) and renders `StagedSettingsView`: `LanguageSelect` defaulted to the configured locale, `ModelSelect` (populated using the *currently stored* key if one exists and still validates, else disabled), "Set API Key" button, "Set Webhook" button, Apply button. Ephemeral.
-2. **Language:** admin picks a value on `LanguageSelect` → staged in-memory (mirrors legacy `_pending_changes`); view re-renders showing the pending value, no Apply yet.
-3. **API key:** admin presses "Set API Key" → `api_key_modal.py` (single field) → on submit, the key is staged **and** immediately used to call `service/model_catalog.py`'s listing (§6):
-   - **Listing succeeds** → `ModelSelect` is rebuilt, enabled, and populated with the filtered model list, defaulting to the previously-selected model if it's still present, else the first result.
-   - **Listing fails** → `ModelSelect` stays disabled, with an inline/footer message telling the admin the key couldn't be verified (e.g. "Could not fetch models — check your API key") — per the confirmed no-fallback decision.
-4. **Model:** if enabled, admin picks a value on `ModelSelect` → staged.
-5. **Webhook:** admin presses "Set Webhook Change" → `webhook_modal.py` (unchanged from legacy) → staged. **On stage/Apply, validate the URL against the Discord-host allowlist** in `contracts/web_auth.md` §7 (`https://discord.com/api/webhooks/...` or `https://discordapp.com/api/webhooks/...` only). Reject non-HTTPS, other hosts, and IP literals with a localized error — do not persist an invalid URL.
-6. **Apply:** admin presses Apply → all staged changes commit to the guild's Cosmos DB config document (§9) in one write. If an API key was staged, legacy's existing "is this key actually usable" check (`enableAI()`/`is_api_key_valid`, `modules/guild.py` / `modules/AIHandler.py`) still re-runs before flipping `enabled: true` — kept as a second check even though a successful model-listing call in step 3 already implies the key works, since listing and generating are technically different API calls (flagged as a possible redundant check to simplify later, §14). On failure, `enabled` stays/becomes `false` and the admin sees an inline warning, mirroring legacy's exact wording. Webhook URL must pass the allowlist again at Apply if staged.
-7. Panel stays open (ephemeral) after Apply — admin may keep adjusting and re-apply, or dismiss it. 5-minute view timeout, unchanged from legacy.
+### 6.2 Staging
 
-**Diagram:**
+**Confirmed decisions:**
+
+- Model selection is on the main view (`ModelSelect`), not inside the API-key modal.
+- Before a usable key exists, or if listing fails, `ModelSelect` stays disabled with an explicit placeholder/error — **no hardcoded fallback model list**.
+- Listed models: name contains `gemini` **and** `supported_actions` includes `generateContent`.
+
+**Steps:**
+
+1. **Language:** select → stage; re-render pending value.
+2. **API key:** modal submit → stage key → **immediately** run model **listing** (§6.3):
+   - Success → rebuild `ModelSelect` (≤25 options), enable, default to previous model if still present else first result; show truncation notice if applicable.
+   - Failure → keep `ModelSelect` disabled + inline invalid-key / transient error.
+3. **Model:** if enabled, select → stage.
+4. **Webhook:** modal → stage; validate Discord-host allowlist (`web_auth.md` §7) on stage; reject invalid with localized error.
+5. **Apply:** build and commit per `contracts/guild_config.md` §8 (partial-field transaction). Report which fields applied vs rejected. Panel stays open; 5-minute view timeout.
 
 ```mermaid
 stateDiagram-v2
-    [*] --> Panel
+    [*] --> EnsureDoc
+    EnsureDoc --> Panel : ensure_active_guild + load OK
+    EnsureDoc --> [*] : Cosmos error (no panel)
 
-    Panel --> Panel : Language select changes (staged only)
-    Panel --> ApiKeyModal : press "Set API Key"
+    Panel --> Panel : Language / Model staged
+    Panel --> ApiKeyModal : Set API Key
     ApiKeyModal --> ListingModels : on_submit (key staged)
-    ListingModels --> Panel : listing succeeds -> ModelSelect enabled + populated
-    ListingModels --> Panel : listing fails -> ModelSelect stays disabled + error shown
+    ListingModels --> Panel : list OK / fail
 
-    Panel --> Panel : Model select changes (staged only, only if enabled)
-    Panel --> WebhookModal : press "Set Webhook Change"
-    WebhookModal --> Panel : on_submit (webhook staged)
+    Panel --> WebhookModal : Set Webhook
+    WebhookModal --> Panel : staged or rejected
 
-    Panel --> Applying : press Apply
-    Applying --> Panel : Cosmos DB write + AI re-validation done, pending cleared
-    Panel --> [*] : admin dismisses / view times out (5 min, unchanged from legacy)
+    Panel --> Applying : Apply
+    Applying --> Panel : partial Patch + field report
+    Panel --> [*] : dismiss / timeout 5 min
 ```
+
+### 6.3 Google model validation (`google-genai`)
+
+| Rule | Detail |
+|---|---|
+| SDK | `google-genai` |
+| Event loop | Synchronous SDK calls **must** run via `asyncio.to_thread()` (or equivalent) — never block the Discord loop |
+| Listing trigger | Every successful API-key modal stage (and initial panel open when a stored key exists) |
+| List filter | Retain Gemini models supporting `generateContent` |
+| Sort | Deterministic sort by **canonical model ID** |
+| Cap | Truncate to the **first 25** options; **no pagination in v1** |
+| Truncation UX | Localized truncation notice on the panel |
+| Truncation log | Redacted WARN (guild_id, count truncated) — **never** log the key |
+| Apply-time probe | When Apply would commit a **new** key and/or **new** model, perform **one** minimal `generateContent` probe with the smallest practical output limit **before** including those fields in the Patch |
+| Probe secrets | Never log the key, prompt/response body, or raw provider exception text |
+| Error mapping | Map provider failures to localized: invalid-key, unavailable-model, rate-limit, transient-service |
+
+Listing success alone does **not** flip `enabled`; the Apply probe (or existing stored validated pair) gates `enabled=true` per `guild_config.md` §8.4–§8.5.
 
 ## 7. AI / Graph Integration
 
-N/A — no `ai_tasks` message is ever sent by this command. The Google Gemini call this command makes (`service/model_catalog.py`'s `client.models.list()`, §6) is a direct, synchronous Bot→Google call for populating `ModelSelect`; it is unrelated to the `AI Worker`/RabbitMQ `ai_tasks` pipeline (`ai_worker.md`) that `/quick-battle` uses.
+N/A — no `ai_tasks`. Direct Bot→Google calls for listing/probe only.
 
 ## 8. Backend / Service Logic
 
-- **`service/model_catalog.py`** — the one piece of real logic this command owns: constructs a `google-genai` client with the *staged, not-yet-applied* API key, calls `client.models.list()`, applies the `generateContent` + `gemini`-name filter (§6), and returns a plain list of model IDs (or raises/returns empty on failure, so the UI layer can show the disabled/error state). Everything else is direct Discord-side orchestration (staging changes in `models.py`, committing to Cosmos DB) — no other `src/shared/` delegation beyond the guild-config read/write itself (§9).
+- **`service/model_catalog.py`** — `google-genai` client with staged/stored key; `models.list()` filter/sort/truncate; Apply-time `generateContent` probe; typed error mapping.
+- Guild read/write via `GuildRepository` / `contracts/guild_config.md` — field-scoped ETag Patch only.
 
 ## 9. Data Read/Written
 
 | Destination/Source | Channel | Format | Trigger |
 |---|---|---|---|
-| Guild config (`Azure Cosmos DB`) | Read | Guild config document (`contracts/guild_config.md` §3) | Step 1 (panel open) |
-| Guild config (`Azure Cosmos DB`) | Write | Guild config document — only the admin-configured fields: `language`, `api_key`, `model`, `webhook_url`, `enabled` (`contracts/guild_config.md` §4). This command never touches the Discord-sourced metadata fields (`name`, `icon_url`, `member_count`, `owner_id`) — those are `bot/discord_bot.md` §6.2's responsibility exclusively | Step 6 (Apply) |
-| Google Gemini API (`client.models.list()`) | Read (external, not Azure) | Model catalog | Step 3, every time an API key is (re-)staged |
+| Guild config | Read / `ensure_active_guild` | `GuildConfigDocument` | Panel open |
+| Guild config | Conditional Patch | Admin fields only (`guild_config.md` §4/§8) | Apply |
+| Google Gemini API | External | Model list + probe | Key stage / Apply |
+
+`api_key` stored **plaintext** in Cosmos (`guild_config.md` §8.1).
 
 ## 10. Localization
 
-UI strings live under the `commands.config.*` namespace, already established in legacy's `lang/*.json` (`config.embed.*`, `config.messages.*`). **New keys needed, not present in legacy:** `ModelSelect`'s disabled/placeholder text and the listing-failure message (§6) have no legacy equivalent. No AI-generated content is ever displayed by this command, so `contracts/localization.md` §2's "two systems" split doesn't apply here beyond the fact that this command is the mechanism that *sets* the guild's shared `language`/`language_locale` value for everything else.
+Namespace `commands.config.*`. Required Phase 3 keys include: permission denied, Cosmos transient/permanent, listing failure, truncation notice, Apply field applied/rejected summaries, invalid webhook, invalid-key / unavailable-model / rate-limit / transient-service, enabled gate warning. Exact key names remain P2; presence of localized strings is required.
 
 ## 11. Logging
 
-Per-action tags: `guild_id`, `command: "config"`, plus command-specific: which field was staged (`language`/`api_key`/`model`/`webhook_url`) and the model-listing outcome (`success`/`failure`). The API key itself is **never** logged, at any level — same convention `azure.md` §7 already applies to `AZURE_CLIENT_SECRET`, extended here to this command's own secret, and restated at the container level in `bot/discord_bot.md` §7 since it applies to every code path that reads the field back, not just this command.
-
-**Storage note:** `api_key` is stored in **plaintext** in the Cosmos DB document (`contracts/guild_config.md` §7's confirmed v1 decision) — this is a scoped exception to "never persist secrets in the clear," accepted for this pass on the grounds that it matches legacy's own plaintext local-JSON behavior, not a new regression. Flagged as a security follow-up, not reopened here.
+Tags: `guild_id`, `command: "config"`, staged field names, listing/probe outcome (`success`/`failure` class). **Never** log API key, probe prompt/response, or raw provider exceptions.
 
 ## 12. Failure Modes
 
 | Failure | Detection | Recovery |
 |---|---|---|
-| Non-admin invokes `/config` | `ProcessCommand`'s permission check (§4) | Explicit ephemeral "you lack permission" message, panel never shown |
-| Model-listing call fails (bad key, network, zero results) | Exception/empty result from `client.models.list()` | `ModelSelect` stays disabled with an inline error (§6) — no fallback list; Apply still works for any other staged fields |
-| Staged API key fails the Apply-time validity check (§6 step 6) | `enableAI()`/`is_api_key_valid` returns `False` | `enabled` set/stays `false`, inline warning shown — same wording as legacy |
-| Staged webhook URL fails Discord-host allowlist (§6 step 5–6) | URL host/scheme not in `contracts/web_auth.md` §7 allowlist | Reject stage/Apply with localized error; do not write invalid `webhook_url` |
-| Cosmos DB unreachable / auth failure on Apply | Classified exception from `cosmos.py` (`azure.md` §6) | **Keep all staged in-memory changes.** Show a localized ephemeral/inline error: transient → “Could not save — try Apply again”; permanent auth/permission → “Cloud credentials/permissions error — contact operator.” Do **not** clear the panel or pretend Apply succeeded. |
-| Panel times out (5 min, unchanged from legacy) | View `timeout=300` fires | Staged-but-unapplied changes are lost, matches legacy exactly |
+| Non-admin / wrong guild / DM | `ProcessCommand` | Ephemeral denial; no panel |
+| Missing document + ensure fails | Cosmos classification | Transient → retry; permanent → operator message; no fake panel |
+| Model listing fails | Empty/exception from list | `ModelSelect` disabled + inline error; other fields still Appliable |
+| Apply probe fails for new key/model | Mapped provider error | Exclude key/model from Patch; preserve previous values; inline field error; other valid fields may still commit |
+| Invalid webhook | Allowlist | Exclude; previous URL unchanged |
+| `enabled=true` without valid key/model | Gate §8.4 | Do not commit `enabled=true`; warning |
+| ETag conflict exhausted | 412 budget | Reload panel; require review/retry; no success toast |
+| Cosmos unreachable on Apply | Classified error | Keep staged state; localized transient/permanent error; no success |
+| Panel timeout (300s) | View timeout | Staged-but-unapplied changes lost |
 
 ## 13. Dependencies
 
-| Dependency | Used for | Notes |
-|---|---|---|
-| `bot/visuals.md` | `StagedSettingsView`, design system colors | §5 |
-| `contracts/localization.md` | Guild `language`/`language_locale` value this command sets | §3 there names `/config` as the exact mechanism |
-| Google Gemini API (`google-genai`) | Model listing (§6) + API key validity check (§6 step 6) | External, not an Azure resource — outside `azure.md`'s scope |
-| `azure.md` §3 | Guild config Cosmos DB read/write | Don't redefine variables here |
-| `contracts/guild_config.md` | The exact document schema this command reads/writes | Shared with `bot/discord_bot.md` §6.2 (Discord-metadata fields) and `Web`'s `pages/guilds.md`/`pages/dashboard.md` (read-only) |
-| `contracts/web_auth.md` §7 | Webhook URL allowlist (same rule Web uses before POST) | Applied on stage/Apply so Cosmos never stores an SSRF-prone URL from `/config` |
+| Dependency | Used for |
+|---|---|
+| `discord_bot.md` §6.4 | `ProcessCommand` |
+| `contracts/guild_config.md` §7a/§8 | First-use + Apply policy |
+| `contracts/localization.md` | Language enum + UI strings |
+| `contracts/web_auth.md` §7 | Webhook allowlist |
+| `google-genai` | List + probe |
+| `azure.md` / repositories | Cosmos access |
 
 ## 14. Open Items / Future Work
 
-- **Apply-time key re-validation may be redundant** with the model-listing call already performed in step 3 (§6) — both hit Google's API; one lists models, one generates content. Worth collapsing into a single check once implemented; not decided here.
-- **Discord Select's 25-option cap** — if Google's `gemini` + `generateContent` catalog ever exceeds 25 entries, `ModelSelect` would need pagination/truncation. Still P1.3 (command-owned), not required for shared Azure clients.
-- **Apply atomicity when staged API key/model is invalid** (which fields commit, whether invalid key is stored) — still P1.3.
-- **`StagedSettingsView`'s exact shared API** (how a command supplies its own child Sections/buttons into the base container) isn't designed yet — `visuals.md` §4 already flags the component catalog as candidate-only; this command is simply its first concrete consumer.
-- ~~Cosmos DB failure handling on Apply~~ — **resolved (P1.7):** §12 + `azure.md` §6/§9.
+- Exact shared `StagedSettingsView` API shape — P2 / visuals hygiene.
+- `api_key` at-rest encryption — deferred (`guild_config.md` §9).
+- Offline guild-removal sweep — deferred (not Phase 3).
+- Model-catalog pagination beyond 25 — explicitly out of v1 (truncate + notice only).

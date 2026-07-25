@@ -153,7 +153,7 @@ Do **not** grant Head Cosmos/Queue access, or Bot Web PubSub access, in v1.
 
 **Bot Queue poll (canonical here + `discord_bot.md` §9):** on any receive failure, **skip the cycle** and wait until the next `BOT_QUEUE_POLL_INTERVAL_SEC`. After **3 consecutive** failed poll cycles, set heartbeat dependency health `azure_queue_ok: false` (`contracts/telemetry.md` §2.1). Recovery sets it true on the next successful receive; do not duplicate delivery — claim rules in `contracts/suggestion.md` still apply. Sweep path remains independent of Queue.
 
-**`/config` Cosmos Apply:** see `bot/commands/config.md` §12 — library raises classified errors; command keeps staged UI state and shows a localized error (permanent vs transient wording).
+**`/config` Cosmos Apply:** see `bot/commands/config.md` §12 and `contracts/guild_config.md` §8 — library raises classified errors; command keeps staged UI state, applies only valid fields in one ETag Patch when possible, and shows localized transient vs permanent errors.
 
 ---
 
@@ -175,8 +175,8 @@ Not applicable directly — this library does not self-report metrics. Optional 
 
 | Failure | Detection | Recovery |
 |---|---|---|
-| Cosmos DB unreachable (transient) | Transient classification from `cosmos.py` | Caller-specific. Bot `/config`: keep staged changes, localized error (`config.md` §12). Suggestion writes: fail the command/request. Guild sync: skip guild, retry next sweep. |
-| Cosmos DB auth/RBAC permanent | Permanent classification | Fail fast; do not apply Head-style infinite backoff. Operator must rotate secret or fix role assignment (§3a). |
+| Cosmos DB unreachable (transient) | Transient classification from `cosmos.py` | Caller-specific. Bot `/config`: keep staged changes, localized error (`config.md` §12). Bot `/suggest` create: transient → localized retry, **no** ticket UID / no success (`suggest.md` §12). Web suggestion writes: fail the request with classified error. Guild sync: skip guild, retry next sweep. |
+| Cosmos DB auth/RBAC permanent | Permanent classification | Fail fast; do not apply Head-style infinite backoff. Operator must rotate secret or fix role assignment (§3a). Bot `/suggest`: safe operator-facing ephemeral; **no** success. |
 | Blob Storage unreachable | Exception from `blob.py` | Surfaced to `Head`; per `head.md` §9, buffered logs accumulate then drop oldest. Lease failure follows leadership soft/hard-stop rules. |
 | Table Storage unreachable | Exception from `table.py` | Head writer: buffer/drop per `head.md` §9. Web reader: historical charts fail — `web.md` §9. |
 | Queue Storage unreachable | Exception from `queue.py` | **Bot poll:** skip cycle + consecutive-failure degraded flag (§6a); sweep still delivers pending tickets (`contracts/suggestion.md`). **Web enqueue after Cosmos write:** ticket remains `pending`; Bot sweep recovers — not a lost suggestion (`suggestion.md`). |

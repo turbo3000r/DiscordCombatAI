@@ -67,17 +67,20 @@ When a later-phase component is out of scope:
 - simulate only the wire/protocol surface needed by the current phase;
 - validate simulator payloads through shared models and reject unknown `schema_version`;
 - for Phase 1, simulate Bot control ack, drain progress, and AI Worker pause ack without implementing Discord Gateway or Celery graphs;
+- for Phase 3 S12, prefer hermetic fakes of Cosmos claim/Queue/Discord DM; mark crash-after-DM bounded duplicate explicitly; do not claim exactly-once DM delivery;
 - never silently treat a simulator acknowledgement as proof that the real component works.
 
 ## Scenario reporting
 
 For every scenario test module or acceptance case:
 
-1. Name the scenario ID (`S01`, `S07`, …).
+1. Name the scenario ID (`S01`, `S07`, `S12`, …).
 2. List ordered steps covered by the test.
 3. Mark each step `complete` or `deferred` with the owning later phase when deferred.
 4. Assert only the invariants that the current phase can honestly prove.
 5. Fail the suite if a test claims full scenario acceptance while deferred steps remain.
+
+**Phase 3 / S12:** when claiming S12, cover normal delivery, duplicate Queue, lost Queue→sweep, claim race, enqueue failure, Web idempotent retry, failed-notification admin retry, crash before DM, crash after DM before Cosmos `sent` (bounded duplicate), Discord forbidden/not-found/transient, and production vs development suppression — per `docs/scenarios/12_suggestion_duplicate_or_lost_queue.md`.
 
 Example reporting shape:
 

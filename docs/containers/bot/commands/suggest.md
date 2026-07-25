@@ -1,25 +1,27 @@
 # Command: Suggest
 
-> **Rewritten from scratch, legacy is reference only** (project owner) — `modules/main.py`'s `SuggestionView`/`SuggestionModal`/`suggestion_categories` flow is the source for *which interaction shape already exists* (Type Select + Category multi-select, then a modal-trigger button), not a spec to port 1:1. The one significant rework here is **where the type/category list lives and how `Bot` and `Web` both read it** (§6, §9) — the on-screen flow and the 8 existing category values/5 suggestion types themselves are carried forward unchanged (confirmed scope, project owner).
+> **Rewritten from scratch, legacy is reference only** (project owner). Interaction shape (Type Select + Category multi-select + modal) carries forward; catalog and ticket schema are owned by `contracts/status_document.md` and `contracts/suggestion.md`.
 
 ## 1. Purpose & Scope
 
-Lets any user — guild member or DM, no permission required — submit a feedback/bug ticket: pick a type and one-or-more categories, then fill in a title + details modal. The resulting ticket is written to Cosmos DB and later reviewed/responded to by an admin via `Web`'s Suggestions page (`web/pages/suggestions.md`, `architecture.md` Scenario 3) — this command's own responsibility ends once the ticket is stored (§6 step 6). Usable in a guild or in a DM; does not require the guild (if any) to be configured/enabled. No subcommands, no options.
+Lets any user submit a feedback/bug ticket: pick a type and ≥1 categories, then title + details. Ticket is written to the suggestion store; admin review/response is Web (`web/pages/suggestions.md`); Discord DM delivery is Bot poller/sweep (`discord_bot.md` §6.6). No Discord permission required; does not require guild AI enabled. Available during drain.
+
+**Phase 3:** command + catalog read + Cosmos/dev-support create + S12 coupling. Real AI graphs and `/quick-battle` are out of scope.
 
 ## 2. File Structure
 
 ```
 commands/suggest/
-├── command.py                     # /suggest registration — works in guild or DM (§3/§4)
-├── models.py                      # SuggestionDraft — staged type/categories before the modal opens
+├── command.py                     # /suggest + ProcessCommand (§4)
+├── models.py                      # SuggestionDraft — staged type/categories
 ├── UI/
 │   ├── modals/
-│   │   └── suggestion_modal.py    # Title + Details, unchanged shape from legacy SuggestionModal
+│   │   └── suggestion_modal.py    # Title + Details
 │   └── views/
-│       └── suggestion_view.py     # Type Select + Category multi-select + "Write suggestion" button (§5 — corrects visuals.md's WizardView entry)
+│       └── suggestion_view.py     # Type + Category selects + modal trigger
 └── service/
-    ├── category_catalog.py        # Reads the shared type/category list from status.py's document (§6, §9) — NOT a local hardcoded list anymore
-    └── suggestion_service.py      # Builds the suggestion payload, writes to Cosmos DB via src/shared/azure/services/suggestions.py
+    ├── category_catalog.py        # StatusService.get_suggestion_catalog() (§6)
+    └── suggestion_service.py      # Build SuggestionDocument + repository write
 ```
 
 ## 3. Invocation & Options
@@ -30,112 +32,130 @@ commands/suggest/
 | **Subcommands** | None |
 | **Source** | `bot/modules/commands/suggest/command.py` |
 
-**Options:** None — matches legacy exactly; `executor` is an internal `ProcessCommand`-injected parameter, not a user-facing option.
+**Options:** None. `executor` is an internal `ProcessCommand`-injected parameter, not user-facing.
 
 ## 4. Permissions & Access Control
 
-No Discord permission check (`allowed_permissions={}`, carried forward from legacy). Not guild-only (`required_guild=False`) and does not require the guild to be enabled (`required_guild_enabled=False`) — deliberately the most permissive command in the bot, since feedback should be collectible even from a guild that hasn't configured AI yet, or from a DM with no guild at all. No cooldown.
+Via `ProcessCommand` (`discord_bot.md` §6.4):
+
+| Flag | Value |
+|---|---|
+| `required_guild` | `False` |
+| `required_guild_enabled` | `False` |
+| `allowed_permissions` | none |
+| `blocked_during_drain` | `False` |
+
+### Production versus development (resolved conflict)
+
+| Mode | Guild | DM |
+|---|---|---|
+| **Production** | Any guild except reserved `DISCORD_DEVELOPMENT_GUILD_ID` | **Allowed** — partition `guild_id = "dm"` |
+| **Development** | **Only** `DISCORD_DEVELOPMENT_GUILD_ID` | **Rejected** ephemerally — no DM command exercise |
+
+Development also **suppresses** Azure Queue enqueue and Discord response DM side effects for any later Web respond path (`contracts/local_development.md` §7). Cross-link: that contract §4/§7; this command §12.
+
+No cooldown. No legacy developer bypass.
 
 ## 5. Visuals Used
 
-Legacy already shows the Type Select and Category multi-select **together in one view** (not one at a time), with a "Write suggestion" button that only opens the modal once both are chosen — a single-panel form + modal-trigger, not a sequential step-by-step wizard.
-
-**Correction to `visuals.md` §3, applied in this pass:** the existing `WizardView` catalog entry describes "one step visible at a time," which doesn't match this command's actual (and only) real-world consumer. Proposed correction: rename/reframe that catalog row to describe the real pattern — a single view combining N selects with one modal-trigger button, gated on all selections being made — rather than leave a shared-catalog entry that describes behavior no command actually implements. Not applied to `visuals.md` itself in this pass (see §14); flagged here for whoever reconciles the catalog next.
+Components V2: single-panel form (Type Select + Category multi-select + “Write suggestion” button gated until both set) + modal. Catalog entry in `visuals.md` is `SuggestionView` (not a sequential wizard).
 
 | Piece | Shared or command-specific | Notes |
 |---|---|---|
-| `SuggestionView` (this doc's name; `visuals.md`'s candidate entry needs the correction above) | Command-specific | Type Select + Category multi-select + "Write suggestion" button, disabled until both selections are made |
-| `suggestion_modal.py` | Command-specific | Title + Details, two fields, unchanged from legacy `SuggestionModal` |
-
-Per `visuals.md` §1, this leans Components V2 (multiple interactive components: two selects + a button) rather than the "genuinely trivial single response" carve-out for classic `Embed`+`View` — consistent with `/quick-battle`'s default, though this is a much smaller surface than that command.
+| `SuggestionView` | Command-specific | Selects show catalog **labels**; draft stores **values** |
+| `suggestion_modal.py` | Command-specific | Title + Details |
 
 ## 6. Interaction Flow
 
-**Confirmed decisions baked into this flow** (project owner, this session):
-- The rework is scoped to **storage/mechanism** — the 8 existing category **values** and 5 suggestion type **values** are carried forward unchanged. Catalog entries are `{value, label}` on the status document (`contracts/status_document.md`); Selects show `label`, tickets store `value` only.
-- Both lists live in the shared status document's `suggestion_catalog` section — not two independent hardcoded Python lists duplicated between `Bot` and `Web`. `Bot` reads for Selects; `Web` seeds/edits and reads for filters. All access goes through `status.py` typed accessors, never raw JSON.
+### Catalog (`StatusService.get_suggestion_catalog()`)
+
+| Rule | Detail |
+|---|---|
+| Source | `get_suggestion_catalog()` on the status document accessor (`contracts/status_document.md`) — **not** a hardcoded list |
+| Fetch | On **every new** `/suggest` invocation (panel open) |
+| Cache | Optional in-memory cache may remain valid **only** for the **600-second** view lifetime of that invocation; do not reuse across invocations |
+| Fail closed | Missing, malformed, or unavailable catalog → **no panel**; localized ephemeral **retry** response |
+| Fallback | **None** — no hardcoded type/category list |
+| Submit re-validation | On modal submit, validate selected `type` / `categories` **again** against a fresh catalog read (or the same invocation cache if still within view lifetime and catalog was valid); reject stale values |
+| Storage | Ticket stores catalog **values**, never labels |
 
 **Step-by-step:**
 
-1. User invokes `/suggest` (any guild member, or DM). Bot reads the current type/category catalog from the shared `status.py` document (§9) — cached, refresh cadence undecided (§14) — and renders `SuggestionView`: Type Select, Category multi-select, a disabled "Write suggestion" button. Ephemeral. Select options use catalog `label`; staged draft stores catalog `value`.
-2. User picks a type and ≥1 category (both simply `defer()` — no message change, matches legacy) → the button becomes usable once both are set.
-3. User presses "Write suggestion" → `suggestion_modal.py` (Title + Details, unchanged from legacy `SuggestionModal`).
-4. On modal submit: `suggestion_service` builds a `SuggestionDocument` per `contracts/suggestion.md` and writes it to **Cosmos DB** via `src/shared/azure/services/suggestions.py` (replacing legacy's local flat JSON file). Required create fields:
-   - Generate Cosmos `id` (UUID) and human `ticket_uid` (`SUG-` + 8 uppercase hex), both stored.
-   - `title`, `details`, `type` / `categories` as catalog **values** only.
-   - `submitter` (`SubmitterSnapshot`: id, name, display_name, global_name, discriminator).
-   - `contact: {method: "dm", user_id}`.
-   - `locale` (`LocaleInfo`: user / guild / stored).
-   - `guild_snapshot` (`GuildSnapshot` or null when DM / `in_guild` false).
-   - `context` (`SubmitContext`: interaction_id, channel_id, in_guild).
-   - Seed `conversation` with one incoming entry (`source: suggestion_modal`, `metadata` may include title).
-   - `status = pending`, `notification_status = null`, `response_text = null`, ticket-level `acted_by_*` = null.
-5. The view disables itself (mirrors legacy's `make_unavailable`); the user gets an ephemeral success message that may show `ticket_uid`.
-6. This command's job ends here — the rest of the ticket's lifecycle (an admin reading/responding via `Web`'s Suggestions page, `Bot`'s queue-poller eventually DMing the response via the `contact` field above) is `Web`'s and `Bot`'s own `queue_poller.py` responsibility (`architecture.md` Scenario 3 — corrected in this revision to say DM, not "Admin Channel" — and `bot/discord_bot.md` §6.6), not re-described in this doc.
-
-No consensus gate, no AI Worker call, no lobby — this is a genuinely linear flow, but still gets a diagram per the template's "more than a single request/response" trigger (2 selects + 1 modal round-trip):
+1. User invokes `/suggest` (gates §4). Fetch catalog; on failure → ephemeral retry and stop.
+2. Render ephemeral `SuggestionView` (timeout **600s**).
+3. User picks type + ≥1 category → enable “Write suggestion”.
+4. Modal: title + details.
+5. On submit: re-validate catalog values; build `SuggestionDocument` (`contracts/suggestion.md`); **persist** via suggestion repository.
+6. **Cosmos/repository success is required before showing a ticket UID.** On success: disable view; ephemeral success may include `ticket_uid`.
+7. Command ends — no response notification is enqueued on initial create (`notification_status = null`).
 
 ```mermaid
 stateDiagram-v2
-    [*] --> Form
-    Form --> Form : type/category selection changes (staged only)
-    Form --> Modal : press "Write suggestion" (enabled once type+category set)
-    Modal --> Stored : on_submit -> Cosmos DB write (§9)
-    Stored --> [*] : ephemeral success message, view disabled
+    [*] --> CatalogFetch
+    CatalogFetch --> Form : catalog OK
+    CatalogFetch --> [*] : unavailable (ephemeral retry)
+    Form --> Form : type/category staged
+    Form --> Modal : Write suggestion
+    Modal --> Stored : repository write OK
+    Modal --> ModalOrRetry : write failed (no ticket UID)
+    Stored --> [*] : success + ticket_uid
 ```
 
 ## 7. AI / Graph Integration
 
-N/A — no `ai_tasks` message is ever sent by this command.
+N/A.
 
 ## 8. Backend / Service Logic
 
-- **`service/category_catalog.py`** — reads the shared type/category list from the `status.py`-backed document (§9); this command no longer hardcodes the list itself.
-- **`service/suggestion_service.py`** — builds the suggestion payload (mirrors legacy `build_payload`) and writes it to Cosmos DB via `src/shared/azure/services/suggestions.py`, replacing legacy's direct local-file read/write.
+- **`category_catalog.py`** — `StatusService.get_suggestion_catalog()` only.
+- **`suggestion_service.py`** — build document; write via `SuggestionRepository` (production Cosmos / development `dev-support`).
 
 ## 9. Data Read/Written
 
-| Destination/Source | Channel | Format | Trigger |
-|---|---|---|---|
-| `status.py` shared document, `suggestion_catalog` (`Azure Blob Storage`) | Read | Type/category list (`contracts/status_document.md`) | Step 1 (panel render) — cached, cadence still open (§14) |
-| `Azure Cosmos DB` (`Suggestions`) | Write | Suggestion ticket (`contracts/suggestion.md`) | Step 4 (modal submit) |
-| Azure Queue Storage (indirect — read by `Bot`'s `queue_poller.py`, not by this command) | — | Suggestion-response notification | Later, when an admin responds via `Web` — see `bot/discord_bot.md` §6.6, not this command's own flow |
-
-**Note on the shared catalog:** ownership is **resolved (P0.5.3)** — Web seeds/edits `suggestion_catalog`; Bot only reads it for Selects. Full ticket + notification schema: `contracts/suggestion.md`. Status document: `contracts/status_document.md`.
+| Destination/Source | Format | Trigger |
+|---|---|---|
+| Status `suggestion_catalog` | `list[{value,label}]` | Every `/suggest` open (+ submit re-validate) |
+| Suggestions store | `SuggestionDocument` | Modal submit |
+| Queue Storage | — | **Not** on create; only later via Web respond (production) |
 
 ## 10. Localization
 
-UI strings (placeholders, button label, modal labels, success/error messages) stay under the `commands.suggest.*` namespace, unchanged from legacy's existing keys. Catalog **values** stay stable English keys; **labels** on `suggestion_catalog` are the human-facing English strings for Selects/filters (per-locale catalog labels remain deferred — P2). No AI-generated content is involved in this command at all, so `contracts/localization.md`'s "two systems" split doesn't even apply here. Ticket `locale` is the structured `LocaleInfo` from `contracts/suggestion.md` (user / guild / stored).
+Namespace `commands.suggest.*`. Phase 3 requires localized: catalog unavailable/retry, validation errors, transient write failure, permanent write failure, success (with ticket UID), development DM rejection. Catalog labels remain English in v1 (per-locale labels P2). Ticket `locale` is structured `LocaleInfo`.
 
 ## 11. Logging
 
-Per-action tags: `guild_id` (or absent for DM invocations), `command: "suggest"`, Cosmos `id`, `ticket_uid` (once generated), plus the selected `type`/`categories` values for observability — unlike `/config`'s API key, these are non-sensitive and safe to log at `INFO`.
+Tags: `guild_id` (or absent for production DM), `command: "suggest"`, Cosmos `id`, `ticket_uid` (only after successful create), `type`/`categories` values. Non-sensitive at INFO.
 
 ## 12. Failure Modes
 
-| Failure | Detection | Recovery |
-|---|---|---|
-| Empty title/details submitted | Client-side validation on modal submit (unchanged from legacy) | Inline ephemeral error, modal can be resubmitted |
-| Cosmos DB write fails | Exception from `cosmos.py` | Not handled distinctly in this doc — inherits `azure.md` §9's generic "surfaced to the calling service" gap; flagged in §14 |
-| Shared type/category document (`status.py`) unreachable or missing fields | Exception/empty result from the read in §9 | **Undecided** — legacy never had this failure mode since the list was hardcoded in Python. Whether to fall back to a small hardcoded default list (mirroring `/config`'s explicit no-fallback stance for models, `commands/config.md` §12) or block the command outright is not decided — flagged in §14 |
-| View times out (600s, unchanged from legacy) | View `timeout=600` fires | Matches legacy's `on_timeout` → `make_unavailable` |
+| Failure | Recovery |
+|---|---|
+| Development DM / foreign guild | Ephemeral denial (`ProcessCommand` / §4) |
+| Catalog missing/malformed/unavailable | Ephemeral localized retry; no hardcoded fallback; no panel |
+| Stale type/category on submit | Reject; user must re-open `/suggest` or correct selections |
+| Empty title/details | Client-side validation; resubmit modal |
+| Transient repository write failure | Localized retry message; **no** ticket UID; **no** success response |
+| Permanent repository write failure | Safe operator-facing ephemeral message; **no** ticket UID; **no** success |
+| Duplicate Discord interaction | Must **not** create a second ticket (idempotent on interaction id / discord.py duplicate handling) |
+| Preserve modal values after failure | Where discord.py allows re-showing the same modal with prior values, do so; otherwise document that the user must reopen the modal from the view (or re-invoke if the view timed out) |
+| View timeout 600s | `make_unavailable` — draft lost |
+| Initial create | Does **not** enqueue a response notification |
+
+Propagated failure classification: `azure.md` §9 (suggestion writes fail the command; transient vs permanent surfaced per this table).
 
 ## 13. Dependencies
 
-| Dependency | Used for | Notes |
-|---|---|---|
-| `contracts/status_document.md` | Shared type/category list (§6, §9) | Web seeds/edits; Bot reads |
-| `contracts/suggestion.md` | Ticket schema on create | Don't redefine here |
-| `azure.md` §3 | Cosmos/Blob env vars | Don't redefine variables here |
-| `web/pages/suggestions.md` | Downstream consumer of this command's Cosmos DB writes, and a second reader of the same shared category list | Cross-container, no direct link — mediated entirely through Cosmos DB + the shared `status.py` document |
-| `bot/discord_bot.md` §6.6 | The queue-poller/DM-notification half of this ticket's lifecycle (§6 step 6) | Container-level background service, not part of this command's own request/response flow |
+| Dependency | Notes |
+|---|---|
+| `discord_bot.md` §6.4 / §6.6 | ProcessCommand; delivery runtime |
+| `contracts/status_document.md` | Catalog |
+| `contracts/suggestion.md` | Ticket schema |
+| `contracts/local_development.md` | Dev guild-only + suppressed DM/queue |
+| `web/pages/suggestions.md` | Admin respond path |
+| `azure.md` | Production Cosmos/Queue |
 
 ## 14. Open Items / Future Work
 
-- ~~`visuals.md`'s `WizardView` catalog entry needs correcting~~ — **resolved**: `visuals.md` §3 now has the corrected `SuggestionView` entry.
-- ~~`status.py` storage shape~~ — **resolved**: `contracts/status_document.md`.
-- ~~Shared type/category document ownership~~ — **resolved (P0.5.3)**: Web seeds + edits `suggestion_catalog`; Bot reads only.
-- **No fallback if the shared category list is unreachable** (§12) — still open (P1.4).
-- **Refresh cadence for the cached type/category list is undecided** (§6, §9).
-- Per-locale category/type labels deferred (§6, §10).
-- Remaining delivery edge cases (multi-admin respond, terminal `failed` recovery, pagination) — **P1.4**.
+- Per-locale catalog labels — P2.
+- Unrestricted multi-admin editing beyond ETag — deferred (`suggestion.md`).
+- Suggestion list pagination for Web — P1.6 (not this command).
