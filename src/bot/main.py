@@ -3,13 +3,12 @@ from __future__ import annotations
 import asyncio
 from contextlib import suppress
 
-from .application import BotApplication
-from .settings import BotSettings
+from .composition import build_bot_application, prepare_bot_application
 
 
 async def async_main() -> None:
-    settings = BotSettings()  # type: ignore[call-arg]
-    application = BotApplication(settings, enable_mqtt=True, enable_transport=True)
+    application = build_bot_application(enable_mqtt=True, enable_transport=True)
+    await prepare_bot_application(application)
     try:
         await application.start()
         await asyncio.Event().wait()

@@ -8,7 +8,10 @@ services:
       - "127.0.0.1:5672:5672"
       - "127.0.0.1:15672:15672"
 
+  # Head is production-only. The development overlay moves it to the
+  # `production` profile so it is absent from the merged application+development stack.
   head:
+    profiles: ["production"]
     volumes:
       - ./src:/app/src
 
@@ -18,6 +21,27 @@ services:
       dockerfile: src/bot/Dockerfile
     volumes:
       - ./src:/app/src
+    depends_on:
+      mosquitto:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      dev-support:
+        condition: service_healthy
+    environment:
+      DCA_RUNTIME_MODE: development
+      DEV_COMPOSE_OVERLAY_ACTIVE: "true"
+      DEV_SUPPORT_URL: http://dev-support:8080
+      DISCORD_DEVELOPMENT_GUILD_ID: ${DISCORD_DEVELOPMENT_GUILD_ID:?set DISCORD_DEVELOPMENT_GUILD_ID}
+      DISCORD_DEVELOPMENT_APPLICATION_ID: ${DISCORD_DEVELOPMENT_APPLICATION_ID:?set DISCORD_DEVELOPMENT_APPLICATION_ID}
+      DISCORD_BOT_TOKEN: ${DISCORD_DEVELOPMENT_BOT_TOKEN:?set DISCORD_DEVELOPMENT_BOT_TOKEN}
+      # Clear Azure markers so development fail-closed guards pass.
+      AZURE_TENANT_ID: ""
+      BOT_AZURE_CLIENT_ID: ""
+      BOT_AZURE_CLIENT_SECRET: ""
+      AZURE_COSMOS_ENDPOINT: ""
+      AZURE_STORAGE_ACCOUNT_NAME: ""
+      AZURE_WEBPUBSUB_ENDPOINT: ""
 
   ai_worker:
     build:
@@ -26,3 +50,46 @@ services:
     volumes:
       - ./src:/app/src
       - ./prompts:/app/prompts:ro
+
+  dev-support:
+    profiles: [application, development]
+    build:
+      context: .
+      dockerfile: src/dev_support/Dockerfile
+    restart: unless-stopped
+    depends_on:
+      mosquitto:
+        condition: service_healthy
+    environment:
+      DCA_RUNTIME_MODE: development
+      DEV_COMPOSE_OVERLAY_ACTIVE: "true"
+      NODE_ID: ${NODE_ID:-node-local}
+      DISCORD_DEVELOPMENT_GUILD_ID: ${DISCORD_DEVELOPMENT_GUILD_ID:?set DISCORD_DEVELOPMENT_GUILD_ID}
+      DEV_SUPPORT_DB_PATH: /data/dev-support.db
+      DEV_SUPPORT_HOST: 0.0.0.0
+      DEV_SUPPORT_PORT: "8080"
+      DEV_SUPPORT_MOSQUITTO_HOST: mosquitto
+      DEV_SUPPORT_MOSQUITTO_PORT: "1883"
+      DEV_SUPPORT_GRANT_TTL_SEC: ${DEV_SUPPORT_GRANT_TTL_SEC:-45}
+      DEV_SUPPORT_GRANT_RENEW_SEC: ${DEV_SUPPORT_GRANT_RENEW_SEC:-15}
+    volumes:
+      - ./src:/app/src
+      - dev-support-data:/data
+    networks:
+      - dca-internal
+    # Internal only — no host ports.
+    expose:
+      - "8080"
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/internal/v1/health')\"",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 8
+      start_period: 15s
+
+volumes:
+  dev-support-data:

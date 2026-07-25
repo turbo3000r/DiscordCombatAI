@@ -22,6 +22,7 @@ MQTT_TOPIC_POLICIES = {
         topic="control/bot/activation_grant",
         qos=1,
         retain=False,
+        # Production: Head. Development: Compose-only dev-support.
         owner="Head",
     ),
     "control_ai_worker_desired_state": TopicPolicy(
