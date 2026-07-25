@@ -17,7 +17,7 @@
 
 This does **not** mean every subsystem is ready to implement. In particular, `/quick-battle`, the real LangGraph graphs, remaining guild lifecycle edges, suggestion edge cases, and Web API schemas still require the open P1 items below. None of those gaps changes the global service topology or already-resolved cross-service wire contracts.
 
-**Phase 0 implementation-ready now:** scaffold/Compose skeleton, shared typed models from contracts (including `language` enum + mapping), shared Azure credential/client layer, RabbitMQ + Mosquitto configuration. **Phase 1 coordination Slice 0 documentation is reconciled:** Launcher/Head versioning, image/recreate ownership, interrupted-operation recovery, verification/rollback, Blob-renew recovery, and P1.8 heartbeat/buffer/live-cap contracts are closed. **Phase 2 documentation is reconciled:** transport-shell (`graph="environment"` canned path), host `NODE_ID` injection, Celery/RabbitMQ wiring (definitions-owned topology, task name, broker URL/vhost), Bot asyncio vs Celery/MQTT concurrency, Phase 2 Bot scope (no slash commands), and S03/S04/S05/S07/S08/S10 acceptance ownership. **Still deferred for later phases:** remaining P1.3 command/lifecycle items, P1.1–P1.2, P1.4 leftovers, P1.6, real LangGraph behavior, `/config`/`/suggest`/`/quick-battle`, Web product slices, and all P2 items.
+**Phase 0 implementation-ready now:** scaffold/Compose skeleton, shared typed models from contracts (including `language` enum + mapping), shared Azure credential/client layer, RabbitMQ + Mosquitto configuration. **Phase 1 coordination Slice 0 documentation is reconciled:** Launcher/Head versioning, image/recreate ownership, interrupted-operation recovery, verification/rollback, Blob-renew recovery, and P1.8 heartbeat/buffer/live-cap contracts are closed. **Phase 2 documentation is reconciled:** transport-shell (`graph="environment"` canned path), host `NODE_ID` injection, Celery/RabbitMQ wiring (definitions-owned topology, task name, broker URL/vhost), Bot asyncio vs Celery/MQTT concurrency, Phase 2 Bot scope (no slash commands), and S03/S04/S05/S07/S08/S10 acceptance ownership. **Local product-development architecture is reconciled:** `contracts/local_development.md` + S14 (separate Discord app, domain providers, `dev-support`, local Web admin; not Azure emulation). **Still deferred for later phases:** remaining P1.3 command/lifecycle items, P1.1–P1.2, P1.4 leftovers, P1.6, real LangGraph behavior, `/config`/`/suggest`/`/quick-battle`, Web product slices, and all P2 items.
 
 ---
 
@@ -96,7 +96,8 @@ This does **not** mean every subsystem is ready to implement. In particular, `/q
 - Canonical set: `docs/scenarios/` (index: `docs/scenarios/Readme.md`).
 - Architecture acceptance cases (not test-code prescriptions): preconditions, ordered steps, durable writes, timeouts, user-visible result, invariant checked.
 - Coverage includes cold boot, follower failover, leader Head crash, Mosquitto/RabbitMQ/Azure partial outages, planned update happy path / drain timeout / rollback, Bot or AI Worker restart mid-task, Quick Battle success/abort/timeout (P1.1 product rules apply where numbers are open), suggestion duplicate/lost Queue, Web auth + all-guild broadcast.
-- Each scenario references existing contracts (`leadership_control`, `drain_status`, `ai_task`, `suggestion`, `web_auth`, `launcher_ipc`, `pubsub_live`, etc.) rather than inventing new behavior.
+- **S14** (`14_local_development_isolation.md`) covers product-development isolation only (`contracts/local_development.md`); it does not claim Azure coordination fidelity.
+- Each scenario references existing contracts (`leadership_control`, `drain_status`, `ai_task`, `suggestion`, `web_auth`, `launcher_ipc`, `pubsub_live`, `local_development`, etc.) rather than inventing new behavior.
 - S05 updated with concrete Bot/AI Worker reconnect and user-visible publish-failure outcomes (P1.5).
 
 ## P1.5 — Broker configuration and outage behavior (resolved)
@@ -232,6 +233,22 @@ Per-scenario step matrices live in `docs/scenarios/03`, `04`, `05`, `07`, `08`, 
 | S10 | AI Worker restart redelivery; Bot restart loses map and discards orphan results (v1 limitation preserved) | Discord interaction/lobby recovery (command phases / P1.1) |
 
 **Orphaned tasks after Bot restart remain the documented v1 limitation** (`discord_bot.md` §9/§13, S10): no durable delivery reconciliation unless a later contract explicitly requires it — Phase 2 does not invent one.
+
+## Local product-development architecture (resolved)
+
+Canonical: `contracts/local_development.md`. Acceptance: `scenarios/14_local_development_isolation.md`.
+
+- **Mode:** fail-closed `DCA_RUNTIME_MODE=production|development` plus **mandatory** `DISCORD_DEVELOPMENT_GUILD_ID` in both modes.
+- **Discord:** separate Discord application required in development; mandatory `DISCORD_DEVELOPMENT_APPLICATION_ID` verified against the authenticated app before sync; guild-scoped command sync; accept only the designated guild; production always rejects the reserved development guild.
+- **Providers:** domain repositories selected at composition root. Production adapters wrap `src/shared/azure/services/*`. Development adapters call Compose-only `dev-support` (SQLite). **Rejected:** Azure-protocol emulator / “mirror Azure API” container as the Bot↔Web plane.
+- **Topology:** development = Mosquitto + RabbitMQ + Bot + AI Worker + `dev-support` (no Head/Launcher). Web is Compose-included when implemented. `docker-compose.dev.yml` is the explicit opt-in overlay, not isolation by itself.
+- **Activation:** `dev-support` publishes short-lived Mosquitto grants; does not simulate Blob Lease / PubSub leadership.
+- **Web (deferred relative to spine):** fixed local admin + DEVELOPMENT banner; Compose publishes only host-loopback; local live feed (no Entra, no Azure PubSub).
+- **Side effects:** local `/config`, `/quick-battle`, suggestion CRUD/UI allowed when commands/Web exist; suggestion queue/DM delivery suppressed; webhooks dry-run only (no Discord webhook POST).
+- **Non-goal:** S14 never substitutes for S01–S10 Azure coordination acceptance.
+- **Egress:** development may call the development Discord app and Gemini; Azure/Entra/webhook/production Discord identity remain forbidden.
+
+Propagated to `architecture.md`, `azure.md`, `bot/discord_bot.md`, `web/web.md`, `web_auth.md`, `guild_config.md`, `suggestion.md`, `status_document.md`, `pubsub_live.md`, `docs/Readme.md`, `scenarios/Readme.md`.
 
 ---
 
@@ -501,6 +518,29 @@ Build these in parallel around the **transport shell** (`graph="environment"` ca
 
 **Gate:** a harness-driven dummy `ai_task` must complete Bot → RabbitMQ → AI Worker → result/progress → Bot. Then validate the Phase 2-owned steps of S03, S04, S05, S07, S08, and S10.
 
+## Phase 2.5 — Local product-development spine (documentation closed; implementation in progress)
+
+Build after domain models exist; can proceed in parallel with Phase 2 transport once repository protocols are defined. Does **not** replace Phase 1 Azure fencing validation.
+
+**Foundation spine (implement now):**
+
+1. **Runtime guards:** `DCA_RUNTIME_MODE`, mandatory `DISCORD_DEVELOPMENT_GUILD_ID`, development `DISCORD_DEVELOPMENT_APPLICATION_ID` + overlay/`DEV_SUPPORT_URL` checks; derive `STORAGE_PROVIDER`; refuse Azure leakage in development.
+2. **Domain ports + factory:** narrow `GuildRepository` / `SuggestionRepository` / `StatusRepository` / `MetricsRepository` with production Azure adapters and development HTTP adapters; composition root keyed by runtime mode.
+3. **`dev-support`:** FastAPI internal API + SQLite volume + Mosquitto grant publisher + status seed. Reset via volume removal only (no host-published reset API).
+4. **Bot wiring:** composition root; application-id verification before sync; guild-scoped sync; interaction/lifecycle filtering; inject local repositories; suppress suggestion queue/DM path in development; accept `dev-support` grants.
+5. **Compose/packaging:** development overlay brings up `dev-support`, excludes Head from the merged development stack, maps `DISCORD_DEVELOPMENT_BOT_TOKEN` → Bot token, sets overlay marker.
+6. **Tests:** unit tests for mode guards and guild filters; integration for `dev-support` persistence/grants; **partial S14 spine** acceptance. Keep S01–S10 on real Azure.
+
+**Deferred (not spine gate):**
+
+- Web wiring (local-admin auth, banner, loopback host publish, live feed, webhook dry-run) until `src/web/` / P1.6.
+- `/config`, `/suggest`, `/quick-battle` command exercise until command phases / P1.1–P1.4.
+- Full S14 steps that require commands/Web.
+
+**Documentation gate:** Resolved → Local product-development architecture is closed. Implement against `contracts/local_development.md`; do not invent an Azure emulator.
+
+**Gate:** S14 spine invariants hold on a laptop stack with zero Azure/Entra/webhook egress (Discord development app + Gemini allowed).
+
 ## Phase 3 — Configuration and suggestions vertical slices
 
 1. Close remaining P1.3 leftovers if needed for production `/config`, plus P1.9 (**done**) before treating config as complete; use `/config` to establish valid guild/key/model data before any real AI command.
@@ -549,8 +589,8 @@ Close the relevant P1.6 items before treating each Web API/operations slice as c
 
 ## Parallel work and final gate
 
-- After Phase 0 models exist, broker setup, Azure clients, Launcher, Web auth shell, and early Head work can proceed in parallel.
+- After Phase 0 models exist, broker setup, Azure clients, Launcher, Web auth shell, early Head work, and the Phase 2.5 local-dev spine can proceed in parallel (local-dev must not be pointed at production Azure).
 - After the transport shell exists, Bot core and AI Worker graph work can proceed in parallel; `/quick-battle` waits for both real graphs.
 - Head telemetry can proceed in parallel with `/config` and `/suggest`; Dashboard/Performance waits for telemetry.
-- The recommended critical path to the first complete battle is: foundation/contracts → brokers → minimal Head fencing → Bot/AI Worker transport → `/config` → graph contracts and graphs → `/quick-battle`.
-- Final architecture acceptance requires S01–S13 plus closure or explicit v1 removal of every remaining applicable P1 item. P2 items do not block the first implementation.
+- The recommended critical path to the first complete battle is: foundation/contracts → brokers → minimal Head fencing → Bot/AI Worker transport → `/config` → graph contracts and graphs → `/quick-battle`. Local UI iteration may use Phase 2.5 once commands exist.
+- Final architecture acceptance requires S01–S13 plus closure or explicit v1 removal of every remaining applicable P1 item. S14 is required for claiming safe product-development mode. P2 items do not block the first implementation.

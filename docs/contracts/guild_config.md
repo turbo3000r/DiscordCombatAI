@@ -1,6 +1,6 @@
 # Contract: Guild Configuration (Cosmos DB Document)
 
-> **Why this lives in `contracts/`, not a single service doc:** this document is written almost exclusively by `Bot` but read directly by `Web` (`web/pages/guilds.md`, `web/pages/dashboard.md`) via its own `cosmos.py` access — no service-to-service call sits between them, Cosmos DB *is* the interface. Per the same rationale already established for `task_progress.md` and `localization.md`, a schema two independent codebases both depend on belongs here, not duplicated inside `bot/discord_bot.md` and `web/web.md` separately. **Confirmed decision (project owner):** this gets its own contract file rather than staying inline in `discord_bot.md`.
+> **Why this lives in `contracts/`, not a single service doc:** this document is written almost exclusively by `Bot` but read directly by `Web` (`web/pages/guilds.md`, `web/pages/dashboard.md`) via its own repository access — in production that is Cosmos DB (`cosmos.py`); in product development it is `dev-support` (`contracts/local_development.md`). Per the same rationale already established for `task_progress.md` and `localization.md`, a schema two independent codebases both depend on belongs here, not duplicated inside `bot/discord_bot.md` and `web/web.md` separately. **Confirmed decision (project owner):** this gets its own contract file rather than staying inline in `discord_bot.md`.
 
 ---
 
@@ -14,10 +14,11 @@ Defines the single Cosmos DB document shape that represents "everything known ab
 
 | | |
 |---|---|
-| **Resource** | Azure Cosmos DB (`azure.md` §3, `AZURE_COSMOS_ENDPOINT`) |
+| **Resource (production)** | Azure Cosmos DB (`azure.md` §3, `AZURE_COSMOS_ENDPOINT`) |
 | **Collection** | `GuildConfigs` |
 | **Document `id`** | The guild's Discord snowflake ID, as a string — one document per guild, no secondary lookup needed. |
 | **Partition key** | `/id` (same value) — trivial partitioning, no guild-spanning queries exist anywhere in any written doc. |
+| **Development** | Same `GuildConfigDocument` schema via `GuildRepository` → Compose-only `dev-support` SQLite (`contracts/local_development.md` §5–§6). Not Cosmos. Production Patch/ETag concurrency remains Azure-only semantics for S12-class acceptance. |
 
 ---
 

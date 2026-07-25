@@ -1,7 +1,8 @@
 # Contract: Live Dashboard Web PubSub
 
 > **Closes P0.6** (topology/budget) **and completes negotiate auth via P0.7.** Group topology, client vs service SDKs, negotiate response, always-stream policy, Free_F1 budget, and reconnect semantics. Live payload body: `contracts/telemetry.md` §5. Authentication boundary for negotiate: `contracts/web_auth.md`.
-
+>
+> **Product development:** Azure Web PubSub is **not** used. Dashboard live data uses a local feed from `dev-support` (`contracts/local_development.md` §2/§8). Free_F1 budget, `cluster` group membership, and negotiate tokens below remain **production/integration-only**. Do not point a development Web at the production hub.
 ---
 
 ## 1. Group Topology
@@ -95,3 +96,4 @@ The short-lived client access **URL** is returned only to authenticated admins. 
 | Head env / loops | `containers/head.md` §3/§5/§8 |
 | Web negotiate | `containers/web/web.md` §6.1, `pages/dashboard.md` |
 | Auth boundary | `contracts/web_auth.md` |
+| Development local live feed (no PubSub) | `contracts/local_development.md` |

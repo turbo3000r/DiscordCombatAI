@@ -15,6 +15,7 @@ from shared.models import (
     UnknownSchemaVersionError,
     parse_task_progress_message,
 )
+from shared.runtime.settings import RuntimeMode
 
 from .modules.client import CombatBot, create_bot
 from .modules.events.control_events import (
@@ -40,7 +41,15 @@ CONTROL_ACK_POLICY = MQTT_TOPIC_POLICIES["status_bot_control_ack"]
 
 
 class GuildService(Protocol):
-    async def ensure_active_guild(self, **kwargs: Any) -> Any: ...
+    async def ensure_active_guild(
+        self,
+        *,
+        guild_id: str,
+        name: str,
+        icon_url: str | None,
+        member_count: int,
+        owner_id: str,
+    ) -> Any: ...
 
     async def patch_metadata(self, guild_id: str, patch: dict[str, Any]) -> Any: ...
 
@@ -105,12 +114,23 @@ class BotApplication:
         ai_transport: AiTransport | None = None,
         enable_mqtt: bool = False,
         enable_transport: bool = False,
+        runtime_mode: RuntimeMode | str = RuntimeMode.production,
+        development_guild_id: str | None = None,
+        expected_application_id: str | None = None,
+        enable_suggestion_queue: bool = True,
     ) -> None:
         self.settings = settings
         self._guild_service = guild_service
         self._status_service = status_service
         self._bot_factory = bot_factory or create_bot
         self._token = token or settings.discord_bot_token.get_secret_value()
+        self.runtime_mode = RuntimeMode(runtime_mode)
+        self.development_guild_id = development_guild_id
+        self.expected_application_id = expected_application_id
+        # Development suppresses Azure Queue / DM poller (not implemented yet).
+        self.enable_suggestion_queue = (
+            enable_suggestion_queue and self.runtime_mode is RuntimeMode.production
+        )
         self.health = DependencyHealth()
         self._client: CombatBot | None = None
         self._client_task: asyncio.Task[None] | None = None
@@ -217,6 +237,8 @@ class BotApplication:
             self._guild_sync = GuildSyncService(
                 guilds=self._guild_service,
                 interval_sec=self.settings.guild_sync_interval_sec,
+                runtime_mode=self.runtime_mode,
+                development_guild_id=self.development_guild_id,
             )
 
         async def _run() -> None:
@@ -352,7 +374,12 @@ class BotApplication:
     def _wire_guild_handlers(self, client: CombatBot) -> None:
         if self._guild_service is None:
             return
-        handler = GuildEventHandler(guilds=self._guild_service, health=self.health)
+        handler = GuildEventHandler(
+            guilds=self._guild_service,
+            health=self.health,
+            runtime_mode=self.runtime_mode,
+            development_guild_id=self.development_guild_id,
+        )
         self._guild_handler = handler
 
         @client.event

@@ -8,10 +8,11 @@
 
 | | |
 |---|---|
-| **Resource** | Azure Blob Storage (block blob, JSON) |
+| **Resource (production)** | Azure Blob Storage (block blob, JSON) |
 | **Container** | `AZURE_STATUS_BLOB_CONTAINER` (default `coordination`) — same container family as the leader lease blob is fine; distinct blob name |
 | **Blob name** | `AZURE_STATUS_BLOB_NAME` (default `bot_status.json`) |
-| **Access module** | `src/shared/azure/services/status.py` only — no other file reads/writes this blob raw |
+| **Access module (production)** | `src/shared/azure/services/status.py` only — no other file reads/writes this blob raw |
+| **Development** | Same nested `StatusDocument` schema via `StatusRepository` → `dev-support`. Section owners unchanged (Web: identity/catalog; Bot: status). Not a Blob Lease or PubSub substitute. |
 
 ---
 

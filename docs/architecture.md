@@ -81,6 +81,20 @@
 
 *Mixed-version compatibility (P0.3 + P0.5.5, resolved): every durable/shared contract carries `schema_version` (see `contracts/drain_status.md` §5, extended to suggestion/telemetry/status/battle archive/logs/queue/pubsub). Receivers reject unknown versions. `Web` tolerates one prior and one following additive schema for documents it reads. No cluster-wide update barrier.*
 
+### Environments: production vs product development
+
+Production topology above (Head + Blob Lease + Azure-mediated Web) is unchanged. **Product-development mode** is a separate, intentionally incomplete stack for Discord command/UI and Web page exercise — canonical contract: `contracts/local_development.md`.
+
+| | Production | Product development |
+|---|---|---|
+| Discord | Production application/token; rejects reserved `DISCORD_DEVELOPMENT_GUILD_ID` | **Separate** Discord application/token; guild-scoped sync + accept only that guild |
+| Persistence | Azure via domain repository adapters wrapping `src/shared/azure/` | Local adapters → Compose-only `dev-support` (SQLite); **no** Azure clients |
+| Activation | Head + Blob Lease grants | `dev-support` publishes Mosquitto grants; **no** Head/Launcher |
+| Web | Standalone; Entra; Azure PubSub live | Compose-included; fixed local admin; local live feed |
+| Validates | S01–S13 production acceptance | S14 isolation only — **does not** claim Azure failover fidelity |
+
+**Rejected:** a shared “mirror Azure API” container or guild-filter against production Azure as the Bot↔Web integration plane.
+
 ---
 
   
@@ -251,9 +265,11 @@
 
 > Paths and service names below match the **checked-in** `docker-compose.yml` / `infra/` layout. Brokers and Head start by default; Bot and AI Worker use an explicit Compose profile (below). Full operational detail for brokers: `containers/rabbitmq.md`, `containers/mosquitto.md`.
 
-**Services (local node):** `mosquitto`, `rabbitmq`, `head`, `bot`, `ai_worker`. **`web` is excluded** (deployed independently). **`launcher` is excluded** (host binary).
+**Services (local node, production):** `mosquitto`, `rabbitmq`, `head`, `bot`, `ai_worker`. **`web` is excluded** (deployed independently). **`launcher` is excluded** (host binary). **`dev-support` is excluded.**
 
-**Profiles:** `bot` and `ai_worker` use Compose profile `application`. Default `docker compose up` brings up brokers + Head only. Start transport peers with `--profile application` (or Launcher recreate of the fixed application image set). This keeps Head fencing testable without requiring Bot/Worker images during early slices.
+**Services (product development):** `mosquitto`, `rabbitmq`, `bot`, `ai_worker`, `web`, `dev-support`. **`head` and `launcher` are excluded.** Canonical rules: `contracts/local_development.md` §2. Opt-in only via `docker-compose.dev.yml` overlay + `DCA_RUNTIME_MODE=development`.
+
+**Profiles:** `bot` and `ai_worker` use Compose profile `application`. Default `docker compose up` brings up brokers + Head only. Start transport peers with `--profile application` (or Launcher recreate of the fixed application image set). This keeps Head fencing testable without requiring Bot/Worker images during early slices. Development adds a `development` profile (or equivalent overlay services) for `dev-support` and Compose-included Web — never silently enable those in production compose.
 
 **Networks:** one internal bridge (`dca-internal`). Production compose publishes **no** host ports for Mosquitto `1883` or RabbitMQ `5672`/`15672`. Head IPC remains host-loopback only per `contracts/launcher_ipc.md`.
 
@@ -286,8 +302,10 @@
 ```
 discord-combat-ai/
 │
-├── docker-compose.yml           # Orchestrates all local containers (Head, Bot, RabbitMQ, Mosquitto, AI Worker)
-├── docker-compose.dev.yml       # Dev overrides (volume mounts, exposed ports, hot reload)
+├── docker-compose.yml           # Production local node (Head, Bot, RabbitMQ, Mosquitto, AI Worker)
+├── docker-compose.dev.yml       # Dev overlay: mounts, loopback ports, hot reload, development services
+│                                # (web + dev-support). Not data-plane isolation by itself —
+│                                # see contracts/local_development.md
 ├── infra/                       # Target: broker configs (not application code)
 │   ├── mosquitto/
 │   │   └── mosquitto.conf
@@ -332,7 +350,7 @@ discord-combat-ai/
 ├── src/
 │   │
 │   ├── shared/                  # Internal library, imported by all services
-│   │   ├── azure/
+│   │   ├── azure/               # Production provider implementations (never loaded in development)
 │   │   │   ├── services/        # Shared Azure implementations
 │   │   │   │   ├── suggestions.py #  + Azure Queue Storage client wrappers
 │   │   │   │   ├── guilds.py    # Guild configs, and battle logs
@@ -348,8 +366,21 @@ discord-combat-ai/
 │   │   │   │   └── table.py     # Azure Table Storage client wrapper
 │   │   │   ├── configs/         # Azure config
 │   │   │   └── models/          # Azure related Pydantic models
+│   │   ├── storage/             # Domain repository ports + factory (DCA_RUNTIME_MODE)
+│   │   │   ├── protocols.py     # Guild/Suggestion/Status/Metrics/Archive ports
+│   │   │   ├── factory.py       # azure vs local adapter selection
+│   │   │   ├── azure_adapters.py
+│   │   │   └── local_adapters.py # HTTP clients → dev-support
 │   │   ├── models/              # Pydantic models shared across services
 │   │   └── utils/               # Generic helpers (logging, retry logic, etc.)
+│   │
+│   ├── dev_support/             # Compose-only product-dev service (contracts/local_development.md)
+│   │   ├── Dockerfile
+│   │   ├── main.py
+│   │   ├── api/                 # Internal REST for repository adapters
+│   │   ├── store/               # SQLite persistence
+│   │   ├── grants.py            # Mosquitto activation-grant publisher
+│   │   └── live.py              # Local dashboard live feed
 │   │
 │   ├── head/                    # Container: Session Coordinator / Watchdog
 │   │   ├── Dockerfile
@@ -437,7 +468,8 @@ discord-combat-ai/
 │       ├── backend/
 │       │   ├── main.py          # FastAPI app entry point — mounts API routers + serves frontend/dist/ as static files
 |       |   ├── routes/          # dashboard.py, guilds.py, suggestions.py, webhook.py — see docs/containers/web/pages/*.md
-|       |   ├── services/        # Thin per-domain logic, delegates to src/shared/azure/services/
+|       |   ├── services/        # Thin per-domain logic via shared/storage repositories
+|       |   │                    # (Azure adapters in production; local → dev-support in development)
 |       |   ├── config/
 |       |   ├── utils/
 |       |   └── models/          # Pydantic request/response models
@@ -537,8 +569,10 @@ discord-combat-ai/
 ### Key Structural Decisions
 
 - **`src/shared/` is not a container.** It is an internal library copied into each service image at build time via the root-level Docker build context. No service imports from another service's directory.
+- **Domain persistence ports sit above Azure.** Bot and Web depend on repository interfaces (`GuildRepository`, `SuggestionRepository`, `StatusRepository`, `MetricsRepository`, …) selected at composition root by `DCA_RUNTIME_MODE`. Production adapters wrap `src/shared/azure/services/*`. Development adapters call Compose-only `dev-support`. Canonical: `contracts/local_development.md` §5. An Azure-protocol emulator is rejected.
 - **Single `pyproject.toml` at root.** All dependencies for all services are declared here. This simplifies local development — a single `pip install -e .` makes all code available with live reload.
 - **Build context is always the repo root.** Every `Dockerfile` uses `.` as context, allowing access to both the service directory and `src/shared/`.
-- **`docker-compose.dev.yml`** mounts `src/` as a volume into each container, so local code changes are reflected immediately without rebuilding images.
-- **`Web` is excluded from `docker-compose.yml`** by design. It is deployed independently and has no direct network access to local containers.
+- **`docker-compose.dev.yml`** mounts `src/` as a volume into each container, so local code changes are reflected immediately without rebuilding images. It is also the explicit opt-in for product-development services (`dev-support`, Compose-included Web). It does **not** by itself authorize talking to production Azure or the production Discord application.
+- **`Web` is excluded from production `docker-compose.yml`** by design. It is deployed independently and has no direct network access to local containers. **Exception:** product-development mode includes Web in the development overlay and routes data through `dev-support` (`contracts/local_development.md`).
 - **`prompts/` lives at the root** and is mounted into `ai_worker` at runtime, making prompt iteration possible without rebuilding the image.
+- **Product-development mode does not validate Azure coordination.** Passing local UI/command checks (S14) never substitutes for S01–S10 / production S12–S13.

@@ -6,9 +6,11 @@
 
 `azure.md` / `src/shared/azure/` centralizes **all** authentication and client construction for the five Azure resources used by the system (per `architecture.md`'s Technology Stack): **Web PubSub**, **Queue Storage**, **Cosmos DB**, **Blob Storage**, and **Table Storage**.
 
-Its core purpose is to be the **single source of truth for Azure environment variables**. No other container doc should redefine or duplicate an `AZURE_*` variable — a consuming service's own doc should state *which* of these resources it depends on and link here for the variable definitions, rather than re-listing them. (`head.md` follows this convention as of this revision — see its Section 3 note.)
+Its core purpose is to be the **single source of truth for Azure environment variables** and the **production provider implementation** behind domain repository ports (`contracts/local_development.md` §5). No other container doc should redefine or duplicate an `AZURE_*` variable — a consuming service's own doc should state *which* of these resources it depends on and link here for the variable definitions, rather than re-listing them. (`head.md` follows this convention as of this revision — see its Section 3 note.)
 
 `azure.md` does not decide *what* each service does with Azure (that's each service's own responsibility, documented in its own file) — it only decides *how a client gets constructed and authenticated*.
+
+**Product-development mode must not load this library.** When `DCA_RUNTIME_MODE=development`, composition roots select local adapters → `dev-support` and **must not** call `load_azure_settings` or construct Azure clients. Lease, Cosmos Patch/ETag, Queue visibility, and PubSub Free_F1 semantics documented below remain **production/integration-only**; they are not reimplemented locally.
 
 ---
 
@@ -47,7 +49,7 @@ This is the **complete and only** list of Azure-related environment variables in
 
 | Variable | Required | Default | Description |
 |---|---|---|---|
-| `AZURE_TENANT_ID` | Yes | — | Azure AD tenant ID — shared across services (identifying the tenant is not a privilege boundary; the client ID/secret pair is). |
+| `AZURE_TENANT_ID` | Yes (production only) | — | Azure AD tenant ID — shared across services (identifying the tenant is not a privilege boundary; the client ID/secret pair is). |
 | `HEAD_AZURE_CLIENT_ID` / `HEAD_AZURE_CLIENT_SECRET` | Yes | — | `Head`'s own Service Principal — **corrected this revision, per-service now** (was one shared `AZURE_CLIENT_ID`/`AZURE_CLIENT_SECRET` for every service). Scoped only to Table Storage, Blob Storage, and Web PubSub (§4). |
 | `BOT_AZURE_CLIENT_ID` / `BOT_AZURE_CLIENT_SECRET` | Yes | — | `Bot`'s own Service Principal. Scoped to Queue Storage, Cosmos DB, and Blob Storage (status `status` section + battle archive — §4). |
 | `WEB_AZURE_CLIENT_ID` / `WEB_AZURE_CLIENT_SECRET` | Yes | — | `Web`'s own Service Principal. Scoped to Cosmos DB, Queue Storage, Web PubSub, Table Storage, and Blob Storage (status document identity/catalog — §4). |
@@ -62,6 +64,8 @@ This is the **complete and only** list of Azure-related environment variables in
 | `AZURE_LOG_ARCHIVE_CONTAINER` | No | `service-logs` | Blob container for append-blob operational logs (`contracts/log_archive.md`). |
 | `AZURE_WEBPUBSUB_ENDPOINT` | Yes | — | Azure Web PubSub resource endpoint, used for cluster broadcast and live telemetry/log streaming. |
 | `AZURE_WEBPUBSUB_HUB_NAME` | No | `discordcombatai` | Web PubSub hub name under which `cluster` and `dashboard-live` groups live (`contracts/pubsub_live.md`). |
+
+> **Required column above means production.** All Azure variables in this table are irrelevant and must remain unused when `DCA_RUNTIME_MODE=development` (`contracts/local_development.md` §3/§5). Development refuses to construct clients from this table.
 
 **Design decision, revised this revision:** the previous version of this doc used one Azure AD Service Principal shared across every resource *and every service* (`Head`, `Bot`, `Web`) — one identity with broad access regardless of which service actually needed which resource. **Corrected:** each Azure-consuming service (`Head`, `Bot`, `Web`) gets its **own** Service Principal, scoped only to the resources that service actually uses per §4's table (`Head`: Table + Blob + Web PubSub; `Bot`: Queue + Cosmos + Blob; `Web`: Cosmos + Queue + Web PubSub + Table + Blob). This is a **free correction** — creating additional Azure AD App Registrations costs nothing — and is logically independent of the plaintext-Gemini-key decision below; it closes an unnecessary blast-radius gap (a compromised `Web` container no longer has any path to credentials scoped for `Head`/`Bot`, and vice versa) without adding any infrastructure cost or complexity that this project's "cheap, self-hosted" model needs to avoid.
 
