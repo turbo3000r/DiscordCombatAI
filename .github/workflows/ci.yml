@@ -1,0 +1,99 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main, dev]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  changes:
+    name: Detect changes
+    runs-on: ubuntu-latest
+    outputs:
+      # Manual runs always execute every check; PRs only run affected slices.
+      python: ${{ github.event_name != 'pull_request' && 'true' || steps.filter.outputs.python }}
+      launcher: ${{ github.event_name != 'pull_request' && 'true' || steps.filter.outputs.launcher }}
+      #brokers: ${{ github.event_name != 'pull_request' && 'true' || steps.filter.outputs.brokers }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Filter paths
+        if: github.event_name == 'pull_request'
+        uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            python:
+              - '.github/workflows/ci.yml'
+              - '.github/workflows/python.yml'
+              - 'src/**'
+              - 'tests/**'
+              - 'pyproject.toml'
+              - 'uv.lock'
+              - 'infra/**'
+              - 'docker-compose.yml'
+              - 'docker-compose.dev.yml'
+            launcher:
+              - '.github/workflows/ci.yml'
+              - '.github/workflows/launcher.yml'
+              - 'launcher/**'
+            brokers:
+              - '.github/workflows/ci.yml'
+              - '.github/workflows/brokers.yml'
+              - 'infra/**'
+              - 'docker-compose.yml'
+              - 'docker-compose.dev.yml'
+              - 'tests/integration/**'
+              - 'tests/unit/infra/**'
+
+  python:
+    name: Python
+    needs: changes
+    if: needs.changes.outputs.python == 'true'
+    uses: ./.github/workflows/python.yml
+
+  launcher:
+    name: Launcher
+    needs: changes
+    if: needs.changes.outputs.launcher == 'true'
+    uses: ./.github/workflows/launcher.yml
+
+  brokers:
+    name: Brokers
+    needs: changes
+    if: needs.changes.outputs.brokers == 'true'
+    uses: ./.github/workflows/brokers.yml
+
+  ci:
+    name: CI
+    needs: [changes, python, launcher, brokers]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require successful or skipped jobs
+        run: |
+          set -euo pipefail
+          if [[ "${{ needs.changes.result }}" != "success" ]]; then
+            echo "Change detection failed: ${{ needs.changes.result }}"
+            exit 1
+          fi
+          for result in \
+            "${{ needs.python.result }}" \
+            "${{ needs.launcher.result }}" \
+            "${{ needs.brokers.result }}"
+          do
+            if [[ "$result" != "success" && "$result" != "skipped" ]]; then
+              echo "A required CI job finished with: $result"
+              exit 1
+            fi
+          done
+          echo "CI passed (jobs succeeded or were skipped as out of path scope)."
