@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import builtins
+from datetime import datetime
 from typing import Any
 
 import httpx
 
+from shared.azure.services.suggestions import SuggestionRecord
 from shared.models.guild_config import GuildConfigDocument
 from shared.models.status_document import StatusDocument
 from shared.models.suggestion import SuggestionDocument
@@ -94,7 +97,7 @@ class LocalGuildRepository(_LocalClient):
 
 class LocalSuggestionRepository(_LocalClient):
     async def create(self, payload: dict[str, Any]) -> SuggestionDocument:
-        guild_id = str(payload.get("guild_id") or payload.get("guild", {}).get("id", ""))
+        guild_id = str(payload.get("guild_id") or "")
         data = await self._request(
             "POST", f"/internal/v1/guilds/{guild_id}/suggestions", json=payload
         )
@@ -104,24 +107,141 @@ class LocalSuggestionRepository(_LocalClient):
         data = await self._request(
             "GET", f"/internal/v1/guilds/{guild_id}/suggestions/{suggestion_id}"
         )
+        data.pop("_etag", None)
+        data.pop("revision", None)
         return SuggestionDocument.model_validate(data)
 
-    async def list(self, guild_id: str) -> list[SuggestionDocument]:
+    async def get_with_etag(self, guild_id: str, suggestion_id: str) -> SuggestionRecord:
+        data = await self._request(
+            "GET", f"/internal/v1/guilds/{guild_id}/suggestions/{suggestion_id}"
+        )
+        etag = str(data.pop("_etag", data.get("revision", "1")))
+        return SuggestionRecord(document=SuggestionDocument.model_validate(data), etag=etag)
+
+    async def get_by_id(self, suggestion_id: str) -> SuggestionRecord:
+        data = await self._request("GET", f"/internal/v1/suggestions/{suggestion_id}")
+        etag = str(data.pop("_etag", data.get("revision", "1")))
+        return SuggestionRecord(document=SuggestionDocument.model_validate(data), etag=etag)
+
+    async def list(self, guild_id: str) -> builtins.list[SuggestionDocument]:
         data = await self._request("GET", f"/internal/v1/guilds/{guild_id}/suggestions")
         return [SuggestionDocument.model_validate(item) for item in data]
 
-    async def update(self, payload: dict[str, Any]) -> SuggestionDocument:
-        guild_id = str(payload["guild_id"])
-        suggestion_id = str(payload["id"])
+    async def list_all(self) -> builtins.list[SuggestionDocument]:
+        data = await self._request("GET", "/internal/v1/suggestions")
+        return [SuggestionDocument.model_validate(item) for item in data]
+
+    async def patch_respond(
+        self,
+        guild_id: str,
+        suggestion_id: str,
+        *,
+        etag: str,
+        operations: builtins.list[dict[str, Any]],
+    ) -> SuggestionRecord:
         data = await self._request(
-            "PUT",
-            f"/internal/v1/guilds/{guild_id}/suggestions/{suggestion_id}",
-            json=payload,
+            "PATCH",
+            f"/internal/v1/guilds/{guild_id}/suggestions/{suggestion_id}/respond",
+            json={"operations": operations},
+            headers={"If-Match": etag},
         )
-        return SuggestionDocument.model_validate(data)
+        next_etag = str(data.pop("_etag", data.get("revision", etag)))
+        return SuggestionRecord(
+            document=SuggestionDocument.model_validate(data), etag=next_etag
+        )
 
     async def delete(self, guild_id: str, suggestion_id: str) -> None:
         await self._request("DELETE", f"/internal/v1/guilds/{guild_id}/suggestions/{suggestion_id}")
+
+    async def enqueue(self, document: SuggestionDocument) -> None:
+        # Development suppresses Queue enqueue by contract.
+        return None
+
+    async def claim_pending(
+        self, guild_id: str, suggestion_id: str, claimed_by: str
+    ) -> SuggestionDocument | None:
+        try:
+            data = await self._request(
+                "POST",
+                f"/internal/v1/guilds/{guild_id}/suggestions/{suggestion_id}/claim",
+                json={"claimed_by": claimed_by},
+            )
+        except LocalHttpError as exc:
+            if exc.status_code in {404, 409}:
+                return None
+            raise
+        return SuggestionDocument.model_validate(data)
+
+    async def mark_sent(
+        self, guild_id: str, suggestion_id: str, *, claimed_by: str
+    ) -> SuggestionDocument:
+        data = await self._request(
+            "POST",
+            f"/internal/v1/guilds/{guild_id}/suggestions/{suggestion_id}/mark-sent",
+            json={"claimed_by": claimed_by},
+        )
+        return SuggestionDocument.model_validate(data)
+
+    async def mark_failed(
+        self,
+        guild_id: str,
+        suggestion_id: str,
+        error: str,
+        *,
+        claimed_by: str,
+        requeue: bool,
+    ) -> SuggestionDocument:
+        data = await self._request(
+            "POST",
+            f"/internal/v1/guilds/{guild_id}/suggestions/{suggestion_id}/mark-failed",
+            json={"claimed_by": claimed_by, "error": error, "requeue": requeue},
+        )
+        return SuggestionDocument.model_validate(data)
+
+    async def list_pending_for_sweep(
+        self, *, min_age_sec: float, now: datetime | None = None
+    ) -> builtins.list[SuggestionRecord]:
+        params: dict[str, str] = {"min_age_sec": str(min_age_sec)}
+        if now is not None:
+            params["now"] = now.astimezone().isoformat().replace("+00:00", "Z")
+        data = await self._request("GET", "/internal/v1/suggestions/pending-sweep", params=params)
+        results: builtins.list[SuggestionRecord] = []
+        for item in data:
+            etag = str(item.pop("_etag", "1"))
+            results.append(
+                SuggestionRecord(document=SuggestionDocument.model_validate(item), etag=etag)
+            )
+        return results
+
+    async def list_expired_claims(
+        self, *, claim_timeout_sec: float, now: datetime | None = None
+    ) -> builtins.list[SuggestionRecord]:
+        params: dict[str, str] = {"claim_timeout_sec": str(claim_timeout_sec)}
+        if now is not None:
+            params["now"] = now.astimezone().isoformat().replace("+00:00", "Z")
+        data = await self._request("GET", "/internal/v1/suggestions/expired-claims", params=params)
+        results: builtins.list[SuggestionRecord] = []
+        for item in data:
+            etag = str(item.pop("_etag", "1"))
+            results.append(
+                SuggestionRecord(document=SuggestionDocument.model_validate(item), etag=etag)
+            )
+        return results
+
+    async def reset_expired_claim(
+        self, guild_id: str, suggestion_id: str, *, etag: str
+    ) -> SuggestionDocument | None:
+        try:
+            data = await self._request(
+                "POST",
+                f"/internal/v1/guilds/{guild_id}/suggestions/{suggestion_id}/reset-claim",
+                headers={"If-Match": etag},
+            )
+        except LocalHttpError as exc:
+            if exc.status_code in {404, 409, 412}:
+                return None
+            raise
+        return SuggestionDocument.model_validate(data)
 
 
 class LocalStatusRepository(_LocalClient):

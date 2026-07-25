@@ -16,9 +16,21 @@ __pycache__/
 .ruff_cache/
 .coverage
 htmlcov/
+coverage/
 dist/
 build/
 *.egg-info/
+*.tsbuildinfo
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
+.idea/
+
+# Node / frontend (keep package-lock.json tracked)
+node_modules/
+.vite/
+*.local
 
 # Database
 metrics.db

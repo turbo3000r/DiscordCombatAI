@@ -42,7 +42,7 @@ class GuildSnapshot(_StrictModel):
 
 
 class SubmitContext(_StrictModel):
-    interaction_id: UUIDString
+    interaction_id: SnowflakeString
     channel_id: SnowflakeString | None
     in_guild: bool
 

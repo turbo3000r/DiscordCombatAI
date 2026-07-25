@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
-from dev_support.store import DevStore, NotFoundError
+from dev_support.store import ConflictError, DevStore, NotFoundError
 
 router = APIRouter(prefix="/internal/v1")
 
@@ -90,6 +91,43 @@ async def list_suggestions(guild_id: str, request: Request) -> list[dict[str, An
     return [doc.model_dump(mode="json") for doc in docs]
 
 
+@router.get("/suggestions")
+async def list_all_suggestions(request: Request) -> list[dict[str, Any]]:
+    docs = _store(request).list_all_suggestions()
+    return [doc.model_dump(mode="json") for doc in docs]
+
+
+@router.get("/suggestions/pending-sweep")
+async def pending_sweep(
+    request: Request, min_age_sec: float, now: str | None = None
+) -> list[dict[str, Any]]:
+    parsed_now = datetime.fromisoformat(now.replace("Z", "+00:00")) if now else None
+    rows = _store(request).list_pending_for_sweep(min_age_sec=min_age_sec, now=parsed_now)
+    return [{**doc.model_dump(mode="json"), "_etag": etag} for doc, etag in rows]
+
+
+@router.get("/suggestions/expired-claims")
+async def expired_claims(
+    request: Request, claim_timeout_sec: float, now: str | None = None
+) -> list[dict[str, Any]]:
+    parsed_now = datetime.fromisoformat(now.replace("Z", "+00:00")) if now else None
+    rows = _store(request).list_expired_claims(
+        claim_timeout_sec=claim_timeout_sec, now=parsed_now
+    )
+    return [{**doc.model_dump(mode="json"), "_etag": etag} for doc, etag in rows]
+
+
+@router.get("/suggestions/{suggestion_id}")
+async def get_suggestion_by_id(suggestion_id: str, request: Request) -> dict[str, Any]:
+    try:
+        doc, etag = _store(request).get_suggestion_by_id(suggestion_id)
+    except NotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    payload = doc.model_dump(mode="json")
+    payload["_etag"] = etag
+    return payload
+
+
 @router.post("/guilds/{guild_id}/suggestions")
 async def create_suggestion(
     guild_id: str, payload: dict[str, Any], request: Request
@@ -97,6 +135,8 @@ async def create_suggestion(
     payload = {**payload, "guild_id": payload.get("guild_id", guild_id)}
     try:
         return _store(request).create_suggestion(payload).model_dump(mode="json")
+    except ConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -106,9 +146,91 @@ async def get_suggestion(
     guild_id: str, suggestion_id: str, request: Request
 ) -> dict[str, Any]:
     try:
-        return _store(request).get_suggestion(guild_id, suggestion_id).model_dump(mode="json")
+        doc, etag = _store(request).get_suggestion_record(guild_id, suggestion_id)
     except NotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    payload = doc.model_dump(mode="json")
+    payload["_etag"] = etag
+    return payload
+
+
+@router.patch("/guilds/{guild_id}/suggestions/{suggestion_id}/respond")
+async def patch_respond(
+    guild_id: str,
+    suggestion_id: str,
+    body: dict[str, Any],
+    request: Request,
+) -> dict[str, Any]:
+    etag = request.headers.get("If-Match", "")
+    operations = body.get("operations", [])
+    try:
+        doc, next_etag = _store(request).patch_suggestion_respond(
+            guild_id, suggestion_id, etag=etag, operations=operations
+        )
+    except NotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ConflictError as exc:
+        raise HTTPException(status_code=412, detail=str(exc)) from exc
+    payload = doc.model_dump(mode="json")
+    payload["_etag"] = next_etag
+    return payload
+
+
+@router.post("/guilds/{guild_id}/suggestions/{suggestion_id}/claim")
+async def claim_suggestion(
+    guild_id: str, suggestion_id: str, body: dict[str, Any], request: Request
+) -> dict[str, Any]:
+    claimed = _store(request).claim_suggestion(
+        guild_id, suggestion_id, str(body.get("claimed_by", ""))
+    )
+    if claimed is None:
+        raise HTTPException(status_code=409, detail="claim unavailable")
+    return claimed.model_dump(mode="json")
+
+
+@router.post("/guilds/{guild_id}/suggestions/{suggestion_id}/mark-sent")
+async def mark_sent(
+    guild_id: str, suggestion_id: str, body: dict[str, Any], request: Request
+) -> dict[str, Any]:
+    try:
+        doc = _store(request).mark_suggestion_sent(
+            guild_id, suggestion_id, claimed_by=str(body.get("claimed_by", ""))
+        )
+    except ConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except NotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return doc.model_dump(mode="json")
+
+
+@router.post("/guilds/{guild_id}/suggestions/{suggestion_id}/mark-failed")
+async def mark_failed(
+    guild_id: str, suggestion_id: str, body: dict[str, Any], request: Request
+) -> dict[str, Any]:
+    try:
+        doc = _store(request).mark_suggestion_failed(
+            guild_id,
+            suggestion_id,
+            str(body.get("error", "")),
+            claimed_by=str(body.get("claimed_by", "")),
+            requeue=bool(body.get("requeue", False)),
+        )
+    except ConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except NotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return doc.model_dump(mode="json")
+
+
+@router.post("/guilds/{guild_id}/suggestions/{suggestion_id}/reset-claim")
+async def reset_claim(
+    guild_id: str, suggestion_id: str, request: Request
+) -> dict[str, Any]:
+    etag = request.headers.get("If-Match", "")
+    doc = _store(request).reset_expired_claim(guild_id, suggestion_id, etag=etag)
+    if doc is None:
+        raise HTTPException(status_code=412, detail="etag mismatch")
+    return doc.model_dump(mode="json")
 
 
 @router.put("/guilds/{guild_id}/suggestions/{suggestion_id}")

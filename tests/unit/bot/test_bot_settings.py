@@ -48,11 +48,25 @@ def test_bot_settings_defaults(clear_node_id: None, monkeypatch: pytest.MonkeyPa
     assert settings.shutdown_grace_sec == 30
     assert settings.control_drain_timeout_sec == 45
     assert settings.activation_grant_max_ttl_sec == 60
+    assert settings.queue_poll_interval_sec == 300
+    assert settings.suggestion_sweep_interval_sec == 900
+    assert settings.suggestion_sweep_min_age_sec == 600
+    assert settings.suggestion_max_dm_attempts == 5
+    assert settings.suggestion_claim_timeout_sec == 120
     assert settings.broker_url().endswith("/%2Fdiscordcombatai")
     assert "change-me-in-env" in settings.broker_url()
     assert "discord-token-value" not in repr(settings)
     assert settings.model_dump()["discord_bot_token"] == "***"
     assert settings.model_dump()["rabbitmq_pass"] == "***"
+
+
+def test_bot_settings_reject_claim_timeout_too_low(
+    clear_node_id: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    for key, value in _base_env(BOT_SUGGESTION_CLAIM_TIMEOUT_SEC="60").items():
+        monkeypatch.setenv(key, value)
+    with pytest.raises(ValidationError, match="claim timeout"):
+        BotSettings()  # type: ignore[call-arg]
 
 
 def test_bot_settings_reject_invalid_version(

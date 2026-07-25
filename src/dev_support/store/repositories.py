@@ -150,6 +150,12 @@ class DevStore:
 
     def create_suggestion(self, payload: dict[str, Any]) -> SuggestionDocument:
         document = SuggestionDocument.model_validate(payload)
+        existing = self._conn.execute(
+            "SELECT 1 FROM suggestions WHERE guild_id = ? AND suggestion_id = ?",
+            (str(document.guild_id), str(document.id)),
+        ).fetchone()
+        if existing is not None:
+            raise ConflictError(f"suggestion {document.id} already exists")
         self._conn.execute(
             "INSERT INTO suggestions (guild_id, suggestion_id, document_json, revision) "
             "VALUES (?, ?, ?, 1)",
@@ -167,10 +173,41 @@ class DevStore:
             raise NotFoundError(f"suggestion {suggestion_id} not found")
         return SuggestionDocument.model_validate_json(row["document_json"])
 
+    def get_suggestion_record(
+        self, guild_id: str, suggestion_id: str
+    ) -> tuple[SuggestionDocument, str]:
+        row = self._conn.execute(
+            "SELECT document_json, revision FROM suggestions "
+            "WHERE guild_id = ? AND suggestion_id = ?",
+            (guild_id, suggestion_id),
+        ).fetchone()
+        if row is None:
+            raise NotFoundError(f"suggestion {suggestion_id} not found")
+        return (
+            SuggestionDocument.model_validate_json(row["document_json"]),
+            str(row["revision"]),
+        )
+
+    def get_suggestion_by_id(self, suggestion_id: str) -> tuple[SuggestionDocument, str]:
+        row = self._conn.execute(
+            "SELECT document_json, revision FROM suggestions WHERE suggestion_id = ?",
+            (suggestion_id,),
+        ).fetchone()
+        if row is None:
+            raise NotFoundError(f"suggestion {suggestion_id} not found")
+        return (
+            SuggestionDocument.model_validate_json(row["document_json"]),
+            str(row["revision"]),
+        )
+
     def list_suggestions(self, guild_id: str) -> list[SuggestionDocument]:
         rows = self._conn.execute(
             "SELECT document_json FROM suggestions WHERE guild_id = ?", (guild_id,)
         ).fetchall()
+        return [SuggestionDocument.model_validate_json(row["document_json"]) for row in rows]
+
+    def list_all_suggestions(self) -> list[SuggestionDocument]:
+        rows = self._conn.execute("SELECT document_json FROM suggestions").fetchall()
         return [SuggestionDocument.model_validate_json(row["document_json"]) for row in rows]
 
     def update_suggestion(self, payload: dict[str, Any]) -> SuggestionDocument:
@@ -184,6 +221,167 @@ class DevStore:
             raise NotFoundError(f"suggestion {document.id} not found")
         self._conn.commit()
         return document
+
+    def patch_suggestion_respond(
+        self,
+        guild_id: str,
+        suggestion_id: str,
+        *,
+        etag: str,
+        operations: list[dict[str, Any]],
+    ) -> tuple[SuggestionDocument, str]:
+        document, revision = self.get_suggestion_record(guild_id, suggestion_id)
+        if revision != str(etag):
+            raise ConflictError("etag mismatch")
+        data = document.model_dump(mode="json")
+        for op in operations:
+            path = op["path"].lstrip("/")
+            data[path] = op["value"]
+        updated = SuggestionDocument.model_validate(data)
+        cur = self._conn.execute(
+            "UPDATE suggestions SET document_json = ?, revision = revision + 1 "
+            "WHERE guild_id = ? AND suggestion_id = ? AND revision = ?",
+            (updated.model_dump_json(), guild_id, suggestion_id, int(etag)),
+        )
+        if cur.rowcount == 0:
+            raise ConflictError("etag mismatch")
+        self._conn.commit()
+        return updated, str(int(etag) + 1)
+
+    def claim_suggestion(
+        self, guild_id: str, suggestion_id: str, claimed_by: str
+    ) -> SuggestionDocument | None:
+        document, revision = self.get_suggestion_record(guild_id, suggestion_id)
+        if document.status != "done" or document.notification_status != "pending":
+            return None
+        now = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+        operations = [
+            {"op": "set", "path": "/notification_status", "value": "claiming"},
+            {"op": "set", "path": "/notification_claimed_at", "value": now},
+            {"op": "set", "path": "/notification_claimed_by", "value": claimed_by},
+            {"op": "set", "path": "/updated_at", "value": now},
+        ]
+        try:
+            updated, _ = self.patch_suggestion_respond(
+                guild_id, suggestion_id, etag=revision, operations=operations
+            )
+        except ConflictError:
+            return None
+        return updated
+
+    def mark_suggestion_sent(
+        self, guild_id: str, suggestion_id: str, *, claimed_by: str
+    ) -> SuggestionDocument:
+        document, revision = self.get_suggestion_record(guild_id, suggestion_id)
+        claimed = document.notification_claimed_by == claimed_by
+        if document.notification_status != "claiming" or not claimed:
+            raise ConflictError("invalid claim")
+        now = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+        updated, _ = self.patch_suggestion_respond(
+            guild_id,
+            suggestion_id,
+            etag=revision,
+            operations=[
+                {"op": "set", "path": "/notification_status", "value": "sent"},
+                {"op": "set", "path": "/notification_claimed_at", "value": None},
+                {"op": "set", "path": "/notification_claimed_by", "value": None},
+                {"op": "set", "path": "/notification_last_error", "value": None},
+                {"op": "set", "path": "/updated_at", "value": now},
+            ],
+        )
+        return updated
+
+    def mark_suggestion_failed(
+        self,
+        guild_id: str,
+        suggestion_id: str,
+        error: str,
+        *,
+        claimed_by: str,
+        requeue: bool,
+    ) -> SuggestionDocument:
+        document, revision = self.get_suggestion_record(guild_id, suggestion_id)
+        claimed = document.notification_claimed_by == claimed_by
+        if document.notification_status != "claiming" or not claimed:
+            raise ConflictError("invalid claim")
+        now = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+        updated, _ = self.patch_suggestion_respond(
+            guild_id,
+            suggestion_id,
+            etag=revision,
+            operations=[
+                {"op": "set", "path": "/notification_last_error", "value": error},
+                {
+                    "op": "set",
+                    "path": "/notification_attempts",
+                    "value": document.notification_attempts + 1,
+                },
+                {
+                    "op": "set",
+                    "path": "/notification_status",
+                    "value": "pending" if requeue else "failed",
+                },
+                {"op": "set", "path": "/notification_claimed_at", "value": None},
+                {"op": "set", "path": "/notification_claimed_by", "value": None},
+                {"op": "set", "path": "/updated_at", "value": now},
+            ],
+        )
+        return updated
+
+    def list_pending_for_sweep(
+        self, *, min_age_sec: float, now: datetime | None = None
+    ) -> list[tuple[SuggestionDocument, str]]:
+        now_dt = now or datetime.now(UTC)
+        results: list[tuple[SuggestionDocument, str]] = []
+        rows = self._conn.execute(
+            "SELECT document_json, revision FROM suggestions"
+        ).fetchall()
+        for row in rows:
+            document = SuggestionDocument.model_validate_json(row["document_json"])
+            if document.notification_status != "pending":
+                continue
+            age = (now_dt - document.updated_at.astimezone(UTC)).total_seconds()
+            if age >= min_age_sec:
+                results.append((document, str(row["revision"])))
+        return results
+
+    def list_expired_claims(
+        self, *, claim_timeout_sec: float, now: datetime | None = None
+    ) -> list[tuple[SuggestionDocument, str]]:
+        now_dt = now or datetime.now(UTC)
+        results: list[tuple[SuggestionDocument, str]] = []
+        rows = self._conn.execute(
+            "SELECT document_json, revision FROM suggestions"
+        ).fetchall()
+        for row in rows:
+            document = SuggestionDocument.model_validate_json(row["document_json"])
+            claiming = document.notification_status == "claiming"
+            if not claiming or document.notification_claimed_at is None:
+                continue
+            age = (now_dt - document.notification_claimed_at.astimezone(UTC)).total_seconds()
+            if age >= claim_timeout_sec:
+                results.append((document, str(row["revision"])))
+        return results
+
+    def reset_expired_claim(
+        self, guild_id: str, suggestion_id: str, *, etag: str
+    ) -> SuggestionDocument | None:
+        now = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+        try:
+            updated, _ = self.patch_suggestion_respond(
+                guild_id,
+                suggestion_id,
+                etag=etag,
+                operations=[
+                    {"op": "set", "path": "/notification_status", "value": "pending"},
+                    {"op": "set", "path": "/notification_claimed_at", "value": None},
+                    {"op": "set", "path": "/notification_claimed_by", "value": None},
+                    {"op": "set", "path": "/updated_at", "value": now},
+                ],
+            )
+        except ConflictError:
+            return None
+        return updated
 
     def delete_suggestion(self, guild_id: str, suggestion_id: str) -> None:
         cur = self._conn.execute(

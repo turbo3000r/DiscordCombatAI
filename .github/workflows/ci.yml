@@ -22,6 +22,7 @@ jobs:
       python: ${{ github.event_name != 'pull_request' && 'true' || steps.filter.outputs.python }}
       launcher: ${{ github.event_name != 'pull_request' && 'true' || steps.filter.outputs.launcher }}
       #brokers: ${{ github.event_name != 'pull_request' && 'true' || steps.filter.outputs.brokers }}
+      web: ${{ github.event_name != 'pull_request' && 'true' || steps.filter.outputs.web }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -36,6 +37,7 @@ jobs:
               - '.github/workflows/ci.yml'
               - '.github/workflows/python.yml'
               - 'src/**'
+              - '!src/web/frontend/**'
               - 'tests/**'
               - 'pyproject.toml'
               - 'uv.lock'
@@ -54,6 +56,10 @@ jobs:
               - 'docker-compose.dev.yml'
               - 'tests/integration/**'
               - 'tests/unit/infra/**'
+            web:
+              - '.github/workflows/ci.yml'
+              - '.github/workflows/web.yml'
+              - 'src/web/frontend/**'
 
   python:
     name: Python
@@ -73,9 +79,15 @@ jobs:
     if: needs.changes.outputs.brokers == 'true'
     uses: ./.github/workflows/brokers.yml
 
+  web:
+    name: Web
+    needs: changes
+    if: needs.changes.outputs.web == 'true'
+    uses: ./.github/workflows/web.yml
+
   ci:
     name: CI
-    needs: [changes, python, launcher, brokers]
+    needs: [changes, python, launcher, brokers, web]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -89,7 +101,8 @@ jobs:
           for result in \
             "${{ needs.python.result }}" \
             "${{ needs.launcher.result }}" \
-            "${{ needs.brokers.result }}"
+            "${{ needs.brokers.result }}" \
+            "${{ needs.web.result }}"
           do
             if [[ "$result" != "success" && "$result" != "skipped" ]]; then
               echo "A required CI job finished with: $result"

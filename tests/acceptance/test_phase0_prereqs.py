@@ -40,7 +40,7 @@ async def test_s12_claim_via_fake_cosmos() -> None:
                 "locale": {"user": "en", "guild": None, "stored": "en"},
                 "guild_snapshot": None,
                 "context": {
-                    "interaction_id": "33333333-3333-4333-8333-333333333333",
+                    "interaction_id": "987654321098765432",
                     "channel_id": None,
                     "in_guild": True,
                 },

@@ -65,7 +65,18 @@ def test_base_compose_has_expected_broker_topology() -> None:
     assert bot_env["BOT_AZURE_CLIENT_ID"] == "${BOT_AZURE_CLIENT_ID:-}"
     assert bot_env["AZURE_COSMOS_ENDPOINT"] == "${AZURE_COSMOS_ENDPOINT:-}"
     assert bot_env["AZURE_STORAGE_ACCOUNT_NAME"] == "${AZURE_STORAGE_ACCOUNT_NAME:-}"
-    assert "BOT_QUEUE_POLL_INTERVAL_SEC" not in bot_env
+    assert bot_env["BOT_QUEUE_POLL_INTERVAL_SEC"] == "${BOT_QUEUE_POLL_INTERVAL_SEC:-300}"
+    assert (
+        bot_env["BOT_SUGGESTION_SWEEP_INTERVAL_SEC"]
+        == "${BOT_SUGGESTION_SWEEP_INTERVAL_SEC:-900}"
+    )
+    assert (
+        bot_env["BOT_SUGGESTION_SWEEP_MIN_AGE_SEC"] == "${BOT_SUGGESTION_SWEEP_MIN_AGE_SEC:-600}"
+    )
+    assert bot_env["BOT_SUGGESTION_MAX_DM_ATTEMPTS"] == "${BOT_SUGGESTION_MAX_DM_ATTEMPTS:-5}"
+    assert (
+        bot_env["BOT_SUGGESTION_CLAIM_TIMEOUT_SEC"] == "${BOT_SUGGESTION_CLAIM_TIMEOUT_SEC:-120}"
+    )
     assert worker_env["AI_WORKER_TRANSPORT_SHELL"] == "${AI_WORKER_TRANSPORT_SHELL:-false}"
 
 
@@ -103,3 +114,23 @@ def test_dev_compose_adds_local_ports_and_source_mounts() -> None:
     assert "dev-support-data" in compose["volumes"]  # type: ignore[index]
     assert any("dev-support-data:" in str(v) for v in dev_support["volumes"])  # type: ignore[index]
     assert "application" in dev_support["profiles"]  # type: ignore[index]
+
+    web = services["web"]  # type: ignore[index]
+    assert web["profiles"] == ["application", "development"]  # type: ignore[index]
+    assert web["build"]["dockerfile"] == "src/web/Dockerfile"  # type: ignore[index]
+    assert web["ports"] == ["127.0.0.1:8088:8080"]  # type: ignore[index]
+    assert web["environment"]["DCA_RUNTIME_MODE"] == "development"  # type: ignore[index]
+    assert web["environment"]["DEV_SUPPORT_URL"] == "http://dev-support:8080"  # type: ignore[index]
+    assert web["environment"]["WEB_LOCAL_ADMIN_OID"] == (
+        "${WEB_LOCAL_ADMIN_OID:-local-dev-admin}"
+    )
+    assert web["environment"]["AZURE_COSMOS_ENDPOINT"] == ""  # type: ignore[index]
+    assert web["environment"]["WEB_ENTRA_TENANT_ID"] == ""  # type: ignore[index]
+    assert "condition" in web["depends_on"]["dev-support"]  # type: ignore[index]
+    assert "./src:/app/src" in web["volumes"]  # type: ignore[index]
+
+
+def test_base_compose_does_not_include_production_web() -> None:
+    compose = _load_compose(ROOT / "docker-compose.yml")
+    services = compose["services"]  # type: ignore[index]
+    assert "web" not in services

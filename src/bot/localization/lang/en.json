@@ -1,0 +1,62 @@
+{
+  "errors": {
+    "denied_permission": "You do not have permission to use this command.",
+    "denied_guild": "This command can only be used inside a server.",
+    "denied_drain": "The bot is temporarily unavailable during an update. Please try again later.",
+    "denied_runtime_filter": "This command is not available in this server.",
+    "denied_enabled": "AI is not enabled or configured for this server. An administrator must use /config first.",
+    "denied_development_dm": "This command cannot be used in direct messages in development.",
+    "error_transient": "A temporary error occurred. Please try again shortly.",
+    "error_permanent": "This operation could not be completed. Please contact an operator.",
+    "error_unexpected": "Something went wrong. Please try again later.",
+    "foreign_user": "Only the user who opened this panel can use these controls."
+  },
+  "commands": {
+    "config": {
+      "description": "Configure the bot for this server",
+      "permission_denied": "Administrator permission is required to use /config.",
+      "cosmos_transient": "Could not reach configuration storage. Please try again shortly.",
+      "cosmos_permanent": "Configuration storage rejected this request. Please contact an operator.",
+      "listing_failure": "Could not list available models for the staged API key.",
+      "truncation_notice": "Showing {shown} of {total} models (Discord limit).",
+      "apply_applied": "Applied: {fields}",
+      "apply_rejected": "Not applied: {fields}",
+      "invalid_webhook": "Webhook URL is invalid or not allowed.",
+      "invalid_key": "The API key was rejected by Google.",
+      "unavailable_model": "The selected model is unavailable for this key.",
+      "rate_limit": "Google rate-limited the request. Try again later.",
+      "transient_service": "Google service is temporarily unavailable. Try again later.",
+      "enabled_gate_warning": "AI remains disabled until both API key and model are valid.",
+      "timeout": "Configuration session timed out. Unapplied changes were discarded.",
+      "cancelled": "Configuration cancelled. Unapplied changes were discarded.",
+      "apply_button": "Apply",
+      "cancel_button": "Cancel",
+      "language_label": "Language",
+      "api_key_label": "API key",
+      "model_label": "Model",
+      "webhook_label": "Webhook",
+      "api_key_configured": "Configured",
+      "api_key_staged": "Staged (hidden)",
+      "api_key_missing": "Not configured",
+      "webhook_configured": "Configured",
+      "webhook_missing": "Not configured",
+      "enabled_label": "AI enabled"
+    },
+    "suggest": {
+      "description": "Suggest a feature or report a bug",
+      "catalog_unavailable": "Suggestion categories are temporarily unavailable. Please try again later.",
+      "validation_error": "Please select a valid type and at least one category.",
+      "write_transient": "Could not save your suggestion right now. Please try again shortly.",
+      "write_permanent": "Your suggestion could not be saved. Please contact an operator.",
+      "success": "Thank you! Your suggestion ticket is {ticket_uid}.",
+      "development_dm_rejected": "Suggestions cannot be submitted via DM in development.",
+      "timeout": "Suggestion session timed out.",
+      "open_modal": "Write suggestion",
+      "notification_dm": "Response to your suggestion ({ticket_uid}):\n{response}",
+      "prompt": "Select a type and one or more categories, then open the form.",
+      "modal_title": "Share your suggestion",
+      "title_label": "Title",
+      "details_label": "Details"
+    }
+  }
+}

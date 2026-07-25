@@ -69,7 +69,7 @@ def test_suggestion_crud(tmp_path: Path) -> None:
         "locale": {"user": "en-US", "guild": "en-US", "stored": "en"},
         "guild_snapshot": {"id": "123456789012345678", "name": "Dev"},
         "context": {
-            "interaction_id": str(uuid4()),
+            "interaction_id": "987654321098765432",
             "channel_id": "222222222222222222",
             "in_guild": True,
         },

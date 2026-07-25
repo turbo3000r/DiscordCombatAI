@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import builtins
+from datetime import datetime
 from typing import Any
 
 from shared.azure.services.guilds import GuildConfigService
 from shared.azure.services.metrics import MetricsService
 from shared.azure.services.status import StatusService
-from shared.azure.services.suggestions import SuggestionService
+from shared.azure.services.suggestions import SuggestionRecord, SuggestionService
 from shared.models.guild_config import GuildConfigDocument
 from shared.models.status_document import StatusDocument
 from shared.models.suggestion import SuggestionDocument
@@ -65,14 +67,79 @@ class AzureSuggestionRepository:
     async def get(self, guild_id: str, suggestion_id: str) -> SuggestionDocument:
         return await self._service.get(guild_id, suggestion_id)
 
-    async def list(self, guild_id: str) -> list[SuggestionDocument]:
+    async def get_with_etag(self, guild_id: str, suggestion_id: str) -> SuggestionRecord:
+        return await self._service.get_with_etag(guild_id, suggestion_id)
+
+    async def get_by_id(self, suggestion_id: str) -> SuggestionRecord:
+        return await self._service.get_by_id(suggestion_id)
+
+    async def list(self, guild_id: str) -> builtins.list[SuggestionDocument]:
         return await self._service.list(guild_id)
 
-    async def update(self, payload: dict[str, Any]) -> SuggestionDocument:
-        return await self._service.update(payload)
+    async def list_all(self) -> builtins.list[SuggestionDocument]:
+        return await self._service.list_all()
+
+    async def patch_respond(
+        self,
+        guild_id: str,
+        suggestion_id: str,
+        *,
+        etag: str,
+        operations: builtins.list[dict[str, Any]],
+    ) -> SuggestionRecord:
+        return await self._service.patch_respond(
+            guild_id, suggestion_id, etag=etag, operations=operations
+        )
 
     async def delete(self, guild_id: str, suggestion_id: str) -> None:
         await self._service.delete(guild_id, suggestion_id)
+
+    async def enqueue(self, document: SuggestionDocument) -> None:
+        await self._service.enqueue(document)
+
+    async def claim_pending(
+        self, guild_id: str, suggestion_id: str, claimed_by: str
+    ) -> SuggestionDocument | None:
+        return await self._service.claim_pending(guild_id, suggestion_id, claimed_by)
+
+    async def mark_sent(
+        self, guild_id: str, suggestion_id: str, *, claimed_by: str
+    ) -> SuggestionDocument:
+        return await self._service.mark_sent(guild_id, suggestion_id, claimed_by=claimed_by)
+
+    async def mark_failed(
+        self,
+        guild_id: str,
+        suggestion_id: str,
+        error: str,
+        *,
+        claimed_by: str,
+        requeue: bool,
+    ) -> SuggestionDocument:
+        return await self._service.mark_failed(
+            guild_id,
+            suggestion_id,
+            error,
+            claimed_by=claimed_by,
+            requeue=requeue,
+        )
+
+    async def list_pending_for_sweep(
+        self, *, min_age_sec: float, now: datetime | None = None
+    ) -> builtins.list[SuggestionRecord]:
+        return await self._service.list_pending_for_sweep(min_age_sec=min_age_sec, now=now)
+
+    async def list_expired_claims(
+        self, *, claim_timeout_sec: float, now: datetime | None = None
+    ) -> builtins.list[SuggestionRecord]:
+        return await self._service.list_expired_claims(
+            claim_timeout_sec=claim_timeout_sec, now=now
+        )
+
+    async def reset_expired_claim(
+        self, guild_id: str, suggestion_id: str, *, etag: str
+    ) -> SuggestionDocument | None:
+        return await self._service.reset_expired_claim(guild_id, suggestion_id, etag=etag)
 
 
 class AzureStatusRepository:

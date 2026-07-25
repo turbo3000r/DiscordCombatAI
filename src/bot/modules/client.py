@@ -3,13 +3,22 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Awaitable, Callable
 
 import discord
 from discord.ext import commands
 
+from bot.localization.handler import LocalizationHandler, load_localization
+from bot.modules.commands.context import CommandContext
+from bot.modules.commands.process_command import CommandGuardService
+from bot.modules.commands.registration import register_phase3_commands
 from shared.runtime.settings import RuntimeMode
+from shared.storage.protocols import GuildRepository, StatusRepository, SuggestionRepository
 
 logger = logging.getLogger(__name__)
+
+ConfigHandler = Callable[[discord.Interaction, CommandContext], Awaitable[None]]
+SuggestHandler = Callable[[discord.Interaction, CommandContext], Awaitable[None]]
 
 
 def build_intents() -> discord.Intents:
@@ -19,7 +28,7 @@ def build_intents() -> discord.Intents:
 
 
 class CombatBot(commands.Bot):
-    """Phase 2 Bot: guild intent only, no user-facing commands."""
+    """Phase 3 Bot: guild intent + /config and /suggest registration."""
 
     def __init__(
         self,
@@ -28,6 +37,14 @@ class CombatBot(commands.Bot):
         runtime_mode: RuntimeMode | str = RuntimeMode.production,
         development_guild_id: str | None = None,
         expected_application_id: str | None = None,
+        l10n: LocalizationHandler | None = None,
+        guild_repository: GuildRepository | None = None,
+        suggestion_repository: SuggestionRepository | None = None,
+        status_repository: StatusRepository | None = None,
+        draining_provider: Callable[[], bool] | None = None,
+        config_handler: ConfigHandler | None = None,
+        suggest_handler: SuggestHandler | None = None,
+        register_commands: bool = True,
     ) -> None:
         super().__init__(
             command_prefix=command_prefix,
@@ -37,7 +54,28 @@ class CombatBot(commands.Bot):
         self.runtime_mode = RuntimeMode(runtime_mode)
         self.development_guild_id = development_guild_id
         self.expected_application_id = expected_application_id
+        self.l10n = l10n or load_localization()
+        self.guild_repository = guild_repository
+        self.suggestion_repository = suggestion_repository
+        self.status_repository = status_repository
+        self._draining_provider = draining_provider or (lambda: False)
+        self.guard = CommandGuardService(
+            runtime_mode=self.runtime_mode,
+            development_guild_id=development_guild_id or "",
+            l10n=self.l10n,
+            guild_repository=guild_repository,
+            suggestion_repository=suggestion_repository,
+            status_repository=status_repository,
+            draining_provider=self._draining_provider,
+        )
         self._tree_synced = False
+        if register_commands:
+            register_phase3_commands(
+                self.tree,
+                self.guard,
+                config_handler=config_handler,
+                suggest_handler=suggest_handler,
+            )
 
     async def setup_hook(self) -> None:
         if self.runtime_mode is RuntimeMode.development:
@@ -73,11 +111,27 @@ def create_bot(
     runtime_mode: RuntimeMode | str = RuntimeMode.production,
     development_guild_id: str | None = None,
     expected_application_id: str | None = None,
+    l10n: LocalizationHandler | None = None,
+    guild_repository: GuildRepository | None = None,
+    suggestion_repository: SuggestionRepository | None = None,
+    status_repository: StatusRepository | None = None,
+    draining_provider: Callable[[], bool] | None = None,
+    config_handler: ConfigHandler | None = None,
+    suggest_handler: SuggestHandler | None = None,
+    register_commands: bool = True,
 ) -> CombatBot:
     return CombatBot(
         runtime_mode=runtime_mode,
         development_guild_id=development_guild_id,
         expected_application_id=expected_application_id,
+        l10n=l10n,
+        guild_repository=guild_repository,
+        suggestion_repository=suggestion_repository,
+        status_repository=status_repository,
+        draining_provider=draining_provider,
+        config_handler=config_handler,
+        suggest_handler=suggest_handler,
+        register_commands=register_commands,
     )
 
 

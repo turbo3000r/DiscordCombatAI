@@ -1,4 +1,4 @@
-"""Interaction guild admission for future slash commands."""
+"""Interaction guild admission helpers for slash commands and components."""
 
 from __future__ import annotations
 
@@ -13,11 +13,13 @@ def interaction_allowed(
     *,
     mode: RuntimeMode | str,
     development_guild_id: str,
+    allow_dm_in_production: bool = True,
 ) -> bool:
     guild_id = getattr(interaction, "guild_id", None)
     if guild_id is None:
-        # DMs / no-guild rejected in development; production may allow later.
-        return RuntimeMode(mode) is RuntimeMode.production
+        if RuntimeMode(mode) is RuntimeMode.development:
+            return False
+        return allow_dm_in_production
     return is_managed_guild(
         mode=mode,
         guild_id=str(guild_id),
