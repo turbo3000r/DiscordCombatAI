@@ -71,7 +71,12 @@ def _wait_for_http_json(url: str, timeout_sec: int = 120) -> dict[str, object]:
     while time.monotonic() < deadline:
         try:
             return _http_json(url)
-        except (OSError, urllib.error.HTTPError, urllib.error.URLError, json.JSONDecodeError) as exc:
+        except (
+            OSError,
+            urllib.error.HTTPError,
+            urllib.error.URLError,
+            json.JSONDecodeError,
+        ) as exc:
             last_error = exc
             time.sleep(1)
     raise AssertionError(f"{url} did not become ready: {last_error}")
