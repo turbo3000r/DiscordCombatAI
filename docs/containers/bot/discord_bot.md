@@ -79,6 +79,7 @@ src/bot/
 | `BOT_SUGGESTION_SWEEP_INTERVAL_SEC` | No | `900` | How often `Bot`'s Cosmos-side reconciliation sweep (§6.6) checks for suggestions stuck at `notification_status: "pending"` (after min-age), independent of Queue Storage. |
 | `BOT_SUGGESTION_SWEEP_MIN_AGE_SEC` | No | `600` | **P0.5.1.** Sweep only claims `pending` tickets whose last update into pending is older than this (avoids racing the queue fast path). Canonical: `contracts/suggestion.md` §3. |
 | `BOT_SUGGESTION_MAX_DM_ATTEMPTS` | No | `5` | Combined attempt ceiling (fast path + sweep) before `notification_status` is set to `"failed"` (`contracts/suggestion.md` §3). |
+| `BOT_SUGGESTION_CLAIM_TIMEOUT_SEC` | No | `120` | Abandoned-claim recovery: if `notification_status == "claiming"` and `notification_claimed_at` is older than this, sweep may ETag-reset to `pending` then reclaim (`contracts/suggestion.md` §3). Must exceed Queue visibility (60s) so a live claimant is not stolen mid-DM. |
 | `BOT_GUILD_SYNC_INTERVAL_SEC` | No | `3600` | How often the periodic guild-metadata reconciliation sweep (§6.2, `contracts/guild_config.md` §4) runs, on top of the `on_guild_join`/`on_guild_update` event-driven writes. Hourly default — guild metadata (mainly `member_count`) doesn't need tighter freshness than that. |
 | `BOT_HEARTBEAT_INTERVAL_SEC` | No | `30` | Cadence of the `status/bot/heartbeat` publish (§6.3) — matches the order of magnitude `head.md` §3 already uses for its own election heartbeat. |
 | `BOT_STATUS_PUSH_INTERVAL_SEC` | No | `60` | Cadence of pushing the same heartbeat snapshot into the shared `status.py` cloud document (§6.3), so `Web`'s Dashboard can read it without any Mosquitto access. Deliberately slower than the Mosquitto heartbeat itself — `Head`'s own Table/Blob batching already uses this order of magnitude (`head.md` §3's `HEAD_TELEMETRY_BATCH_INTERVAL_SEC`), and this is the same class of "batched cloud write," not a live stream. |
@@ -129,7 +130,9 @@ src/bot/
 
 **Phase 2 includes:** Gateway lifecycle under grants, fencing/watchdog, guild join/update/remove + periodic metadata sync, Celery dispatch/`ai_tasks_results` consumer/task tracker/progress plumbing, heartbeat + status Blob push, drain progress, hard-stop (purge/revoke/synthetic `worker_terminated`). Transport is exercised only via tests/acceptance harnesses (`contracts/ai_task.md` §11).
 
-**Phase 2 excludes:** user-facing slash commands; the full `ProcessCommand` command-dispatch abstraction (deferred to `/config`, `/suggest`, `/quick-battle`); suggestion queue poller/sweep; lobby/collector/vote workflow units beyond counting AI-task map entries in `in_flight_workflows`.
+**Phase 2 excludes:** user-facing slash commands; the full `ProcessCommand` command-dispatch abstraction (deferred to Phase 3 `/config`/`/suggest` and later `/quick-battle`); suggestion queue poller/sweep; lobby/collector/vote workflow units beyond counting AI-task map entries in `in_flight_workflows`.
+
+**Phase 3 adds (documentation gate in `to_resolve.md`):** `ProcessCommand` (§6.4), localization required by `/config` and `/suggest`, those two commands + Components V2 UIs, production suggestion Queue poller + reconciliation sweep + Discord DM delivery, and S12. Phase 3 does **not** add real AI graphs, `/quick-battle`, offline guild-removal sweep, or Web pages beyond the Suggestions vertical slice.
 
 **Concurrency model (mandatory):**
 
@@ -176,7 +179,7 @@ All guild state lives in the single document defined by `contracts/guild_config.
 - **`on_guild_join` / rejoin:** call guild repository create-or-reactivate (`contracts/guild_config.md` §7), subject to §6.1a isolation. Fresh create uses defaults (§5 there) plus Discord metadata. Rejoin clears `left_at`, refreshes metadata, preserves `created_at` and admin config. Also sends the existing legacy welcome flow (`WelcomeView`/`WelcomeLocaleSelect`, unchanged — see `bot/visuals.md`'s component catalog).
 - **`on_guild_update`:** Patch only Discord-sourced fields that changed (name/icon/owner) — never touches admin-configured fields. Ignored for foreign guilds in development / reserved guild in production.
 - **`on_guild_remove`:** Patch `left_at` to now. **Does not delete** — soft-delete confirmed (`guild_config.md` §7).
-- **Periodic reconciliation sweep** (`modules/services/guild_sync.py`, every `BOT_GUILD_SYNC_INTERVAL_SEC`): iterates `bot.guilds` and Patches Discord-sourced fields for every currently joined guild that §6.1a allows. Catching Cosmos rows for guilds **absent** from `bot.guilds` (missed removals while offline) remains a remaining P1.3 item — not required to scaffold `guilds.py`.
+- **Periodic reconciliation sweep** (`modules/services/guild_sync.py`, every `BOT_GUILD_SYNC_INTERVAL_SEC`): iterates `bot.guilds` and Patches Discord-sourced fields for every currently joined guild that §6.1a allows. Catching Cosmos rows for guilds **absent** from `bot.guilds` (missed removals while offline) remains **deferred** (not Phase 3) — not required for `/config` / `/suggest`.
 
 **AI locale:** when publishing `ai_tasks`, map `language` → `language_locale` per `contracts/localization.md` §4 (`ua` → `uk-UA`).
 
@@ -219,22 +222,113 @@ On receiving a `draining` grant (`contracts/leadership_control.md` §3.2):
 1. `Bot` immediately sets `bot.draining = True` (existing behavior, §6.4's opt-in block).
 2. `Bot` begins publishing `status/bot/drain_progress` on Mosquitto (QoS 1, not retained) every `BOT_DRAIN_PROGRESS_INTERVAL_SEC` (default `5`, §3) with the current `in_flight_workflows` count, so `Head` has real visibility instead of inferring drain completion from empty RabbitMQ queues.
 
-### 6.4 Command Availability During Drain
+### 6.4 ProcessCommand (normative — Phase 3)
 
-**Confirmed decision (project owner):** `bot.draining` is one global container-wide flag. Whether a given command respects it is a per-command opt-in on the future `ProcessCommand` helper — **not implemented in Phase 2** (no user-facing slash commands).
+**Canonical ownership:** this subsection is the shared command-dispatch contract. Per-command docs (`config.md`, `suggest.md`, later `quick-battle.md`) set parameters; they do not redefine the wrapper.
 
-When command phases land:
+`bot.draining` remains one global container-wide flag. Whether a command is blocked during drain is a **per-command opt-in** via `blocked_during_drain`. Phase 2 still sets `bot.draining` and rejects new AI task publishes from the harness; Phase 3 lands the slash-command surface below.
+
+#### Signature
 
 ```python
-def ProcessCommand(bot, ..., blocked_during_drain: bool = False):
-    ...
+def ProcessCommand(
+    *,
+    required_guild: bool = True,
+    required_guild_enabled: bool = False,
+    allowed_permissions: dict | None = None,  # e.g. {discord.Permissions.administrator: True}
+    blocked_during_drain: bool = False,
+):
+    """Decorator/wrapper around a discord.app_commands command callback."""
 ```
 
-- Default `False` — most commands keep working during drain.
-- `/quick-battle` opts in (`blocked_during_drain=True`) — see `bot/commands/quick-battle.md` §4.
-- `/config` and `/suggest` stay unblocked.
+Implementation may be a decorator factory or thin wrapper; behavior below is mandatory either way.
 
-Phase 2 still sets `bot.draining` and rejects **new AI task publishes** from the harness/dispatch API while draining. Localized ephemeral “temporarily unavailable” copy for slash commands is deferred with `ProcessCommand`.
+#### Interaction acknowledgement ownership
+
+- The wrapper owns the **first** interaction response path for permission/guild/drain/runtime denials: ephemeral follow-up or response within Discord’s acknowledgement window.
+- On pass-through, the command body owns further `defer` / `response` / modal / component handling and must still acknowledge within Discord limits.
+- Modal submits and autocomplete callbacks that use the same guards must apply the same denial rules without double-acking.
+
+#### Required guild behavior (`required_guild`)
+
+| Value | Behavior |
+|---|---|
+| `True` | Interaction must occur in a guild channel. DMs → ephemeral localized denial; no command body. |
+| `False` | Guild **or** DM allowed in **production**, subject to runtime guild filtering below. |
+
+#### `required_guild_enabled`
+
+When `True`, load the typed guild config and require `enabled == true` with a non-empty validated `api_key` and non-empty `model` (same enablement bar as `/config` Apply — `contracts/guild_config.md` §9). On failure → ephemeral localized “guild AI not enabled / not configured” denial. `/config` and `/suggest` use `False`. `/quick-battle` (later) uses `True` once P1.1 closes.
+
+#### Discord permissions (`allowed_permissions`)
+
+- Empty / `None` → no Discord permission gate.
+- Otherwise every flagged permission must be present on the invoking member. Failure → ephemeral localized permission-denied (never silent).
+- No legacy “developer bypass” / owner hardcode. Administrator checks use Discord permissions only.
+
+#### `blocked_during_drain`
+
+| Value | Behavior |
+|---|---|
+| `False` (default) | Command remains available while `bot.draining` |
+| `True` | Ephemeral localized “temporarily unavailable during update/drain — retry later”; command body not run |
+
+Phase 3 command defaults:
+
+| Command | `required_guild` | `required_guild_enabled` | Permissions | `blocked_during_drain` |
+|---|---|---|---|---|
+| `/config` | `True` | `False` | administrator | `False` (available during drain) |
+| `/suggest` | `False` (prod guild-or-DM) | `False` | none | `False` (available during drain) |
+| `/quick-battle` (later) | `True` | `True` | per P1.1 | `True` |
+
+#### Production versus local-development guild filtering
+
+Canonical isolation: `contracts/local_development.md` §4; container wiring: §6.1a.
+
+| Mode | Guild interactions | DM / no-guild |
+|---|---|---|
+| **Production** | Accept any guild **except** `DISCORD_DEVELOPMENT_GUILD_ID` (always rejected). | Allowed when `required_guild=False` (e.g. `/suggest`). |
+| **Development** | Accept **only** `DISCORD_DEVELOPMENT_GUILD_ID`. | **Reject** with ephemeral localized denial — development never exercises DM commands. |
+
+Filtering runs inside `ProcessCommand` (and equivalent component/modal entry points) before the command body. No separate legacy `--dev` bypass flag.
+
+#### Typed guild-config loading
+
+When the interaction is in a guild (and not rejected by filtering):
+
+1. Resolve guild id; load via `GuildRepository` / typed `GuildConfigDocument` (`contracts/guild_config.md`).
+2. Inject a typed guild context into the command (implementation name free; shape matches the contract).
+3. **First-use `/config`:** if no active document exists, the command path calls `ensure_active_guild()` then loads — see `config.md` §6 and `guild_config.md` §7a. Other commands that require a document fail closed with a localized error if missing (do not invent an unpersisted fake).
+4. Cosmos/repository **transient** vs **permanent** failures surface as distinct ephemeral localized errors (`azure.md` §6); never pretend success.
+
+#### Ephemeral denials and localization
+
+All wrapper denials are **ephemeral**, localized via `contracts/localization.md` (guild `language` when in a guild; for production DM `/suggest`, use interaction/user locale with UI fallback chain → `en`). Exact copy keys are P2; behavior is not.
+
+#### Logging fields
+
+On every wrapper decision and command entry, structured logs include at minimum: `guild_id` (or absent for DM), `user_id`, `command`, `interaction_id`, and a `decision` / outcome tag (`allowed`, `denied_permission`, `denied_guild`, `denied_drain`, `denied_runtime_filter`, `denied_enabled`, `error_transient`, `error_permanent`). Never log secrets (`DISCORD_BOT_TOKEN`, guild `api_key`, webhook URLs).
+
+#### Expected versus unexpected exceptions
+
+| Class | Handling |
+|---|---|
+| Expected denial / validation | Ephemeral localized message; log at INFO/WARN; no traceback spam |
+| Transient Azure/network | Ephemeral localized retry message; log WARN with redacted error class |
+| Permanent Azure auth/RBAC | Ephemeral localized operator-facing message; log ERROR; do not retry as transient |
+| Unexpected bug | Ephemeral safe “something went wrong” message; log ERROR with stack; never leak internals to Discord |
+
+#### Modal and autocomplete compatibility
+
+- Autocomplete and modal `on_submit` paths that are part of a ProcessCommand-registered command must re-apply the same guild/runtime/permission/drain gates (stale views after role loss or mode change must not commit).
+- Autocomplete must not perform blocking SDK I/O on the event loop (same rule as below); return empty/fail closed if data is unavailable.
+- Do not register a second, parallel permission system outside the wrapper.
+
+#### Event-loop safety
+
+**No blocking SDK operations on the Discord asyncio event loop.** Google `google-genai` calls (`/config` model list + Apply probe), Azure SDK if sync, and other blocking I/O run via `asyncio.to_thread()` (or equivalent executor). Celery/Kombu remains on dedicated threads (§6.0).
+
+Cross-reference: `contracts/local_development.md`; command docs `config.md` / `suggest.md`.
 
 ### 6.5 Fenced Active, Bounded Drain, and Hard Stop
 
@@ -253,17 +347,45 @@ Strict at-most-one Gateway connection is **not guaranteed** in every partition/d
 
 **Canonical contract: `contracts/suggestion.md`.** This subsection is the Bot runtime; schemas and the claim state machine live there.
 
-**Product development:** when `DCA_RUNTIME_MODE=development`, do **not** start the Azure Queue poller or the DM reconciliation sweep. Local `/suggest` and Web suggestion CRUD persist via `SuggestionRepository` → `dev-support` only; no Discord response DMs and no queue enqueue/claim (`contracts/local_development.md` §7). Production behavior below is unchanged.
+**Product development:** when `DCA_RUNTIME_MODE=development`, do **not** start the Azure Queue poller or the DM reconciliation sweep, and do **not** enqueue notification messages from any local Web path. Local `/suggest` and Web suggestion CRUD persist via `SuggestionRepository` → `dev-support` only; no Discord response DMs (`contracts/local_development.md` §7). Production behavior below is unchanged.
 
-`modules/commands/suggestions/service/queue_poller.py` polls Azure Queue Storage every `BOT_QUEUE_POLL_INTERVAL_SEC` (fast path). Queue message shape, visibility timeout (60s), poison after 5 dequeues, and delete-only-after-`sent`/`failed` rules are in the contract §4.
+#### Queue polling (production)
 
-On a notification event, `Bot`:
-1. Loads the ticket by Cosmos `id` + `guild_id` from the queue message (preferred durable key). `ticket_uid` on the same message is for ops/logs/UI correlation only (`contracts/suggestion.md` §4).
+`modules/commands/suggestions/service/queue_poller.py` polls Azure Queue Storage every `BOT_QUEUE_POLL_INTERVAL_SEC` (default **300**).
+
+| Concern | Behavior |
+|---|---|
+| Visibility timeout | **60s** (`contracts/suggestion.md` §4). Do not renew mid-DM in v1 — DM + Cosmos transition must complete inside the claim-timeout budget. |
+| On receive failure | Skip the cycle; after 3 consecutive failures set heartbeat `azure_queue_ok: false` (§9 / `azure.md` §6a). |
+| Message body | Load ticket by Cosmos `id` + `guild_id`; `ticket_uid` is ops/UI only. |
+| Duplicate messages | At-least-once. Application dedup = Cosmos claim machine. |
+| Delete | Only after Cosmos shows `sent`, **or** terminal `failed` with no further automatic delivery. Never delete before the Cosmos transition is confirmed. |
+| Poison | After **5** dequeues without reaching `sent` / terminal `failed`, move aside; Cosmos remains authoritative — sweep can still heal `pending`. |
+
+#### Atomic claim and DM
+
+On a notification event (queue or sweep), `Bot`:
+
+1. Loads the ticket by Cosmos `id` + `guild_id`.
 2. **Atomically claims** via ETag-conditional patch `notification_status: pending → claiming` (sets `notification_claimed_at` / `notification_claimed_by`). On conflict → skip.
-3. Sends a **DM** to `contact.user_id` (`contact.method: "dm"`), localized via the ticket's `locale.stored` (full `LocaleInfo` on the document).
-4. On success → `claiming → sent`, **then** delete the Queue message. On failure → increment `notification_attempts` / set `notification_last_error`; if attempts &lt; `BOT_SUGGESTION_MAX_DM_ATTEMPTS` → back to `pending`; else → `failed`. Only the claimant may perform these transitions.
+3. Sends a **DM** to `contact.user_id`, localized via `locale.stored`.
+4. On success → `claiming → sent`, **then** delete the Queue message (if any).
+5. On Discord failure → classify (`Forbidden` / not-found → permanent for that attempt path; transient network/5xx → retryable), increment `notification_attempts`, set `notification_last_error`; if attempts &lt; `BOT_SUGGESTION_MAX_DM_ATTEMPTS` → `claiming → pending`; else → `failed`. Only the claimant may perform these transitions.
 
-**Reconciliation sweep** (`notification_sweep.py`): every `BOT_SUGGESTION_SWEEP_INTERVAL_SEC`, query Cosmos for `notification_status == "pending"` **and** age ≥ `BOT_SUGGESTION_SWEEP_MIN_AGE_SEC` (default 600), then the same claim → DM → `sent`/`pending`/`failed` path — no Queue dependency. Already-`sent` / foreign-`claiming` tickets are skipped.
+#### Reconciliation sweep
+
+Every `BOT_SUGGESTION_SWEEP_INTERVAL_SEC` (default **900**):
+
+1. Query `notification_status == "pending"` **and** age ≥ `BOT_SUGGESTION_SWEEP_MIN_AGE_SEC` (default **600**), then same claim → DM → terminal path — **no Queue dependency**.
+2. Query abandoned claims: `notification_status == "claiming"` **and** `notification_claimed_at` older than `BOT_SUGGESTION_CLAIM_TIMEOUT_SEC` (default **120**). ETag-conditionally reset `claiming → pending` (clear claim fields), then eligible for reclaim on a later cycle. Do not DM without a fresh claim.
+
+#### Delivery guarantee (honest)
+
+**Cosmos is authoritative; Queue is only the fast delivery signal.** Delivery is **at-least-once** toward Discord. Effectively-once is the goal via ETag claim, but **not guaranteed** if the process crashes after Discord accepts the DM and before Cosmos records `sent` — a later reclaim can send a **bounded duplicate DM**. S12 marks this explicitly. Do not document exactly-once DM delivery.
+
+#### Service shutdown
+
+On soft-stop/hard-stop: stop starting new claims; finish or abandon the in-flight claim per hard-stop rules (if DM not yet sent, prefer leaving `pending` via claim-timeout recovery rather than forcing `sent`). Do not delete Queue messages for tickets still `pending`/`claiming`.
 
 ---
 
@@ -295,7 +417,7 @@ Business counters such as `commands_invoked_total`, `ai_tasks_published_total`, 
 | Discord Gateway disconnects unexpectedly (network blip, not a `Head`-driven stop) | discord.py's own connection-state events | Relies on discord.py's built-in automatic reconnect — no `Bot`-specific override decided. |
 | Cosmos DB unreachable (guild config or suggestion read/write) | Exception from `cosmos.py` (`azure.md` §9) | Surfaced per-command — see each command's own Failure Modes section (`config.md` §12, `suggest.md` §12). No container-wide fallback beyond what each command already documents. |
 | Azure Queue Storage poll fails (§6.6) | Exception from `queue.py` | Skip this poll cycle; after 3 consecutive failures set heartbeat `dependencies.azure_queue_ok: false` (`azure.md` §6a, `contracts/telemetry.md` §2.1). Retry at the next `BOT_QUEUE_POLL_INTERVAL_SEC`; the next successful receive restores `true`. Sweep path unaffected. |
-| A DM to a suggestion's original author fails (§6.6) | `discord.Forbidden` or similar from the DM send call | **Resolved this revision:** retried by the reconciliation sweep (§6.6) up to `BOT_SUGGESTION_MAX_DM_ATTEMPTS` combined attempts, then `notification_status` is set to `"failed"` — a terminal state the admin can eventually see reflected on `web/pages/suggestions.md`, rather than an indefinite retry or a silent drop. |
+| A DM to a suggestion's original author fails (§6.6) | `discord.Forbidden`, not-found, or transient Discord/API errors | Classified per §6.6; retried via return-to-`pending` + sweep/queue up to `BOT_SUGGESTION_MAX_DM_ATTEMPTS`, then `notification_status: "failed"`. Admin may retry from Web (`contracts/suggestion.md` §3a). |
 | Mosquitto unreachable — affects progress, heartbeat, and leadership control | Control connection loss | Progress remains best-effort. For safety, immediately enter bounded soft-stop and reject new AI work; hard-stop at drain timeout or earlier grant expiry unless safe control is restored. |
 | Active grant expires or Head grant/watchdog disappears | Local monotonic deadline | Hard-stop autonomously; no Head publish is required. |
 | **New this revision** — a task's progress/heartbeat ticks stop arriving for longer than `BOT_AI_TASK_STALL_TIMEOUT_SEC` (§3, §6.3's `last_progress_at`) | `Bot`'s own per-task stall timer expires | `Bot` synthesizes an `AiTaskResultFailed` (`contracts/ai_task.md` §4) with `node: "bot_stall_timeout"`, removes the `TaskRecord` (§6.3), and notifies the user — without waiting for RabbitMQ. If the task was actually still alive (e.g. a transient Mosquitto hiccup on `AI Worker`'s side only), the eventual real result is safely discarded on arrival (`ai_task.md` §6) — accepted false-positive cost, not a bug. |
@@ -349,6 +471,7 @@ No HTTP endpoint — unlike `Head`/`Launcher`, `Bot` exposes nothing for another
 - `DISCORD_BOT_TOKEN` (§3) was a previously-undocumented gap across the entire docs tree, not specific to this revision's scope — formalized here for the first time; worth double-checking no other in-progress doc silently assumed a different variable name for it.
 - Bot-owned counters beyond the canonical heartbeat are explicitly deferred from v1 (§8); this is a scope decision, not an unresolved transport contract.
 - Bot heartbeat dependency health and staleness are resolved in `contracts/telemetry.md` §2 (§11).
-- The exact copy/localization key for the "temporarily unavailable during drain" response (§6.4) hasn't been written yet — deferred with `ProcessCommand` to command phases.
+- ~~The exact copy/localization key for the "temporarily unavailable during drain" response (§6.4) hasn't been written yet — deferred with `ProcessCommand` to command phases.~~ — **ProcessCommand behavior resolved (Phase 3);** exact localization copy keys remain P2.
 - **Phase 2 concurrency, node identity, Celery task name, and transport-shell trigger rules are resolved** — see §6.0 and `docs/to_resolve.md` → Phase 2.
+- **Phase 3 ProcessCommand / `/config` / `/suggest` / Queue+sweep delivery** — documentation gate closed in `to_resolve.md` → Phase 3; implement against §6.4 / §6.6 and the command contracts.
 - **Product-development mode** (separate Discord app, guild isolation, `dev-support` grants/providers, suppressed suggestion DM/queue delivery) is resolved in `contracts/local_development.md` and mirrored in §3 / §6.1 / §6.1a. Implementation sequence lives in `to_resolve.md`.

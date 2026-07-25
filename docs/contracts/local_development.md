@@ -93,7 +93,7 @@ Local development **must** use a Discord Application and bot token that are not 
 | Command sync | **Guild-scoped** sync to `DISCORD_DEVELOPMENT_GUILD_ID` only (instant iteration). Do **not** call global `tree.sync()` in development. |
 | Interactions | Accept slash commands / components / modals only when `interaction.guild_id == DISCORD_DEVELOPMENT_GUILD_ID`. Otherwise reject with an ephemeral error (or ignore if no response channel). |
 | Guild events | Process `on_guild_join` / `update` / `remove` and periodic sync **only** for the development guild. Ignore all other guilds; perform **no** repository writes for foreign guild ids. |
-| DM / no-guild | Reject for command exercise in development (same as legacy `--dev` spirit). |
+| DM / no-guild | Reject for command exercise in development (same as legacy `--dev` spirit). **`/suggest` in development is guild-only** despite production guild-or-DM support — see `bot/commands/suggest.md` §4. |
 | Accidental extra guild | If the development bot is somehow in another guild, Bot still must not sync commands there, not accept interactions there, and not persist config for it. |
 
 ### 4.3 Production mode (defense in depth)

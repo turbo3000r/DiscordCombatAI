@@ -14,6 +14,21 @@
 
 `Web` gives administrators five things: a live operational snapshot (Dashboard), deep historical performance analysis (Performance), guild visibility (Guilds), a suggestion/ticket review-and-respond workflow (Suggestions), and a way to broadcast announcements/release notes to guild-configured Discord webhooks (Webhook). A sixth, minimal Home page exists as a landing/entry point.
 
+### Phase 3 minimal Web slice (documentation gate)
+
+Phase 3 implements **only** the Suggestions vertical slice plus the auth shell required to call it:
+
+| In scope | Deferred (not Phase 3) |
+|---|---|
+| Production Entra/admin authorization boundary (`web_auth.md`) | Home, Guilds, Dashboard, Performance |
+| Fixed local administrator in development (`local_development.md` §8) | Webhook broadcast + S13 |
+| Suggestions list/detail sufficient for response handling | Complete P1.6 API/operational polish |
+| `POST /api/suggestions/{id}/respond` + shared response service | General Web completion |
+| Queue enqueue for notifying response modes (production) | Head/Launcher redesign |
+| Catalog seed/update only if needed by `/suggest` | |
+
+**Target tree:** `src/web/` as documented in `architecture.md` / §2 below. The legacy repository-root `web/` package (vanilla HTML/JS dashboard) is **reference-only** for behavior cues — do not extend it as the Phase 3 implementation home unless an explicit migration task says otherwise.
+
 ---
 
 ## 2. File Structure
@@ -154,7 +169,7 @@ The legacy dashboard read several fields directly off an in-process `discord.py`
 | Failure | Detection | Recovery |
 |---|---|---|
 | Cosmos DB unreachable | Exception from `cosmos.py` call | Surfaced to the calling page; per-page doc specifies the resulting UI state (e.g. `pages/guilds.md` §8, `pages/suggestions.md` §8). No retry/fallback defined at this layer beyond what `azure.md` §9 already states generically. |
-| Queue Storage unreachable | Exception from `queue.py` call | Per `azure.md` §9, no documented fallback exists project-wide for this — inherited gap, not `Web`-specific. Practical effect: a suggestion response is saved to Cosmos DB but `Bot` is never notified to send the DM; whether the UI should surface this distinction to the admin is undecided (`pages/suggestions.md` §8). |
+| Queue Storage unreachable | Exception from `queue.py` call | **Suggestions respond:** if Cosmos write already set `notification_status=pending`, surface “saved, notification pending” (or equivalent); Bot sweep recovers (`contracts/suggestion.md`, `pages/suggestions.md` §8). Do not claim DM sent. Other pages: per-page docs. |
 | Table Storage unreachable | Exception from `table.py` call | Dashboard/Performance charts fail to load historical data; live data via Web PubSub (§6.1) is unaffected since it's a separate path. |
 | Web PubSub unreachable, or negotiate fails | Exception from `pubsub.py` call, or browser WebSocket connect failure | Dashboard/Performance falls back to historical-only view (no live updates); exact UI treatment (banner? silent?) left to each page doc. |
 | Discord webhook POST fails for a given guild | Non-2xx response from Discord | Per-guild failure, doesn't block sending to other selected guilds — mirrors legacy's own per-guild result tracking (`pages/webhook.md` §5/§8). |

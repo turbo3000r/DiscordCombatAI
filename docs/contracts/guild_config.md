@@ -134,13 +134,74 @@ If no document exists, create with defaults (§5). `guilds.py` should expose a s
 
 **List/count filtering:** default list helpers and Web `GET /api/guilds` **exclude** documents where `left_at != null`. Pass an explicit `include_left=true` (or fetch-by-id) to see soft-deleted rows. Dashboard “now” guild count continues to come from Bot Gateway membership via `status.py`, not from counting Cosmos rows.
 
+### 7a. First-use `/config` (resolved, Phase 3)
+
+When `/config` is invoked and **no active guild document** exists (`left_at == null` row missing):
+
+1. Call `ensure_active_guild(...)` with current Discord metadata (`name`, `icon_url`, `member_count`, `owner_id`).
+2. Create with defaults (§5) **or** reactivate a soft-deleted row (§7) — never invent an in-memory-only fake document.
+3. Only after a successful persist, load and render the `/config` panel (`bot/commands/config.md` §6).
+4. Surface **transient** vs **permanent** Cosmos/repository errors as distinct ephemeral localized messages; **do not** render a panel backed by an unpersisted document.
+
+Offline guild-removal detection (mark `left_at` for Cosmos docs absent from `bot.guilds` while Bot was down) remains **deferred** (not Phase 3).
+
 ---
 
-## 8. Open Items (remaining P1.3 — not required for shared Azure client scaffolding)
+## 8. `/config` Apply — partial-field transaction policy (normative, Phase 3)
 
-- **`api_key` plaintext (confirmed, v1).** Web redacts (`contracts/web_auth.md` §6); Cosmos at-rest encryption of this field is still deferred.
-- **Webhook allowlist** — **resolved (P0.7).**
-- **Offline removal detection** while Bot was down (mark `left_at` for Cosmos docs absent from `bot.guilds`) — still P1.3; soft-delete + list filters above are enough for `guilds.py` CRUD shape.
-- **`/config` Apply atomicity when a staged key/model is invalid** — still P1.3 / command-owned.
-- **Model-catalog timeout/pagination vs Discord 25-option Select** — still P1.3 / command-owned.
-- Reconciliation **scheduling algorithm** — implementation detail after semantics above.
+Canonical for Apply semantics. UX wording lives in `bot/commands/config.md`; this section owns what may be written.
+
+### 8.1 Storage of `api_key`
+
+`api_key` is stored as **plaintext** in the guild document (v1, confirmed). There is no application-level encryption, Key Vault reference, or hashed representation in the current architecture. Web APIs must still **redact** it (`contracts/web_auth.md` §6). At-rest field encryption remains a deferred security follow-up — do not invent encryption the architecture cannot support.
+
+### 8.2 Building the Patch
+
+1. Validate each staged field independently.
+2. Build **one** conditional administrator Patch containing **only valid** staged fields plus `updated_at`.
+3. Invalid fields are **excluded** from the Patch and reported as inline field errors — they do not block valid siblings from committing (except the `enabled` gate in §8.4).
+
+### 8.3 Field rules
+
+| Staged field | Commit when valid | On invalid / failed validation |
+|---|---|---|
+| `language` | Include in Patch | Exclude; inline error |
+| `webhook_url` | Include only if Discord-host allowlist passes (`web_auth.md` §7) | Exclude; inline error; previous URL unchanged |
+| `api_key` | Include only after Apply-time probe succeeds (§8.5) | **Never** replace the previous key; exclude; inline invalid-key / transient error |
+| `model` | Include only if present in the filtered catalog for the **effective** key (staged key if probe-valid, else previously stored key) **and** Apply-time probe accepts the pair | **Never** replace the previous model when unavailable for the staged key; exclude; inline error |
+| `enabled=true` | Include only when the **resulting persisted** configuration would have a validated API key and non-empty validated model (§8.4) | Force/keep `enabled=false` or exclude `enabled=true`; inline warning |
+
+**Preserve previous valid key/model values when replacements fail.** A failed staged key must not clear or overwrite the stored key; a failed staged model must not overwrite the stored model.
+
+`language` and a valid webhook **may** commit in the same Patch even if a newly staged API key/model fails validation.
+
+### 8.4 `enabled=true` gate
+
+`enabled=true` may be committed only when, after applying the valid field set in this transaction, the document would have:
+
+- a non-empty `api_key` that has passed validation (newly probed this Apply, or previously stored and not being replaced by a failed stage), and
+- a non-empty `model` that is valid for that key.
+
+Otherwise do not write `enabled=true` (leave previous `enabled` or write `false` if the admin explicitly disabled).
+
+### 8.5 Google validation timing (see also `config.md` §6)
+
+| When | Call | Purpose |
+|---|---|---|
+| API key staged (modal submit) | `client.models.list()` via `google-genai`, off the event loop | Populate `ModelSelect`; not sufficient alone to flip `enabled` |
+| Apply (when key and/or model staged for replacement) | One minimal `generateContent` probe | Accept replacement key/model before Patch includes them |
+
+### 8.6 Cosmos write outcome
+
+- Apply successful fields with **one** ETag-conditional Patch (`§4a`, ≤5 retries on 412 only when re-reading and re-applying the **same** validated field set is still correct).
+- On **ETag conflict** after budget: reload current state into the panel, clear or re-diff staged changes as needed, and require the administrator to review/retry — do not report success.
+- On **Cosmos failure** (transient or permanent): do **not** report success; **preserve staged in-memory state**; show localized transient vs permanent error (`config.md` §12).
+- After any Apply attempt, report clearly **which fields were applied** and **which were rejected**.
+
+---
+
+## 9. Open Items (deferred — not Phase 3)
+
+- **`api_key` at-rest encryption** — deferred security follow-up; plaintext v1 confirmed (§8.1).
+- **Offline removal detection** while Bot was down — deferred (not required for `/config` / `/suggest`).
+- Reconciliation **scheduling algorithm** for metadata sync — implementation detail after §4/§7 semantics.
