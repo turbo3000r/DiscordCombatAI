@@ -84,7 +84,7 @@ testpaths = ["tests"]
 markers = [
   "integration: requires local Docker Compose brokers",
   "azure_live: opt-in live Azure resources (never default)",
-  "acceptance: Phase 0 scenario prerequisite coverage",
+  "acceptance: scenario ownership and phase acceptance coverage",
 ]
 filterwarnings = [
   "ignore::DeprecationWarning",

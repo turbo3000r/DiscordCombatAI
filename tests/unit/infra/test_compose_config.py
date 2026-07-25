@@ -47,6 +47,25 @@ def test_base_compose_has_expected_broker_topology() -> None:
     assert "condition" in head["depends_on"]["mosquitto"]  # type: ignore[index]
     assert "condition" in head["depends_on"]["rabbitmq"]  # type: ignore[index]
 
+    bot_env = bot["environment"]  # type: ignore[index]
+    worker_env = ai_worker["environment"]  # type: ignore[index]
+    assert bot_env["BOT_NODE_ID"] == "${NODE_ID:-node-local}"
+    assert worker_env["AI_WORKER_NODE_ID"] == "${NODE_ID:-node-local}"
+    assert bot_env["NODE_ID"] == "${NODE_ID:-node-local}"
+    assert worker_env["NODE_ID"] == "${NODE_ID:-node-local}"
+    assert bot_env["RABBITMQ_DEFAULT_VHOST"] == "${RABBITMQ_DEFAULT_VHOST:-/discordcombatai}"
+    assert worker_env["RABBITMQ_DEFAULT_VHOST"] == "${RABBITMQ_DEFAULT_VHOST:-/discordcombatai}"
+    assert bot_env["BOT_GUILD_SYNC_INTERVAL_SEC"] == "${BOT_GUILD_SYNC_INTERVAL_SEC:-3600}"
+    assert bot_env["BOT_STATUS_PUSH_INTERVAL_SEC"] == "${BOT_STATUS_PUSH_INTERVAL_SEC:-60}"
+    assert bot_env["BOT_SHUTDOWN_GRACE_SEC"] == "${BOT_SHUTDOWN_GRACE_SEC:-30}"
+    assert bot_env["BOT_CONTROL_DRAIN_TIMEOUT_SEC"] == "${BOT_CONTROL_DRAIN_TIMEOUT_SEC:-45}"
+    assert bot_env["BOT_ACTIVATION_GRANT_MAX_TTL_SEC"] == "${BOT_ACTIVATION_GRANT_MAX_TTL_SEC:-60}"
+    assert bot_env["BOT_AZURE_CLIENT_ID"] == "${BOT_AZURE_CLIENT_ID:-}"
+    assert bot_env["AZURE_COSMOS_ENDPOINT"] == "${AZURE_COSMOS_ENDPOINT:-}"
+    assert bot_env["AZURE_STORAGE_ACCOUNT_NAME"] == "${AZURE_STORAGE_ACCOUNT_NAME:-}"
+    assert "BOT_QUEUE_POLL_INTERVAL_SEC" not in bot_env
+    assert worker_env["AI_WORKER_TRANSPORT_SHELL"] == "${AI_WORKER_TRANSPORT_SHELL:-false}"
+
 
 def test_dev_compose_adds_local_ports_and_source_mounts() -> None:
     compose = _load_compose(ROOT / "docker-compose.dev.yml")
@@ -63,3 +82,5 @@ def test_dev_compose_adds_local_ports_and_source_mounts() -> None:
         assert "./src:/app/src" in mounts
 
     assert "./prompts:/app/prompts:ro" in services["ai_worker"]["volumes"]  # type: ignore[index]
+    assert services["bot"]["build"]["dockerfile"] == "src/bot/Dockerfile"  # type: ignore[index]
+    assert services["ai_worker"]["build"]["dockerfile"] == "src/ai_worker/Dockerfile"  # type: ignore[index]

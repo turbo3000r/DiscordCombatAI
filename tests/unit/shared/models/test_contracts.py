@@ -111,6 +111,65 @@ def test_ai_task_results_roundtrip() -> None:
     assert parse_ai_task_result(failed.model_dump(mode="json")).status == "failed"
 
 
+def test_transport_shell_environment_result_fixture_roundtrip() -> None:
+    from shared.models import EnvironmentState
+
+    payload = load_fixture("ai_task_environment_result.json")
+    result = parse_ai_task_result(payload)
+    envelope = parse_ai_task_envelope(load_fixture("ai_task_environment.json"))
+
+    assert result.status == "success"
+    assert result.task_id == envelope.task_id
+    assert result.graph == "environment"
+    assert result.graph == envelope.graph
+    final_environment = EnvironmentState.model_validate(result.result["final_environment"])
+    assert final_environment.description == "Phase 2 transport-shell canned environment."
+    assert final_environment.tags == ["phase2", "transport-shell"]
+    assert final_environment.setting == "realistic"
+    assert result.result["attempts_used"] == 0
+    assert result.result["forced_selection"] is False
+    assert parse_ai_task_result(result.model_dump(mode="json")).task_id == result.task_id
+
+
+def test_transport_shell_progress_fixture_sequence() -> None:
+    ticks = json.loads(
+        (FIXTURES / "task_progress_transport_shell.json").read_text(encoding="utf-8")
+    )
+    envelope = parse_ai_task_envelope(load_fixture("ai_task_environment.json"))
+    phases = [parse_task_progress_message(tick).phase for tick in ticks]
+
+    assert phases == [
+        TaskPhase.launching,
+        TaskPhase.composing,
+        TaskPhase.refining,
+        TaskPhase.finishing,
+    ]
+    assert TaskPhase.queued not in phases
+    for tick in ticks:
+        message = parse_task_progress_message(tick)
+        assert message.task_id == envelope.task_id
+        assert message.graph == envelope.graph
+
+
+def test_transport_shell_progress_rejects_naive_timestamp() -> None:
+    with pytest.raises(ValueError):
+        TaskProgressMessage(
+            task_id="6b44781e-40f8-4807-9b4b-9087430c14b6",
+            graph="environment",
+            phase=TaskPhase.launching,
+            timestamp="2026-07-15T17:00:01",
+        )
+
+
+def test_transport_shell_progress_unknown_version_rejected() -> None:
+    ticks = json.loads(
+        (FIXTURES / "task_progress_transport_shell.json").read_text(encoding="utf-8")
+    )
+    ticks[0]["schema_version"] = 99
+    with pytest.raises(UnknownSchemaVersionError):
+        parse_task_progress_message(ticks[0])
+
+
 def test_ai_task_unknown_version_rejected() -> None:
     payload = load_fixture("ai_task_environment.json")
     payload["schema_version"] = 9
