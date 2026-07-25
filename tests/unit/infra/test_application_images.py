@@ -28,3 +28,22 @@ def test_entrypoint_scripts_use_uv_no_sync() -> None:
     worker = (ROOT / "src" / "ai_worker" / "entrypoint.sh").read_text(encoding="utf-8")
     assert "uv run --no-sync python -m bot.main" in bot
     assert "uv run --no-sync python -m ai_worker.main" in worker
+
+
+def test_web_dockerfile_is_multistage_non_root_and_uses_web_extra() -> None:
+    content = (ROOT / "src" / "web" / "Dockerfile").read_text(encoding="utf-8")
+    assert "node:20-bookworm-slim AS frontend" in content
+    assert "npm ci" in content
+    assert "npm test -- --run && npm run build" in content
+    assert "python:3.11-slim AS runtime" in content
+    assert "uv sync --frozen --no-dev --extra web" in content
+    assert "USER 65532:65532" in content
+    assert "entrypoint.sh" in content
+    assert "/app/src/web/frontend/dist" in content
+
+
+def test_web_entrypoint_uses_uvicorn_factory() -> None:
+    web = (ROOT / "src" / "web" / "entrypoint.sh").read_text(encoding="utf-8")
+    assert "web.backend.main:create_app" in web
+    assert "--factory" in web
+    assert "WEB_PORT" in web

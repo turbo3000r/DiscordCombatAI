@@ -9,8 +9,8 @@ from uuid import uuid4
 
 import pytest
 
-from shared.models import ActivationGrant, ActivationGrantMode
 from shared.messaging.mqtt_topics import MQTT_TOPIC_POLICIES
+from shared.models import ActivationGrant, ActivationGrantMode
 
 pytestmark = pytest.mark.integration
 
@@ -46,7 +46,7 @@ async def test_grant_publisher_emits_valid_activation_grant() -> None:
     )
 
     def on_message(_c: object, _u: object, msg: object) -> None:
-        payload = bytes(getattr(msg, "payload"))
+        payload = bytes(msg.payload)
         loop.call_soon_threadsafe(received.put_nowait, payload)
 
     client.on_message = on_message
@@ -71,7 +71,7 @@ async def test_grant_publisher_emits_valid_activation_grant() -> None:
         assert grant.node_id == "node-local"
         assert grant.ttl_sec == 45
         assert grant.command_seq >= 1
-        assert grant.issued_at.tzinfo is not None or True
+        assert grant.issued_at.tzinfo is not None
         _ = datetime.now(UTC)
     finally:
         await publisher.stop()
