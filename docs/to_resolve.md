@@ -1,326 +1,79 @@
 # Documentation Implementation-Readiness Backlog
 
-> **Purpose:** the authoritative list of documentation changes still required before the docs can be used as an implementation specification without engineers inventing behavior at code time.
->
-> This is **not** a product wishlist or a coding checklist. Prompt authoring, file moves, RBAC provisioning, and UI polish belong to implementation unless a missing decision changes a contract or safety property.
+> **Purpose:** documentation changes still required before the docs are an implementation specification without inventing behavior at code time. Not a product wishlist or coding checklist.
 >
 > **Readiness rule:**
 > - **P0 — global blocker:** resolve before treating the architecture as implementable end to end.
 > - **P1 — subsystem blocker:** resolve before implementing the affected subsystem; unrelated work may proceed.
-> - **P2 — deferred/non-blocking:** explicitly safe to decide during implementation or in a later version.
+> - **P2 — deferred/non-blocking:** safe to decide during implementation or later.
 >
-> An item is resolved only when the decision is propagated to every affected source document, exact schemas/state transitions are recorded in one canonical location, and obsolete contradictory text is removed. Merely choosing an option in this file is not enough.
+> An item is resolved only when the decision is in one canonical document, propagated to affected sources, and contradictory text is removed.
 
 ## Current verdict
 
-**No remaining P0 global blockers.** Phase 0 foundation prerequisites that were documentation-blocked are now closed: **P1.5** (brokers + Compose skeleton), **P1.7** (Azure client failure/RBAC/retry), **P1.9** (locale value contract), and the **P1.3 subset required by shared `guilds.py` clients** (field-scoped Patch + ETag, soft-delete/rejoin/list filters).
+**No remaining P0 blockers.** Documentation gates closed through **Phase 3** (`/config`, `/suggest`, S12).
 
-This does **not** mean every subsystem is ready to implement. In particular, `/quick-battle`, the real LangGraph graphs, remaining guild lifecycle edges, suggestion edge cases, and Web API schemas still require the open P1 items below. None of those gaps changes the global service topology or already-resolved cross-service wire contracts.
+**Still open before later subsystems:** P1.1 (`/quick-battle`), P1.2 (AI graphs), offline guild-removal sweep (P1.3 leftover), P1.6 (remaining Web API/ops), and P2 items. None of those change already-resolved cross-service topology or wire contracts.
 
-**Phase 0 implementation-ready now:** scaffold/Compose skeleton, shared typed models from contracts (including `language` enum + mapping), shared Azure credential/client layer, RabbitMQ + Mosquitto configuration. **Phase 1 coordination Slice 0 documentation is reconciled:** Launcher/Head versioning, image/recreate ownership, interrupted-operation recovery, verification/rollback, Blob-renew recovery, and P1.8 heartbeat/buffer/live-cap contracts are closed. **Phase 2 documentation is reconciled:** transport-shell (`graph="environment"` canned path), host `NODE_ID` injection, Celery/RabbitMQ wiring (definitions-owned topology, task name, broker URL/vhost), Bot asyncio vs Celery/MQTT concurrency, Phase 2 Bot scope (no slash commands), and S03/S04/S05/S07/S08/S10 acceptance ownership. **Local product-development architecture is reconciled:** `contracts/local_development.md` + S14 (separate Discord app, domain providers, `dev-support`, local Web admin; not Azure emulation). **Phase 3 documentation is reconciled:** ProcessCommand, `/config` (first-use + Apply partial-field policy + Google list/probe), `/suggest` (catalog fail-closed, prod vs dev), Queue/sweep/DM delivery (honest at-least-once), minimal Web Suggestions slice, S12, and SKILL boundaries. **Still deferred for later phases:** offline guild-removal sweep, P1.1–P1.2, remaining P1.6 Web polish, real LangGraph behavior, `/quick-battle`, non-Suggestions Web pages, webhook/S13, and all P2 items.
+| Gate | Status | Canonical home |
+|---|---|---|
+| Phase 0 foundation | Closed | contracts + `azure.md` + brokers |
+| Phase 1 Launcher/Head | Closed | `Launcher.md`, `head.md`, `launcher_ipc.md` |
+| Phase 2 Bot/AI transport | Closed | `ai_task.md`, `discord_bot.md` §6.0, scenarios S03–S05/S07/S08/S10 |
+| Phase 2.5 local-dev | Closed (docs) | `local_development.md`, S14 |
+| Phase 3 `/config`+`/suggest` | Closed | `discord_bot.md` §6.4/§6.6, `guild_config.md`, `suggestion.md`, S12 |
 
 ---
 
 # Resolved decisions
 
-## P0.1 — Leadership-derived Bot fencing (resolved)
+Compact index only. Full schemas, state machines, and env defaults live in the linked docs — do not re-litigate here.
 
-- Canonical contract: `contracts/leadership_control.md`.
-- Bot defaults inactive and can activate only from a fresh, non-retained short-lived grant derived from the current Blob Lease term. Retained desired mode contains safe states only.
-- Leadership term is an opaque UUID per successful lease acquisition; per-term command sequence is monotonic. UUID terms are not globally ordered.
-- Grant/heartbeat expiry uses local monotonic elapsed time. Head crash/grant expiry hard-stops Bot autonomously.
-- PubSub-only, Blob-renew-only, and Mosquitto failures soft-stop (bounded drain, reject new AI work, then hard-stop unless restored); total loss of Blob Lease and PubSub hard-stops immediately. Blob-renew-only recovery is same-term only: confirm the existing lease term and issue a fresh same-term grant within the bound, otherwise hard-stop. S06-C follows this path.
-- Voluntary demotion commands hard-stop and waits boundedly for acknowledgement before lease release. Exact drain-completion contents are `contracts/drain_status.md` (P0.3, resolved).
-- Strict at-most-one Gateway connection is not guaranteed in every partition/delay; bounded dual-active overlap is an explicitly accepted limitation.
+## P0 — Global contracts
 
-## P0.2 — Cross-platform authenticated Launcher IPC (resolved)
-
-- Canonical contract: `contracts/launcher_ipc.md`.
-- Head → Launcher uses `host.docker.internal` host-reachable TCP; Linux adds `host-gateway`, Windows Docker Desktop uses the built-in hostname. Launcher binds `0.0.0.0` behind a Docker-network-only host firewall rule.
-- Launcher → Head uses Head's container bind `0.0.0.0:9800`, published as host loopback only.
-- Both directions use HMAC-SHA256 with timestamp, request ID, body hash, skew check, and replay cache; secret-file handling and redaction are specified.
-- `/v1/update` has versioned schemas, asynchronous/idempotent admission, busy behavior, persisted deduplication, 2s/5s timeouts, and bounded jittered retries. `/v1/health` is authenticated liveness-only; post-update success additionally requires its reported version to exactly equal the admitted target.
-
-## P0.3 — Drain and update completion protocol (resolved)
-
-- Canonical contract: `contracts/drain_status.md`, cross-referenced from `containers/head.md` §3–§6, `containers/bot/discord_bot.md` §6.3a/§6.4/§6.5, `containers/ai_worker/ai_worker.md` §4–§6/§12, `containers/mosquitto.md` §4/§5, and `containers/bot/commands/quick-battle.md` §4.
-- "Drained" is the full user-workflow, not just RabbitMQ `ai_tasks`: `Bot`'s `in_flight_workflows` counter is a strict superset of the existing task map, also covering open `/quick-battle` lobbies, collectors, and votes that never touch RabbitMQ.
-- `Bot` publishes `status/bot/drain_progress` (QoS 1, not retained, `BOT_DRAIN_PROGRESS_INTERVAL_SEC` default `5`) while draining; `Head` watches this instead of inferring completion from empty queues, and transitions `DRAINING` → `UPDATING` on `in_flight_workflows == 0` or `HEAD_DRAIN_TIMEOUT_SEC`, whichever comes first.
-- Drain timeout always escalates to the existing hard-stop sequence (never silent abandonment) — resolving the previous "abandon work" vs. "hard-stop only for loss-of-internet" inconsistency — and now explicitly includes cancelling open lobby/collector/vote views with a localized "update in progress, please retry" notice, not just RabbitMQ purge/revoke.
-- `AI Worker` finishes its current claim, stops consuming, and publishes `status/ai_worker/pause_ack` once idle after a pause request — informational/diagnostic only, never a second blocking condition on drain completion. Recovery from an abandoned/superseded drain is a plain resume publish, no teardown needed.
-- `update_available` broadcasts are deduplicated by `target_version`; a different-version broadcast received mid-cycle is queued and acted on only after the current drain/update cycle completes. Manual `launcher update --version` is unaffected (already idempotent via `contracts/launcher_ipc.md`).
-- Every wire contract carries `schema_version` with a uniform reject-unknown-version rule; `Web` must tolerate one prior/one following schema version of any shared document, additive-only within that window — no cluster-wide update barrier is introduced.
-
-## P0.4 — RabbitMQ/Celery wire design (resolved)
-
-- Canonical contract: `contracts/ai_task.md` §2/§3 (wire/dispatch), §8 (cancellation matrix), §9 (dead-letter policy), §10 (schema versioning); cross-referenced from `containers/rabbitmq.md` §1–§3/§6/§9/§13, `containers/ai_worker/ai_worker.md` §1/§4–§6, `containers/bot/discord_bot.md` §3–§6.5, and `architecture.md`'s `RabbitMQ`/design-boundary sections.
-- Native Celery task protocol: `Bot` dispatches via `send_task("ai_worker.tasks.run_graph", kwargs={"envelope": {...}}, task_id=task_id, queue="ai_tasks")`; `AI Worker` is a real Celery worker (`celery -A ai_worker.celery_app worker -Q ai_tasks`) at prefetch = 1. `task_id` = the Celery task id = the AMQP `correlation_id` = the domain idempotency key — one identifier, four names.
-- `ai_tasks_results` stays a custom, manually-published queue with auto-ack on `Bot`'s side; Celery's own result backend (`AsyncResult`) is never used. Publisher confirms are enabled on both publish paths.
-- Delivery guarantee corrected project-wide from "exactly-once" to **at-least-once delivery, effectively-once outcome** — manual ack after result-publish bounds duplicate generation, and discard-by-unknown-`task_id` makes the outcome effectively-once.
-- A full cancellation matrix now covers user-abort, stall timeout, overall timeout, drain timeout, and hard-stop, with `Bot` confirmed as the sole actor for every `revoke` call (resolving the previous hard-stop-authorship ambiguity).
-- Both `ai_tasks` and `ai_tasks_results` are dead-letter-configured; malformed/unknown-`schema_version` messages are nacked-without-requeue to a shared `dead_letter` queue instead of retried forever.
-- Broker-side plaintext exposure (guild API keys in-flight and in RabbitMQ's volume) is explicitly accepted, consistent with the existing Cosmos/transit trade-off, with defined volume/retention scope. Non-`guest` broker credentials (`RABBITMQ_DEFAULT_USER`/`PASS`/`VHOST`, per-consumer `<SERVICE>_RABBITMQ_USER`/`PASS`) are defined in `rabbitmq.md` §3/§13.
-
-## P0.5 — Cross-service data contracts (resolved)
-
-- Canonical contracts: `contracts/suggestion.md`, `contracts/telemetry.md`, `contracts/status_document.md`, `contracts/battle_archive.md`, `contracts/log_archive.md`; schema-evolution rule extended in `contracts/drain_status.md` §5 (P0.5.5).
-- **Suggestions (P0.5.1):** Cosmos DB `AZURE_COSMOS_DATABASE` default `DiscordCombatAI`, container `Suggestions`, partition `/guild_id`. Cosmos `id` = UUID; separate unique `ticket_uid` = `SUG-{8 uppercase hex}`. Full ticket + `notification_status` claim machine (`pending`→`claiming`→`sent`/`failed`); Queue message carries both `id` and `ticket_uid`; visibility 60s; poison after 5 dequeues; sweep min age `BOT_SUGGESTION_SWEEP_MIN_AGE_SEC` default 600. Propagated to `azure.md`, `discord_bot.md` §6.6, `suggest.md`, `suggestions.md`.
-- **Suggestion schema enrichment (post-P0.5.1, owner-approved):** tickets match or exceed legacy `generic/suggestions.json` richness — `submitter`, structured `locale`, `guild_snapshot`, `context`, `conversation[]` (replaces thin `responses[]`); catalog is `{value, label}` on `status_document`; no runtime read of legacy flat JSON (operator migrates with a custom script). Canonical: `contracts/suggestion.md` (`schema_version` = 2).
-- **Telemetry (P0.5.2):** Table `AZURE_METRICS_TABLE` / `NodeMetrics`; PK `node_id`; leader-only upload; CPU/RAM/uptime/errors from Head; latency/guild_count from Bot Mosquitto heartbeat into Table; Dashboard “now” latency/guilds from `status.py` (not Cosmos count); history from Table; 30-day retention.
-- **Status document (P0.5.3):** `contracts/status_document.md` — Web seeds/edits `identity` + `suggestion_catalog` (`list[{value,label}]`); Bot owns only `status`; missing blob → create defaults; ETag RMW ≤5 retries; labeled catalog seed lists documented.
-- **Battle archive (P0.5.4):** Bot-owned; `battle-results` container; `{guild_id}/{yyyy}/{mm}/{task_id}.txt` + `.meta.json`; unbounded retention v1; best-effort after Discord-ready.
-- **Log archive (P0.5.6):** Escaping rules + sensitive policy; append path `logs/{node_id}/{yyyy}/{mm}/{dd}.log`; buffer caps; at-least-once duplicate lines acceptable v1.
-- Propagated through `azure.md`, `head.md`, `architecture.md`, Web/Bot page docs, and `Readme.md`.
-
-## P0.6 — Azure Web PubSub live-data flow (resolved)
-
-- Canonical: `contracts/pubsub_live.md` (+ live payload in `contracts/telemetry.md` §5).
-- Groups: `cluster` (existing) and `dashboard-live` (`HEAD_PUBSUB_DASHBOARD_GROUP`). Leader always streams every `HEAD_TELEMETRY_LIVE_INTERVAL_SEC`; **no** listener detection / subscribe-event path.
-- Browser connects; Web only negotiates `{ url, expires_at, group }` with join/leave-only roles, TTL 60m; auth = Entra Bearer + admin group (`contracts/web_auth.md`, closed under P0.7); PubSub `user id` = Entra `oid`.
-- Free_F1 budget documented (~17k msgs/day with 1 viewer + cluster heartbeats; empty-group stream ≈0 outbound). Caps on live log batch size.
-- Removed contradictory “Web listens to PubSub” / conditional streaming language from `architecture.md`, `head.md`, `web.md`, `dashboard.md`.
-
-## P0.7 — Web administrative security boundary (resolved)
-
-- Canonical contract: `contracts/web_auth.md`; env vars mirrored in `containers/web/web.md` §3; middleware summary in `web.md` §6.2.
-- **Entra ID (single-tenant) + admin security group** is the v1 boundary. MSAL.js Authorization Code + PKCE in the browser; `Authorization: Bearer` on all `/api/*`; FastAPI validates JWT (issuer, audience, JWKS, `tid`, expiry) then requires `WEB_ENTRA_ADMIN_GROUP_ID ∈ token.groups`. Static SPA shell public. Unauthenticated → **401**; authenticated non-admin → **403**. No cookie session / no BFF / no CSRF token for v1.
-- Primary group path: emit security group claims in the access token; keep the admin group small. Group-overage Graph fallback is **P2** — overage without `groups` → **403** until ops fixes emit-groups or group size.
-- Web **may** be internet-reachable; Entra + group is the security boundary (VPN optional hardening only).
-- Audit: suggestion respond/done persists `acted_by_oid` / `acted_by_upn` / `acted_at` (`contracts/suggestion.md`); webhook broadcasts write durable Blob audit under `admin-audit` (`web_auth.md` §7); status identity/catalog writes log actor `oid`.
-- Broadcast safety: UI `ConfirmDialog` for ALL; `Idempotency-Key` on send/update; ALL cooldown `WEB_WEBHOOK_ALL_COOLDOWN_SEC` default 60; SELECTED rate `WEB_WEBHOOK_SELECTED_RATE_PER_MIN` default 10.
-- Webhook SSRF: Discord-host HTTPS allowlist only; no redirects; Web re-validates before POST; Bot `/config` validates on save. List/detail APIs never return raw `webhook_url` / `api_key` / Azure secrets / PubSub connection strings; negotiate may return short-lived client URL to authenticated admins only.
-- Propagated through `architecture.md`, `web.md`, all `web/pages/*.md`, `components.md`, `pubsub_live.md`, `suggestion.md`, `guild_config.md`, `status_document.md`, `config.md`, `azure.md` (SP vs Entra distinction), `Readme.md`.
-
-## P0.8 — End-to-end scenarios and acceptance invariants (resolved)
-
-- Canonical set: `docs/scenarios/` (index: `docs/scenarios/Readme.md`).
-- Architecture acceptance cases (not test-code prescriptions): preconditions, ordered steps, durable writes, timeouts, user-visible result, invariant checked.
-- Coverage includes cold boot, follower failover, leader Head crash, Mosquitto/RabbitMQ/Azure partial outages, planned update happy path / drain timeout / rollback, Bot or AI Worker restart mid-task, Quick Battle success/abort/timeout (P1.1 product rules apply where numbers are open), suggestion duplicate/lost Queue, Web auth + all-guild broadcast.
-- **S14** (`14_local_development_isolation.md`) covers product-development isolation only (`contracts/local_development.md`); it does not claim Azure coordination fidelity.
-- Each scenario references existing contracts (`leadership_control`, `drain_status`, `ai_task`, `suggestion`, `web_auth`, `launcher_ipc`, `pubsub_live`, `local_development`, etc.) rather than inventing new behavior.
-- S05 updated with concrete Bot/AI Worker reconnect and user-visible publish-failure outcomes (P1.5).
-
-## P1.5 — Broker configuration and outage behavior (resolved)
-
-- Canonical: `containers/rabbitmq.md`, `containers/mosquitto.md`, `architecture.md` → Target Compose skeleton; S05.
-- **RabbitMQ:** Compose-internal plaintext AMQP accepted (no host `5672`/`15672` in prod); target `infra/rabbitmq/`; plugins `rabbitmq_event_exchange` + internal `rabbitmq_management`; image `rabbitmq:3.13-management`; healthcheck `rabbitmq-diagnostics check_running`; client reconnect 1s→×2→60s+jitter; confirm wait 5s; Bot publish failure → no TaskRecord + localized error; AI Worker reconnects and never acks without result; queue-depth metrics **not** v1 telemetry; manual image-pin upgrades.
-- **Mosquitto:** target `infra/mosquitto/mosquitto.conf` (anonymous, persistence false, no host publish); image `eclipse-mosquitto:2.0`; QoS 0 for logs/progress/heartbeats, QoS 1 for control/drain; heartbeats never retained; Head republishes retained desired modes on reconnect (no grant backlog); healthcheck via `mosquitto_sub`; broker self-logs = `docker logs` only; broker metrics not v1.
-- Propagated to `discord_bot.md`, `ai_worker.md`, `head.md`, S05.
-
-## P1.7 — Azure client failure classification and provisioning (resolved)
-
-- Canonical: `containers/azure.md` §3a/§6/§6a/§9/§11.
-- Exact RBAC roles/scopes per Head/Bot/Web SP; provisioning instructions live in this contract, target IaC `infra/azure/` when created (live apply remains P2 ops).
-- Permanent auth/permission vs transient classification; SDK `max_retries = 0` so only application backoff retries; Head must not infinitely back off permanent auth failures.
-- Per-client timeouts + ≤3 transient attempts (PubSub ≤2); Bot Queue poll skip + degraded after 3 consecutive failures; `/config` Apply keeps staged state (`config.md` §12).
-- Per-resource health flags preferred over a single `azure_connected`.
-- Propagated to `config.md`, `discord_bot.md`, cleanup note on Queue enqueue recovery already aligned with `suggestion.md`.
-
-## P1.9 — Localization value contract (resolved)
-
-- Canonical: `contracts/localization.md` §3–§4; `contracts/guild_config.md` `language` field; `config.md` LanguageSelect; graph input notes in `environment.md` / `battle.md`; Bot publish mapping in `discord_bot.md` §6.2.
-- Stored enum: `en` \| `es` \| `ua`. `ua` is a legacy UI key (not ISO `uk`).
-- Bot maps to AI `language_locale`: `en`→`en`, `es`→`es`, `ua`→`uk-UA`.
-- UI fallback: exact file → primary subtag → `en`.
-
-## P1.3 (partial) — Guild config decisions needed by shared Azure clients (resolved)
-
-- Canonical: `contracts/guild_config.md` §4a/§7; `azure.md` `guilds.py` note; `discord_bot.md` §6.2; `guilds.md` list filter.
-- Field-scoped Cosmos Patch + ETag (≤5 on 412); soft-delete confirmed unbounded v1; rejoin preserves `created_at` + admin fields; default lists exclude `left_at != null`.
-- **Still open under P1.3 after shared-client pass:** offline removal sweep (still deferred after Phase 3), Apply atomicity / 25-cap / first-use — **closed in Phase 3** (see Resolved → Phase 3).
-
-## Phase 1 Slice 0 — Launcher/Head coordination reconciliation (resolved)
-
-- `Head` implementation location is `src/head/`.
-- Canonical release tags use the exact Docker-safe SemVer-compatible grammar in `contracts/launcher_ipc.md` §4. GitHub drafts are always ignored; automatic polling ignores prereleases by default and compares parsed SemVer precedence.
-- Compose injects required `APPLICATION_VERSION` into `head`, `bot`, and `ai_worker`. Launcher maps one admitted version to the fixed local image set under `LAUNCHER_GHCR_NAMESPACE`; brokers and independently deployed Web are outside this recreate set.
-- Go Docker API owns daemon ping and authenticated pulls. A controlled, no-shell Docker Compose CLI invocation owns recreation.
-- HTTP and mutating CLI operations share one coordinator, persisted state, and host-wide cross-process lock. Restarted active work is marked `INTERRUPTED` and requires explicit reconciliation/new admission; it is never blindly resumed.
-- Verification is authenticated Head liveness plus exact target version, not leadership/Bot/dependency readiness.
-- Failed recreate/verification receives one automatic rollback attempt. Manual `launcher rollback` is a separate admission.
-- Canonical docs: `containers/Launcher.md`, `containers/head.md`, `contracts/launcher_ipc.md`, `contracts/drain_status.md`, `architecture.md`, and S06–S09.
-
-## P1.8 — Observability and health semantics (resolved)
-
-- Canonical: `contracts/telemetry.md` §2/§3/§5, propagated to `head.md`, `bot/discord_bot.md`, `ai_worker/ai_worker.md`, `mosquitto.md`, and `pubsub_live.md`.
-- Bot and AI Worker heartbeat schemas are exact and versioned. Both default to 30-second cadence; Head uses a 90-second monotonic receipt-time staleness threshold.
-- Dependency health is proportionate: Bot reports Gateway plus latest RabbitMQ/Cosmos/Queue/status-Blob state; AI Worker reports RabbitMQ and deliberately does not synthesize a global Gemini probe.
-- Head buffers at most 60 completed one-minute metrics windows, uploads oldest-first after recovery, and drops the oldest window on overflow. Buffer loss on Head restart is accepted and operator-visible by warning.
-- Live payloads keep the fixed envelope/metrics, include at most 50 newest log lines, and are capped at 65,536 UTF-8 JSON bytes; oldest selected logs are omitted first and counted in `logs_dropped`.
-- Candidate Bot/AI Worker business/quality counters without a v1 transport or consumer are explicitly deferred, not left as unrouteable metrics.
-
-## Phase 2 — AI Worker transport shell and Bot core (resolved)
-
-Documentation gate for implementing Phase 2. Canonical detail lives in the linked docs; this section records the decisions only.
-
-### Transport stub (no `stub` graph)
-
-- Phase 2 proves **Bot → RabbitMQ → AI Worker → Mosquitto progress → `ai_tasks_results` → Bot** without real LangGraph/Gemini behavior.
-- Keep the existing envelope discriminator `graph="environment"`. Do **not** introduce a `stub` graph value.
-- AI Worker Phase 2 path: when the harness/env flag selects transport-shell mode (`AI_WORKER_TRANSPORT_SHELL=true`, default `false` in production images), `run_graph` skips LangGraph and emits the canned success result below. Real graph code remains Phase 4.
-- **Canned `AiTaskResultSuccess.result`** (must validate as environment Output State, `graphs/environment.md` §2):
-
-```json
-{
-  "final_environment": {
-    "description": "Phase 2 transport-shell canned environment.",
-    "tags": ["phase2", "transport-shell"],
-    "setting": "realistic"
-  },
-  "attempts_used": 0,
-  "forced_selection": false
-}
-```
-
-- **Exact progress phase sequence** for every transport-shell task (`contracts/task_progress.md`):
-  1. `queued` — Bot local only, on successful Celery publish + `TaskRecord` create
-  2. `launching` — AI Worker on claim, before canned work
-  3. `composing` — AI Worker after init, before building the canned `Environment`
-  4. `refining` — AI Worker after the canned `Environment` object exists
-  5. `finishing` — AI Worker immediately before publishing `ai_tasks_results`
-  6. Terminal result on `ai_tasks_results` (not a progress phase)
-- Same-phase Mosquitto heartbeats (`AI_WORKER_PROGRESS_HEARTBEAT_SEC`) remain required only while the task is still in flight after a phase publish; a sub-second stub may finish without extras. Order of phase names above is mandatory.
-- **Trigger only via tests/acceptance harnesses** that publish a valid `EnvironmentAiTaskEnvelope` through Bot’s dispatch API (or an in-process test double of that API). No temporary Discord slash command, no production HTTP endpoint, no operator “stub” control topic.
-
-### Node identity
-
-- One host-level `NODE_ID` in `.env` / operator config.
-- Compose injects the **same** value as `HEAD_NODE_ID`, `BOT_NODE_ID`, and `AI_WORKER_NODE_ID`.
-- **Invariant:** on one deployment node, all three service-scoped values must be identical. Mismatch is a startup failure for Bot and AI Worker (Head already validates `HEAD_NODE_ID`).
-- **Grammar (shared):** `^[A-Za-z0-9._-]+$`, length 1–128 (matches existing Head settings). Default example: `node-local`.
-
-### RabbitMQ / Celery wiring
-
-- **Broker URL:** `amqp://{user}:{password}@{host}:{port}/{urlencoded_vhost}` where `urlencoded_vhost = urllib.parse.quote(RABBITMQ_DEFAULT_VHOST, safe="")`. With default vhost `/discordcombatai`, the path is `/%2Fdiscordcombatai`.
-- Compose injects `RABBITMQ_DEFAULT_VHOST` into `head`, `bot`, and `ai_worker` (plus each service’s `*_RABBITMQ_USER`/`PASS`/`HOST`/`PORT`).
-- **Celery app import path:** `ai_worker.celery_app:app`.
-- **Worker CLI:** `celery -A ai_worker.celery_app worker -Q ai_tasks`.
-- **Registered task name:** `ai_worker.tasks.run_graph` (module `ai_worker.tasks`, function `run_graph`). Bot dispatches by that name via `send_task` / shared task-name constant — Bot must not import LangGraph packages.
-- **Queue routing:** only queue `ai_tasks` for Celery dispatch; results on plain queue `ai_tasks_results` (not Celery result backend).
-- **Serialization:** JSON only (`task_serializer`/`accept_content`/`result_serializer` = `json`). No pickle.
-- **Publisher confirms:** enabled; confirm wait 5s (`rabbitmq.md` §8a).
-- **Prefetch:** worker `worker_prefetch_multiplier=1` with `AI_WORKER_CELERY_CONCURRENCY=1`.
-- **Late acknowledgement:** `task_acks_late=True`; ack only after confirmed `ai_tasks_results` publish (`contracts/ai_task.md` §2).
-- **Reject / redelivery / DLQ:** malformed or unknown `schema_version` → nack without requeue → `dead_letter`. Worker crash before ack → broker redelivery. Bot discards unknown `task_id` results.
-- **Revoke / purge:** Bot sole actor (`ai_task.md` §8). Hard-stop purges `ai_tasks` and `revoke(..., terminate=True)` for tracked in-flight ids.
-- **Topology owner:** `infra/rabbitmq/definitions.json` is canonical. Clients may passive-declare / verify args; they must not create conflicting exchanges, queues, bindings, or DLX args. Align `shared/messaging/rabbitmq_topology.py` constants with definitions.
-- **Dependencies:** Bot optional-extra uses `celery` + `kombu` **without** the Redis extra. Redis is not a broker or result backend in this architecture; `celery[redis]` is obsolete and removed from `pyproject.toml`.
-
-### Bot concurrency model
-
-- The **asyncio event loop owns discord.py** and all Bot domain state mutations that touch Discord or the in-memory task/drain maps.
-- Blocking Celery/Kombu I/O (publish confirm wait, result consume, purge/revoke) runs on **dedicated threads / Celery client threads**, never on the event loop.
-- Thread → asyncio handoff uses `loop.call_soon_threadsafe` / `asyncio.run_coroutine_threadsafe` (or an asyncio queue drained by a loop task). No unsynchronized writes to Bot state from broker threads.
-- **MQTT (paho) callbacks** are foreign threads: only enqueue control/progress/heartbeat work onto the loop; never call discord.py or mutate task maps directly from the callback.
-- **Shutdown order:** stop accepting new AI work → complete hard-stop / drain path as commanded → cancel timers → stop MQTT subscriptions/client → stop result consumer and Celery client → close Discord Gateway → exit process. Reconnect ownership: Discord reconnect = discord.py; AMQP = Celery/Kombu policy (`rabbitmq.md` §8a); MQTT = Bot MQTT client with fail-closed control semantics (`leadership_control.md`).
-
-### Phase 2 Bot scope
-
-- **In scope:** runtime bootstrap, Gateway lifecycle under grants, fencing/watchdog, guild join/update/remove + periodic sync (no `/config` UI), Celery dispatch + result consumer + task tracker + progress plumbing, heartbeat + status Blob push, drain progress, hard-stop (purge/revoke/synthetic failures). Shared Components V2 UI base may land only as needed for progress plumbing tests — no user-facing command UI.
-- **Out of scope:** full `ProcessCommand` dispatch abstraction (deferred to `/config`, `/suggest`, `/quick-battle` phases); **no user-facing slash command** in Phase 2; suggestion queue poller/sweep; real LangGraph; Web.
-
-### Phase 2 acceptance ownership (summary)
-
-Per-scenario step matrices live in `docs/scenarios/03`, `04`, `05`, `07`, `08`, and `10`. Labels: **complete in Phase 2**, **integration-only in Phase 2**, or **deferred** (owning later phase named).
-
-| Scenario | Phase 2 owns | Explicitly not claimed in Phase 2 |
+| ID | Topic | Canonical |
 |---|---|---|
-| S03 | Bot autonomous grant-expiry hard-stop, Gateway disconnect, purge/revoke when tasks tracked | Follower lease race completion beyond Head (S02); Discord command recovery |
-| S04 | Bot MQTT control disconnect → soft-stop; grant-expiry hard-stop; reconnect does not revive from retained alone | User-facing slash rejection UX (no commands yet) |
-| S05 | Bot/AI Worker AMQP reconnect; publish failure creates no `TaskRecord`; consume/result recovery via harness | Discord ephemeral for a real slash command (harness asserts error path instead) |
-| S07 | Bot drain flag, `drain_progress`, zero `in_flight_workflows` when only AI-task workflows exist | Open lobby/collector/vote drain units (`/quick-battle`); full Launcher recreate (Phase 1 already) |
-| S08 | Hard-stop, revoke, purge for tracked AI tasks; escalate from drain timeout | Lobby/collector/vote cancel notices (`/quick-battle` / P1.1) |
-| S10 | AI Worker restart redelivery; Bot restart loses map and discards orphan results (v1 limitation preserved) | Discord interaction/lobby recovery (command phases / P1.1) |
+| P0.1 | Bot fencing / grants | `contracts/leadership_control.md` |
+| P0.2 | Launcher IPC | `contracts/launcher_ipc.md` |
+| P0.3 | Drain / update completion | `contracts/drain_status.md` |
+| P0.4 | RabbitMQ / Celery wire | `contracts/ai_task.md`, `containers/rabbitmq.md` |
+| P0.5 | Suggestion, telemetry, status, archives | `suggestion.md`, `telemetry.md`, `status_document.md`, `battle_archive.md`, `log_archive.md` |
+| P0.6 | Web PubSub live | `contracts/pubsub_live.md` |
+| P0.7 | Web Entra admin boundary | `contracts/web_auth.md` |
+| P0.8 | Acceptance scenarios | `docs/scenarios/` |
 
-**Orphaned tasks after Bot restart remain the documented v1 limitation** (`discord_bot.md` §9/§13, S10): no durable delivery reconciliation unless a later contract explicitly requires it — Phase 2 does not invent one.
+**Delivery rule (project-wide):** at-least-once delivery, effectively-once outcome where contracts define dedup/claim — never claim exactly-once unless a contract says so.
 
-## Local product-development architecture (resolved)
+## P1 — Closed subsystem gates
 
-Canonical: `contracts/local_development.md`. Acceptance: `scenarios/14_local_development_isolation.md`.
+| ID | Topic | Canonical |
+|---|---|---|
+| P1.3 (partial + Phase 3 `/config`) | Guild Patch/ETag, soft-delete/rejoin, lists, first-use, Apply partial-field, model list truncate-25 | `contracts/guild_config.md` §4a/§7/§7a/§8, `config.md` |
+| P1.4 | Suggestion claim/sweep/DM, failed-notification retry, catalog fail-closed | `contracts/suggestion.md`, `discord_bot.md` §6.6, S12 |
+| P1.5 | Broker outage / Compose | `rabbitmq.md`, `mosquitto.md`, S05 |
+| P1.7 | Azure RBAC / transient vs permanent / retries | `containers/azure.md` |
+| P1.8 | Heartbeats, staleness, live caps | `contracts/telemetry.md` |
+| P1.9 | Locale enum + AI mapping | `contracts/localization.md` |
 
-- **Mode:** fail-closed `DCA_RUNTIME_MODE=production|development` plus **mandatory** `DISCORD_DEVELOPMENT_GUILD_ID` in both modes.
-- **Discord:** separate Discord application required in development; mandatory `DISCORD_DEVELOPMENT_APPLICATION_ID` verified against the authenticated app before sync; guild-scoped command sync; accept only the designated guild; production always rejects the reserved development guild.
-- **Providers:** domain repositories selected at composition root. Production adapters wrap `src/shared/azure/services/*`. Development adapters call Compose-only `dev-support` (SQLite). **Rejected:** Azure-protocol emulator / “mirror Azure API” container as the Bot↔Web plane.
-- **Topology:** development = Mosquitto + RabbitMQ + Bot + AI Worker + `dev-support` (no Head/Launcher). Web is Compose-included when implemented. `docker-compose.dev.yml` is the explicit opt-in overlay, not isolation by itself.
-- **Activation:** `dev-support` publishes short-lived Mosquitto grants; does not simulate Blob Lease / PubSub leadership.
-- **Web (deferred relative to spine):** fixed local admin + DEVELOPMENT banner; Compose publishes only host-loopback; local live feed (no Entra, no Azure PubSub).
-- **Side effects:** local `/config`, `/quick-battle`, suggestion CRUD/UI allowed when commands/Web exist; suggestion queue/DM delivery suppressed; webhooks dry-run only (no Discord webhook POST).
-- **Non-goal:** S14 never substitutes for S01–S10 Azure coordination acceptance.
-- **Egress:** development may call the development Discord app and Gemini; Azure/Entra/webhook/production Discord identity remain forbidden.
+## Phase documentation gates
 
-Propagated to `architecture.md`, `azure.md`, `bot/discord_bot.md`, `web/web.md`, `web_auth.md`, `guild_config.md`, `suggestion.md`, `status_document.md`, `pubsub_live.md`, `docs/Readme.md`, `scenarios/Readme.md`.
+| Phase | One-line decision | Canonical |
+|---|---|---|
+| **1 Slice 0** | `src/head/`; SemVer release tags; fixed image set; Go pull + Compose recreate; interrupted ops not auto-resumed; verify = Head liveness + exact version | `Launcher.md`, `head.md`, `launcher_ipc.md` |
+| **2** | Transport shell via `graph="environment"` + `AI_WORKER_TRANSPORT_SHELL` (no `stub` graph); shared `NODE_ID`; Celery task `ai_worker.tasks.run_graph`; Bot asyncio vs broker/MQTT threads; no slash commands | `to_resolve` historically; detail in `ai_task.md` §11, `discord_bot.md` §6.0, scenarios 03/04/05/07/08/10 |
+| **2.5** | Fail-closed `DCA_RUNTIME_MODE`; separate Discord app; domain repos → Azure or `dev-support`; no Azure emulator; Queue/DM/webhooks suppressed in development | `contracts/local_development.md`, S14 |
+| **3** | `ProcessCommand`; `/config` + `/suggest`; Components V2; Queue poller/sweep/DM; minimal Web Suggestions; S12. Excludes graphs, `/quick-battle`, offline guild sweep, Dashboard/Performance, webhook/S13 | `discord_bot.md` §6.4/§6.6, `guild_config.md` §7a/§8, `config.md`, `suggest.md`, `suggestion.md` §3/§3a, `web.md` Phase 3 note, `suggestions.md`, S12 |
 
-## Phase 3 — `/config` and `/suggest` (resolved)
+### Phase 3 decision summary
 
-Documentation gate for implementing Phase 3. Canonical detail lives in the linked docs; this section records the decisions only.
-
-### Scope
-
-**Includes:** ProcessCommand; Bot localization required by `/config` and `/suggest`; those two commands; command-specific Components V2 UIs; production suggestion Queue polling + reconciliation sweep; Discord DM response delivery; minimal authenticated Web Suggestions list/detail/respond path; S12 acceptance.
-
-**Excludes:** real AI graphs; `/quick-battle`; offline guild-removal sweep; Dashboard and Performance; webhook broadcasting and S13; general Web completion; Head or Launcher redesign.
-
-### ProcessCommand
-
-Normative: `containers/bot/discord_bot.md` §6.4. Decorator/wrapper owns acknowledgement for denials; per-command flags for `required_guild`, `required_guild_enabled`, permissions, `blocked_during_drain`; production vs development guild filtering (`local_development.md`); typed guild-config load; ephemeral localized denials; logging fields; expected vs unexpected exceptions; modal/autocomplete compatibility; no legacy developer bypass; no blocking SDK on the Discord event loop.
-
-| Command | Guild | Enabled gate | Permissions | During drain |
-|---|---|---|---|---|
-| `/config` | guild-only | no | administrator | available |
-| `/suggest` | production guild-or-DM; development guild-only (reject DM) | no | none | available |
-
-### `/config`
-
-- First-use: `ensure_active_guild()` then load panel; never unpersisted fake docs (`guild_config.md` §7a, `config.md` §6).
-- Apply: one authoritative partial-field ETag Patch (`guild_config.md` §8) — valid `language`/webhook may commit even if new key/model fails; invalid fields excluded with inline errors; never replace previous key/model on failed validation; `enabled=true` only when resulting config has validated key+model; ETag conflict → reload/retry; Cosmos failure → no success, preserve staged state.
-- `api_key` stored **plaintext** in Cosmos (v1); Web redacts.
-- Google: `google-genai` via `asyncio.to_thread`; list on key stage (gemini+generateContent, sort by id, truncate 25, truncation notice+WARN); one minimal `generateContent` probe at Apply before accepting replacement key/model; map errors to localized invalid-key / unavailable-model / rate-limit / transient-service; never log key/prompt/raw provider exception.
-
-### `/suggest`
-
-- Catalog: `StatusService.get_suggestion_catalog()` every new invocation; optional cache ≤600s view lifetime; fail closed; no hardcoded fallback; re-validate on modal submit; store values not labels (`suggest.md`, `status_document.md`).
-- Create failures: Cosmos success required before ticket UID; transient/permanent distinct; no success after failure; duplicate interaction must not double-create; no notification enqueue on create.
-- Production preserves guild+DM; development rejects DM and suppresses Queue/DM side effects (`local_development.md`).
-
-### Suggestion delivery + Web slice
-
-- Failed-notification recovery via Web `mode=send`, reset attempts to 0, ETag + Idempotency-Key (`suggestion.md` §3a, `suggestions.md`).
-- Queue/sweep/claim-timeout/`BOT_SUGGESTION_CLAIM_TIMEOUT_SEC=120`; Cosmos authoritative; at-least-once DM with **bounded duplicate** possible after crash-after-DM-before-Cosmos — not exactly-once (`discord_bot.md` §6.6, S12).
-- Phase 3 Web: auth shell + Suggestions list/detail/respond + shared response service + Queue enqueue + catalog seed if needed; target `src/web/`; legacy root `web/` reference-only (`web.md`).
-
-### SKILL boundaries
-
-- `discord-combat-ai-bot`: Phase 3 ProcessCommand, `/config`, `/suggest`, Components V2, localization, Google off-loop, poller/sweep/DM, S12, local-dev suppression.
-- `discord-combat-ai-web`: Phase 3 minimal Suggestions slice; all other Web slices deferred.
-- `discord-combat-ai-scenario-testing`: explicit S12 Phase 3 coverage note.
+- **`/config`:** `ensure_active_guild` then panel; one partial-field ETag Patch; plaintext `api_key`; `google-genai` list + Apply probe off the event loop (`asyncio.to_thread`); truncate models to 25.
+- **`/suggest`:** `get_suggestion_catalog()` every invocation; fail closed; prod guild-or-DM; development guild-only (reject DM); no ticket UID without durable write success.
+- **Delivery:** Cosmos authoritative; Queue is a hint; claim timeout `BOT_SUGGESTION_CLAIM_TIMEOUT_SEC=120`; failed → Web `mode=send` retry; bounded duplicate DM possible after crash-after-DM-before-Cosmos.
+- **Web slice:** Entra (prod) / local admin (dev); Suggestions list/detail/respond only; target `src/web/`; legacy root `web/` reference-only.
 
 ---
 
-# P0 — Global architecture and contract blockers
-
----
-
-**P0.3–P0.8 are resolved — see the "Resolved decisions" section above.** There are **no remaining unresolved P0 items**. Remaining blockers are P1/P2.
-
-## P0.5 Cross-service data contracts — resolved
-
-→ See **Resolved decisions → P0.5**. Canonical paths listed there; do not re-open ownership/schema questions without an explicit owner decision.
-
-## P0.6 Azure Web PubSub live-data flow — resolved
-
-→ See **Resolved decisions → P0.6**. Canonical: `contracts/pubsub_live.md`.
-
-## P0.7 Web administrative security boundary — resolved
-
-→ See **Resolved decisions → P0.7**. Canonical: `contracts/web_auth.md`.
-
-## P0.8 End-to-end scenarios and acceptance invariants — resolved
-
-→ See **Resolved decisions → P0.8**. Canonical: `docs/scenarios/`.
-
----
-
-# P1 — Subsystem blockers
+# P1 — Subsystem blockers (open)
 
 ## P1.1 Quick Battle session behavior and Discord constraints
 
@@ -374,51 +127,21 @@ Prompt file authoring and physical migration remain implementation tasks once th
 
 ---
 
-## P1.3 Guild configuration lifecycle and concurrency
+## P1.3 Guild configuration — remaining open
 
-**Evidence:** `contracts/guild_config.md` §3–§9; `bot/discord_bot.md` §6.2/§6.4; `bot/commands/config.md`.
-
-**Resolved for shared Azure clients + Phase 3 `/config`:**
-
-1. ~~Field-scoped Cosmos PATCH + ETag/concurrency~~ — **resolved:** `guild_config.md` §4a.
-2. ~~Rejoin semantics~~ — **resolved:** `guild_config.md` §7.
-3. ~~First-use `/config` when document missing~~ — **resolved (Phase 3):** `ensure_active_guild` then panel (`guild_config.md` §7a, `config.md` §6).
-4. ~~Whether lists/counts exclude `left_at != null`~~ — **resolved:** default exclude; `guild_config.md` §7 / `guilds.md`.
-5. ~~Apply semantics when staged API key/model is invalid~~ — **resolved (Phase 3):** partial-field transaction (`guild_config.md` §8, `config.md` §6/§12).
-6. ~~Model-catalog timeout/pagination and Discord's 25-option Select~~ — **resolved (Phase 3):** truncate to 25, no pagination v1, truncation notice (`config.md` §6.3).
-7. ~~Webhook URL validation~~ — **resolved (P0.7).**
-8. ~~Soft-delete policy / retention~~ — **resolved:** soft-delete confirmed, unbounded v1 (`guild_config.md` §7).
-9. ~~`/config` Cosmos Apply user-visible recovery~~ — **resolved (P1.7 + Phase 3):** `config.md` §12 / `guild_config.md` §8.6.
-
-**Still deferred (not Phase 3):**
+Most of P1.3 is closed (see Resolved). **Still deferred:**
 
 - Detection of guild removals missed while Bot was offline (mark `left_at` for Cosmos docs absent from `bot.guilds`).
-- Reconciliation **scheduling algorithm** — implementation detail after semantics above.
+- Reconciliation scheduling algorithm — implementation detail after that semantics decision.
 
 ---
 
-## P1.4 Suggestion delivery correctness
+## P1.4 Suggestion delivery — remaining open
 
-Depends on `contracts/suggestion.md` from P0.5.1 — **contract exists**; Phase 3 closed the remaining delivery-edge items below:
+Phase 3 closed delivery correctness (see Resolved → P1.4 / Phase 3). **Still deferred:**
 
-1. ~~Atomic claim preventing queue poller and sweep from sending the same DM~~ — **resolved** in `contracts/suggestion.md` §3; verify in code when implementing.
-2. ~~Azure Queue at-least-once, duplicate events, visibility~~ — **resolved:** visibility 60s; no mid-DM renewal in v1; poison/delete rules + claim timeout (`suggestion.md`, `discord_bot.md` §6.6).
-3. ~~Attempt-count persistence and retry~~ — **resolved:** attempts + max; admin retry resets to 0 (`suggestion.md` §3a).
-4. ~~`/respond` idempotency~~ — **resolved (Phase 3):** `Idempotency-Key` + ETag; unrestricted multi-admin editing beyond that remains deferred.
-5. ~~DM invocation locale/guild fields~~ — structured `LocaleInfo` on ticket; production DM allowed; development rejects DM (`suggest.md` §4).
-6. ~~Terminal `failed` recovery/retry by an administrator~~ — **resolved (Phase 3):** `suggestion.md` §3a / `suggestions.md`.
-7. Pagination/continuation tokens for suggestion list and conversation history — **deferred to P1.6** (not required for Phase 3 minimal list/detail).
-8. ~~Shared catalog bootstrap/ownership + Bot read failure~~ — **resolved:** Web seeds; Bot `get_suggestion_catalog()` fail-closed; cache ≤600s view lifetime (`suggest.md` §6, `status_document.md`).
-9. ~~Sweep minimum pending age~~ — **resolved:** `BOT_SUGGESTION_SWEEP_MIN_AGE_SEC` default 600.
-10. ~~Queue polling failure behavior~~ — **resolved (P1.7):** skip cycle; degraded after 3 consecutive failures; sweep independent (`azure.md` §6a, `discord_bot.md` §9).
-
-**Honest delivery guarantee (Phase 3):** Cosmos authoritative; Queue is a hint; at-least-once DM with possible **bounded duplicate** after crash-after-DM-before-Cosmos — S12.
-
----
-
-## P1.5 Broker configuration and outage behavior — resolved
-
-→ See **Resolved decisions → P1.5**. Canonical: `rabbitmq.md`, `mosquitto.md`, Compose skeleton in `architecture.md`, S05.
+- Suggestion list/conversation **pagination** → track under **P1.6** (not required for Phase 3 minimal list/detail).
+- Unrestricted multi-admin editing beyond ETag + `Idempotency-Key`.
 
 ---
 
@@ -426,37 +149,18 @@ Depends on `contracts/suggestion.md` from P0.5.1 — **contract exists**; Phase 
 
 **Evidence:** `web.md`; all `web/pages/*.md`.
 
-Resolve before Web implementation:
+Resolve before treating full Web (beyond Phase 3 Suggestions) as complete:
 
-1. Exact request/response/error schemas (prefer one OpenAPI/Pydantic source of truth), status codes, validation limits, and pagination.
+1. Exact request/response/error schemas (prefer one OpenAPI/Pydantic source of truth), status codes, validation limits, and pagination (including suggestion list/conversation pagination from P1.4).
 2. `/api/metrics` and history fields after the telemetry contract is fixed; omit unsupported fields rather than fabricate/null them inconsistently.
    Define whether stale retained values are visibly marked when either metrics request fails.
 3. PubSub negotiate errors/token expiry/reconnect behavior (auth boundary itself is **resolved P0.7** / `contracts/web_auth.md`).
-4. ~~Idempotency and confirmation for broadcasts~~ — **resolved (P0.7)** for webhook send/update; suggestion `/respond` Idempotency-Key + ETag **resolved (Phase 3)**; unrestricted multi-admin editing beyond that remains deferred.
-5. Webhook broadcast concurrency limits, timeout, retry policy, and result schema (rate/cooldown/idempotency/audit **resolved P0.7**; remaining: Discord POST timeout/retry detail).
-6. Health/readiness contract and deployment target/rollout/rollback mechanism.
-7. Web logging destination and retention. Web self-metrics are optional unless selected for v1 operations.
-8. Version/changelog ownership: decide whether update announcements are merely content or are tied to the actual deployed release. Define the version source and persistence, or remove those endpoint fields for v1.
+4. Webhook broadcast: Discord POST timeout/retry detail (rate/cooldown/idempotency/audit already **resolved P0.7**). Suggestion `/respond` Idempotency-Key + ETag already **resolved Phase 3**.
+5. Health/readiness contract and deployment target/rollout/rollback mechanism.
+6. Web logging destination and retention. Web self-metrics are optional unless selected for v1 operations.
+7. Version/changelog ownership: decide whether update announcements are merely content or are tied to the actual deployed release. Define the version source and persistence, or remove those endpoint fields for v1.
 
 The charting library, CSS token system, and live-vs-polling choice for compact charts do not block backend/API implementation.
-
----
-
-## P1.7 Azure client failure classification and resource provisioning contract — resolved
-
-→ See **Resolved decisions → P1.7**. Canonical: `containers/azure.md` §3a/§6/§6a/§9/§11.
-
----
-
-## P1.8 Observability and health semantics — resolved
-
-→ See **Resolved decisions → P1.8**. Canonical heartbeat, staleness, metrics-buffer, and live-payload rules: `contracts/telemetry.md`. Launcher verification: `contracts/launcher_ipc.md` §5.
-
----
-
-## P1.9 Localization value contract — resolved
-
-→ See **Resolved decisions → P1.9**. Canonical: `contracts/localization.md` §3–§4.
 
 ---
 
@@ -482,49 +186,25 @@ Move an item back to P1 only if implementation proves it changes a public contra
 
 ---
 
-# Required documentation cleanup
+# Remaining documentation cleanup
 
-These edits are mechanical after the decisions above; they should be completed before declaring readiness:
+Only unfinished mechanical items:
 
-1. ~~Replace every RabbitMQ "exactly-once" claim with the chosen at-least-once/effectively-once semantics~~ — **done, P0.4**.
-2. ~~Remove stale `reply_to`-based routing text where `correlation_id` is canonical~~ — **done, P0.4**.
-3. ~~Remove references to unwritten `ai_worker/graphs/quick-battle.md`; `bot/commands/quick-battle.md` already defines sequencing~~ — **done, Phase 2 doc pass** (environment/battle open items now point at `bot/commands/quick-battle.md` + P1.1).
-4. ~~Correct `environment.md`'s old `prompts/core/generic_environments` path to the target `prompts/static/generic_environments` path~~ — **done, Phase 2 doc pass**; container ownership of generic arenas remains **P1.1 item 11**.
-5. Correct `quick-battle.md` step numbers — **still open under P1.1** (command phase, not Phase 2).
-6. ~~Correct `home.md`'s implication that status updates maintain identity~~ — **done, P0.5.3**.
-7. ~~Reconcile Dashboard guild-count and latency-history sources~~ — **done, P0.5.2**.
-8. ~~Update `Readme.md` after new contracts~~ — **done for P0.5/P0.6/P0.7 contracts and P0.8 scenarios**; Phase 2 notes added this pass.
-9. ~~Ensure source-tree comments match the chosen IPC/config files and service ownership~~ — **done for Phase 2 Celery paths / `celery_app.py` / node identity** this pass; remaining Web tree polish is non-blocking.
-10. Remove resolved/open-item prose from component docs once its canonical decision is recorded, instead of leaving “resolved” tombstones indefinitely — ongoing hygiene.
-11. ~~Reconcile `task_progress.md`'s `queued` publisher~~ — **done (Phase 0 Slice 0).**
-12. Remove stale wording that Web PubSub group presence is used for leader election; it is only heartbeat transport after the Blob Lease redesign — remaining stray mentions only if found.
-13. ~~Correct `Readme.md` and `web/pages/home.md` claims that Bot status writes resolve/maintain identity~~ — **done, P0.5.3**.
-14. ~~Correct `bot/commands/suggest.md` §5's claim that the `WizardView` correction is unapplied~~ — **done (Phase 3):** `visuals.md` / `suggest.md` aligned on `SuggestionView`.
-15. ~~Reconcile the high-level project tree with detailed service trees (Celery app path, Bot services, definitions as topology owner)~~ — **done, Phase 2 doc pass**.
-16. ~~Remove conditional live streaming / “Web listens to PubSub” / unnamed dashboard group~~ — **done, P0.6**.
-17. ~~Remove “auth deferred / no auth / Auth Placeholder / not publicly safe until P0.7”~~ — **done, P0.7**.
-18. ~~Remove `ai_worker.md` §9's dangling “see next row for the open question” reference~~ — **done, Phase 2 doc pass**.
-19. ~~Replace `bot/visuals.md`'s stale statement that the suggestion catalog is “moving off” a hardcoded list~~ — **done (Phase 3):** catalog owned by `status_document.md`; fail-closed.
-20. Reconcile `web/pages/home.md`'s documented `version` response with the canonical status document — **deferred to P1.6 / Web**.
-21. Remove or update stale self-marked “resolved” prose in task_progress after canonical text is corrected — **done for the quick-battle stub tombstone this pass**.
-22. ~~Correct `azure.md` and `web.md` Queue-failure wording~~ — **done with P1.7**.
-23. Update `web/pages/template.md`'s stale “eventual authenticated admin” wording — **deferred to Web doc hygiene / P1.6**.
-
-**Verified repository fact:** there are no duplicate slash/backslash variants of docs files in Git; the earlier duplicate-path concern was a Windows path-rendering artifact and is closed.
+1. Correct `quick-battle.md` step numbers — **open under P1.1**.
+2. Remove stale “resolved” tombstones from component docs over time — ongoing hygiene.
+3. Remove any remaining wording that Web PubSub group presence is used for leader election (heartbeat transport only) — if found.
+4. Reconcile `web/pages/home.md` `version` response with the status document — **P1.6**.
+5. Update `web/pages/template.md` stale “eventual authenticated admin” wording — **P1.6**.
 
 ---
 
 # Suggested resolution order
 
-1. ~~Drain/update completion protocol (P0.3)~~ and ~~RabbitMQ/Celery executable wire design (P0.4)~~ — **resolved**; leadership fencing and Launcher transport were already resolved.
-2. ~~**Suggestion, telemetry, status, archive, and schema-evolution contracts** (P0.5)~~ — **resolved**.
-3. ~~**Web PubSub topology** (P0.6)~~ and ~~**Web security boundary** (P0.7)~~ — **resolved**.
-4. ~~**End-to-end scenarios** (P0.8)~~ — **resolved** (`docs/scenarios/`) + cleanup pass.
-5. **Quick Battle + AI graph bounded behavior** (P1.1–P1.2). Locale mapping is done (P1.9). Phase 3 `/config`/`/suggest` docs are closed.
-6. ~~**Remaining guild/suggestion concurrency** (leftover P1.3 items, P1.4)~~ — **Phase 3 closed** except offline guild-removal sweep (deferred) and suggestion list pagination (P1.6).
-7. **Web details** (P1.6) for non-Suggestions pages and operational polish. Observability (P1.8), brokers (P1.5), and Azure clients (P1.7) are done.
+1. **Quick Battle + AI graph bounded behavior** (P1.1–P1.2).
+2. **Offline guild-removal sweep** (P1.3 leftover), if needed before full guild lifecycle ops.
+3. **Web details** (P1.6) for non-Suggestions pages and operational polish.
 
-When all P0 items and the P1 items for a target subsystem are closed, that subsystem's docs can be considered ready for implementation. “All docs ready” requires every P0 and P1 item to be either resolved or explicitly removed from v1 scope with affected fields/endpoints/flows deleted from the specification.
+When all P0 items and the P1 items for a target subsystem are closed, that subsystem's docs are ready for implementation.
 
 ---
 
