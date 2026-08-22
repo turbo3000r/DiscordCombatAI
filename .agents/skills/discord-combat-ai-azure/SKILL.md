@@ -1,7 +1,6 @@
 ---
 name: discord-combat-ai-azure
 description: Implements and changes DiscordCombatAI's shared Azure library under src/shared/azure/, including credentials, resource clients, retries, RBAC assumptions, and domain service wrappers. Use when working on Azure access, ClientSecretCredential setup, Blob/Table/Queue/Cosmos/Web PubSub clients, status/guild/suggestion/metrics/logging services, Azure failure classification, or Azure-related tests.
-disable-model-invocation: true
 ---
 
 # DiscordCombatAI Azure

@@ -1,7 +1,6 @@
 ---
 name: discord-combat-ai-contracts
 description: Implements and changes DiscordCombatAI shared models derived from docs/contracts/, including schema_version handling, identifiers, timestamps, serialization tests, and producer/consumer compatibility checks. Use when adding or editing contract models, shared envelopes, persisted document schemas, or contract test suites under src/shared/models or equivalent.
-disable-model-invocation: true
 ---
 
 # DiscordCombatAI Contracts

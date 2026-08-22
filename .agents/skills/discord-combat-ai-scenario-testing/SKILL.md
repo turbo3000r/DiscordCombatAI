@@ -1,7 +1,6 @@
 ---
 name: discord-combat-ai-scenario-testing
 description: Designs and implements DiscordCombatAI acceptance and integration tests that use deterministic clocks, fault injection, protocol simulators, and explicit complete-versus-deferred scenario reporting. Use when writing Phase 1+ convergence suites, S01–S13 harnesses, multi-process Head/Launcher tests, or simulated Bot/AI Worker peers for incomplete later phases.
-disable-model-invocation: true
 ---
 
 # DiscordCombatAI Scenario Testing
