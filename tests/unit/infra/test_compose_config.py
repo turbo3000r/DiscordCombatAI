@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import yaml
 
 ROOT = Path(__file__).resolve().parents[3]
+_REQUIRED_INTERPOLATION = re.compile(r"\$\{[^}]*:\?")
 
 
 def _load_compose(path: Path) -> dict[str, object]:
@@ -54,7 +56,7 @@ def test_base_compose_has_expected_broker_topology() -> None:
     assert bot_env["NODE_ID"] == "${NODE_ID:-node-local}"
     assert worker_env["NODE_ID"] == "${NODE_ID:-node-local}"
     assert bot_env["DCA_RUNTIME_MODE"] == "${DCA_RUNTIME_MODE:-production}"
-    assert "DISCORD_DEVELOPMENT_GUILD_ID" in bot_env
+    assert bot_env["DISCORD_DEVELOPMENT_GUILD_ID"] == "${DISCORD_DEVELOPMENT_GUILD_ID:-}"
     assert bot_env["RABBITMQ_DEFAULT_VHOST"] == "${RABBITMQ_DEFAULT_VHOST:-/discordcombatai}"
     assert worker_env["RABBITMQ_DEFAULT_VHOST"] == "${RABBITMQ_DEFAULT_VHOST:-/discordcombatai}"
     assert bot_env["BOT_GUILD_SYNC_INTERVAL_SEC"] == "${BOT_GUILD_SYNC_INTERVAL_SEC:-3600}"
@@ -106,6 +108,11 @@ def test_dev_compose_adds_local_ports_and_source_mounts() -> None:
     assert bot_env["DCA_RUNTIME_MODE"] == "development"
     assert bot_env["DEV_COMPOSE_OVERLAY_ACTIVE"] == "true"
     assert bot_env["DEV_SUPPORT_URL"] == "http://dev-support:8080"
+    assert bot_env["DISCORD_DEVELOPMENT_GUILD_ID"] == "${DISCORD_DEVELOPMENT_GUILD_ID:-}"
+    assert bot_env["DISCORD_DEVELOPMENT_APPLICATION_ID"] == (
+        "${DISCORD_DEVELOPMENT_APPLICATION_ID:-}"
+    )
+    assert bot_env["DISCORD_BOT_TOKEN"] == "${DISCORD_DEVELOPMENT_BOT_TOKEN:-}"
     assert bot_env["AZURE_COSMOS_ENDPOINT"] == ""
 
     dev_support = services["dev-support"]  # type: ignore[index]
@@ -114,6 +121,9 @@ def test_dev_compose_adds_local_ports_and_source_mounts() -> None:
     assert "dev-support-data" in compose["volumes"]  # type: ignore[index]
     assert any("dev-support-data:" in str(v) for v in dev_support["volumes"])  # type: ignore[index]
     assert "application" in dev_support["profiles"]  # type: ignore[index]
+    assert dev_support["environment"]["DISCORD_DEVELOPMENT_GUILD_ID"] == (
+        "${DISCORD_DEVELOPMENT_GUILD_ID:-}"
+    )
 
     web = services["web"]  # type: ignore[index]
     assert web["profiles"] == ["application", "development"]  # type: ignore[index]
@@ -121,6 +131,9 @@ def test_dev_compose_adds_local_ports_and_source_mounts() -> None:
     assert web["ports"] == ["127.0.0.1:8088:8080"]  # type: ignore[index]
     assert web["environment"]["DCA_RUNTIME_MODE"] == "development"  # type: ignore[index]
     assert web["environment"]["DEV_SUPPORT_URL"] == "http://dev-support:8080"  # type: ignore[index]
+    assert web["environment"]["DISCORD_DEVELOPMENT_GUILD_ID"] == (
+        "${DISCORD_DEVELOPMENT_GUILD_ID:-}"
+    )
     assert web["environment"]["WEB_LOCAL_ADMIN_OID"] == (
         "${WEB_LOCAL_ADMIN_OID:-local-dev-admin}"
     )
@@ -134,3 +147,17 @@ def test_base_compose_does_not_include_production_web() -> None:
     compose = _load_compose(ROOT / "docker-compose.yml")
     services = compose["services"]  # type: ignore[index]
     assert "web" not in services
+
+
+def test_compose_files_allow_broker_only_interpolation() -> None:
+    """Docker interpolates every service, including profile-gated ones.
+
+    Required interpolation (`VAR:?error`) would break `docker compose config` and
+    broker-only `up` when Discord secrets are unset. Process start remains
+    fail-closed in runtime settings.
+    """
+    for relative in ("docker-compose.yml", "docker-compose.dev.yml"):
+        text = (ROOT / relative).read_text(encoding="utf-8")
+        assert _REQUIRED_INTERPOLATION.search(text) is None, (
+            f"{relative} must not require env at parse time"
+        )
