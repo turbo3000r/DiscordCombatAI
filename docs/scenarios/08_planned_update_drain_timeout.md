@@ -19,7 +19,7 @@
 ## Durable writes
 
 - Same as S07 for lease release + Launcher admission.
-- Task map / lobby state is in-memory — cancelled; no requirement to persist mid-lobby across restart (`drain_status.md` §7 / P1.1).
+- Task map / lobby state is in-memory and expires on restart; hard-stop actively cancels tracked surfaces before disconnect (`drain_status.md` §7, `quick-battle.md` §8.1).
 
 ## Timeouts
 
@@ -42,6 +42,6 @@
 | 1. Drain progress with `in_flight_workflows > 0` | **complete** for AI-task entries |
 | 2. `HEAD_DRAIN_TIMEOUT_SEC` → hard-stop escalation | **integration-only** Head timer; Bot hard-stop execution **complete** |
 | 3. Purge + revoke + Gateway disconnect | **complete** | |
-| 3a. Cancel lobby/collector/vote with localized notice | **deferred** → `/quick-battle` / P1.1 | No Phase 2 lobbies |
+| 3a. Cancel lobby/collector/vote with localized notice | **deferred** → Phase 5 `/quick-battle` | Behavior is specified; Phase 2 has no lobbies |
 | 4. `revoke` only in hard-stop, not at drain-timeout itself | **complete** | |
 | 5. Demotion / Launcher continue | **integration-only** | Phase 1 |

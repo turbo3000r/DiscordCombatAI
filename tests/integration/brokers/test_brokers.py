@@ -113,11 +113,12 @@ def test_compose_cli_accepts_phase_zero_files() -> None:
     assert "eclipse-mosquitto:2.0.20" in result.stdout
     assert "rabbitmq:3.13-management" in result.stdout
 
-    # `docker compose config` resolves the active project; it does not echo raw
-    # `profiles:` keys. Default resolution must include brokers/head and omit
-    # application-profile services until --profile application is set.
+    # Merged overlay default: brokers only. Head is on the production profile
+    # so it is absent from the development stack; application-profile services
+    # stay omitted until --profile application.
     services = yaml.safe_load(result.stdout)["services"]
-    assert {"mosquitto", "rabbitmq", "head"} <= set(services)
+    assert {"mosquitto", "rabbitmq"} <= set(services)
+    assert "head" not in services
     assert "bot" not in services
     assert "ai_worker" not in services
 
@@ -131,6 +132,29 @@ def test_compose_cli_accepts_phase_zero_files() -> None:
     profiled_services = yaml.safe_load(profiled.stdout)["services"]
     assert "bot" in profiled_services
     assert "ai_worker" in profiled_services
+    assert "head" not in profiled_services
+
+    production = subprocess.run(
+        args + ["--profile", "production", "config"],
+        check=True,
+        capture_output=True,
+        text=True,
+        cwd=ROOT,
+    )
+    production_services = yaml.safe_load(production.stdout)["services"]
+    assert "head" in production_services
+
+    base = subprocess.run(
+        args[:2] + ["-f", str(ROOT / "docker-compose.yml"), "config"],
+        check=True,
+        capture_output=True,
+        text=True,
+        cwd=ROOT,
+    )
+    base_services = yaml.safe_load(base.stdout)["services"]
+    assert {"mosquitto", "rabbitmq", "head"} <= set(base_services)
+    assert "bot" not in base_services
+    assert "ai_worker" not in base_services
 
 
 def test_mosquitto_round_trip_publish_subscribe(broker_stack: None) -> None:

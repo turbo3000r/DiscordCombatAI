@@ -1,14 +1,14 @@
 # Command: Quick Battle
 
-> **Rewritten from scratch, legacy is reference only** (project owner) — `docs/legacy/Old_arch.md`'s `BattleHandler.py`/`QuickBattleRequest` flow is a useful source for *which interaction shapes already exist* (lobby, sequential per-player collection, button+modal patterns), not a spec to port 1:1. Several behaviors below deliberately diverge from legacy — most notably the environment consensus gate (§6) — and are documented as new decisions, not corrections.
+> **Rewritten from scratch, legacy is reference only** (project owner) — `docs/legacy/Old_arch.md`'s `BattleHandler.py`/`QuickBattleRequest` flow is a useful source for *which interaction shapes already exist* (lobby, sequential per-player collection, button+modal patterns), not a spec to port 1:1. Several behaviors below deliberately diverge from legacy — most notably the complete-ballot threshold gate (§6) — and are documented as new decisions, not corrections.
 
 ## 1. Purpose & Scope
 
 The flagship command: a multiplayer, AI-judged text battle. The invoking user (`owner`) opens a lobby other guild members can join; once started, the group collectively builds a battle environment (either AI-generated from player input, or a static pre-written arena), each participant submits a fighter, and `AI Worker`'s `battle` graph (`graphs/battle.md`) narrates the fight and declares winner(s). Anyone in the guild can invoke it (no special Discord permission, matches legacy's `allowed_permissions=[]`) — guild-only, no DM support (guild config is required for `setting`/`language_locale` defaults, per `contracts/localization.md`).
 
 Two structurally distinct sub-flows exist depending on the `custom_environment` option (§3):
-- **Generic** — a pre-written static arena, no AI call, no consensus gate (§6, `environment.md` §1's explicit "third mode").
-- **Custom** — players describe the environment, `AI Worker`'s `environment` graph generates it, and **all participants must reach consensus before proceeding** (§6) — this is new relative to legacy, which only ever displayed the AI's first output.
+- **Generic** — a pre-written static arena, no AI call, no ballot gate (§6, `environment.md` §1's explicit "third mode").
+- **Custom** — players describe the environment, `AI Worker` generates it, every eligible participant casts a complete ballot, and the candidate proceeds only when the `ceil(70%)` approval threshold is met (§6). This is threshold approval, not unanimity.
 
 ## 2. File Structure
 
@@ -27,7 +27,7 @@ commands/battle/
 │                                            # visuals.md's own "≥2 commands" promotion rule)
 └── service/
     ├── environment_phase.py         # Builds/sends the environment ai_task (initial + revision calls),
-    │                                 # tallies approval votes, drives the consensus loop (§6, §7)
+    │                                 # tallies approval votes, drives the ballot loop (§6, §7)
     └── battle_process.py            # Top-level orchestration: lobby -> environment phase -> fighter
                                        # collection -> battle ai_task -> result display
 ```
@@ -52,13 +52,30 @@ commands/battle/
 
 **Not a command option (confirmed decision, project owner):** `random_winner_mode` — `battle.md` §2's input field is **hardcoded to `false`** for this version (always emergent/narrative winner resolution via `ResolveWinners`, never `Predefine`-scripted). Revisit if a future revision wants to expose it.
 
+**Command-specific configuration (confirmed):**
+
+| Variable | Default | Rule |
+|---|---:|---|
+| `QUICKBATTLE_MAX_PARTICIPANTS` | `10` | Hard lobby maximum; minimum is `1`. |
+| `QUICKBATTLE_ENVIRONMENT_INPUT_TIMEOUT_SEC` | `120` | Shared deadline for parallel environment submissions. |
+| `QUICKBATTLE_BALLOT_TIMEOUT_SEC` | `120` | Complete-ballot deadline; one missing vote aborts. |
+| `QUICKBATTLE_FIGHTER_INPUT_TIMEOUT_SEC` | `180` | Shared deadline for parallel fighter submissions. |
+| `QUICKBATTLE_MAX_ENVIRONMENT_REVISION_ROUNDS` | `3` | Three revisions after the initial candidate; four candidates total. |
+| `QUICKBATTLE_AI_ADMISSION_TIMEOUT_SEC` | `60` | Maximum wait for the node-wide single AI-task slot. |
+| `QUICKBATTLE_INVOKER_COOLDOWN_SEC` | `600` | Ten-minute cooldown for the original invoker. |
+| `QUICKBATTLE_GUILD_COOLDOWN_SEC` | `300` | Five-minute guild cooldown after terminal completion. |
+
 ## 4. Permissions & Access Control
 
-No Discord permission check (`allowed_permissions=[]` in legacy, carried forward) — any guild member can invoke. Guild-only; requires the invoking guild to be configured/enabled (same implicit `ProcessCommand` guild requirement legacy applied to this command, unlike `/suggest` which explicitly opts out of it). **No cooldown exists today** — carried forward as a gap, not a deliberate choice; flagged in §14 as a candidate future addition (spam prevention on a command that triggers real AI Worker cost).
+No Discord permission check — any guild member can invoke. Guild-only. Before creating a lobby, `ProcessCommand` requires an active guild document (`left_at == null`), `enabled == true`, nonblank previously validated API key, and nonblank model. It does not re-probe Gemini. Failure is an ephemeral localized denial and creates neither workflow count nor cooldown.
+
+One lobby may exist per guild, and one user may belong to at most one lobby in that guild. A conflicting invocation returns a localized reference to the existing lobby. The original invoker's 10-minute cooldown begins when the lobby is accepted; the guild's 5-minute cooldown begins at terminal completion. Rejected invocations do not consume cooldown. One outstanding AI task (queued or running) is allowed per Bot node; each graph phase waits at most 60 seconds for admission before the workflow fails busy (`contracts/ai_task.md` §5a).
+
+Lobby/membership/cooldown state is in-memory and uses monotonic deadlines. It resets with the confirmed Bot restart-expiry policy; no Cosmos cooldown document is introduced.
 
 **`blocked_during_drain=True`** (confirmed decision, `bot/discord_bot.md` §6.4) — this is the one command opted into `ProcessCommand`'s drain gate. During retained `control/bot/desired_state = draining` or a bounded draining grant, new invocations are rejected with a localized "temporarily unavailable" response while existing work follows the drain-completion policy resolved in `contracts/drain_status.md` (P0.3).
 
-**Which stages count toward `in_flight_workflows` (`contracts/drain_status.md` §1) — resolved this revision:** every open lobby (step 1), the environment description/consensus loop (steps 2–5), fighter collection (step 6), and the in-flight `battle` `ai_tasks` entry (step 7) all count as the **same single unit** for the lifetime of one `/quick-battle` invocation — one lobby counts once, from `LobbyView` creation through final battle display or abort, not once per sub-stage. It is decremented on: battle result posted (step 8), owner Abort at any stage, or any of this doc's own Failure Modes (§12) resolving to an error message.
+**Which stages count toward `in_flight_workflows` (`contracts/drain_status.md` §1) — resolved:** every open lobby (step 1), environment description/ballot loop (steps 2–5), fighter collection (step 6), and battle task (step 7) are the **same single unit** for one invocation. It decrements exactly once on step 8, Abort, restart expiry, or terminal failure/timeout.
 
 **What "cancelled for update" looks like to the user:** if a drain timeout escalates to `Head`'s hard-stop sequence while this lobby/collector/vote/task is still open (`contracts/drain_status.md` §2), `Bot` edits whichever message currently holds the active view (`LobbyView`, `SequentialCollector`, `EnvironmentApprovalView`, or the `TaskProgressContainer`) to a localized "update in progress, please retry" notice and disables its components, before Gateway disconnect — no partial result is synthesized or shown.
 
@@ -72,35 +89,47 @@ All new UI in this command targets **Components V2** (`visuals.md` §1) — no c
 | `SequentialCollector` | Shared (`visuals.md` §3) | Used twice: environment descriptions (custom path only) and the merged fighter modal (§6) |
 | `TaskProgressContainer` | Shared (`visuals.md` §3, concrete design in §3.1) | Used for **every** `environment`/`battle` `ai_task` call — including each revision-loop iteration (§6, §7), not just the first. Renders as the fixed 5-line `Queued`/`Launching`/`Composing`/`Refining`/`Finishing` checklist (`visuals.md` §3.1); the underlying task map/subscription plumbing lives in `bot/discord_bot.md` §6.3, not per-command |
 | `EnvironmentApprovalView` | **Command-specific** (this doc) | New pattern — per-player Approve/Decline gate with a threshold outcome (§6). Not promoted to `visuals.md` yet since no other command needs a "poll with a threshold" pattern today; flagged in §14 as a promotion candidate if that changes |
-| Winner highlight | Command-specific, part of the final battle container | Uses `visuals.md` §2's Success/green accent; renders `🏆` + `@mention` per entry in `battle.md`'s `winners` output (confirmed decision — see §6, §7) |
+| Winner highlight | Command-specific, part of the final battle container | Uses Success/green and exact `winners` IDs. Ordinary UI uses `AllowedMentions.none()`; only this line allows the exact winner users, with roles/everyone/replied-user disabled. If a winner is no longer mentionable, render the escaped snapshot name. Empty winners render a localized “no victor” result. |
 
 ## 6. Interaction Flow
 
-**Confirmed decisions baked into this flow** (project owner, this session):
+**Confirmed decisions baked into this flow** (project owner):
 - Fighter name + description + strategy are collected in **one merged modal**, one collection round — not legacy's two sequential rounds.
-- After the environment is generated and displayed, **every participant must explicitly Approve or Decline it** — the flow cannot proceed until all participants have responded. Declining requires a short modification-suggestion comment (captured via `decline_reason_modal.py`). If **≥70% of participants approve**, the flow proceeds to fighter collection. Otherwise, the environment graph is re-invoked in `revision` mode (`environment.md` §2), using the decliners' comments as `raw_input`, and the same approval gate repeats against the new candidate.
-- The final battle message explicitly highlights winner(s) by `@mention`, using `battle.md`'s new structured `winners` field.
+- Every eligible participant must explicitly Approve or Decline within 120 seconds. Declining requires a `1..300` character modification comment. Required approvals are `ceil(eligible_voter_count * 0.70)`. If the threshold fails, invoke at most three revisions. A failed fourth ballot aborts; continuing to fighter collection is forbidden.
+- The final battle message highlights zero or more exact winner IDs. A solo participant may survive or die; the command never assumes that one fighter implies one winner.
 - Each major phase posts its **own new message** (lobby, environment progress, environment display + approval gate, fighter collection, battle progress, battle result) — not one message edited throughout, matching legacy's `sendMessage`-per-phase pattern.
 
-**Proposed, not yet confirmed** (flagged explicitly rather than silently decided — see §14):
-- **70% rounding rule:** proposed as `ceil(participant_count * 0.7)` approvals required (favors caution — regenerates more readily for small groups) — e.g. 3 participants needs all 3, 4 needs 3, 10 needs 7.
-- **Consensus loop cap:** proposed `QUICKBATTLE_MAX_ENVIRONMENT_REVISION_ROUNDS` (default `3`), matching the naming convention of `ENVIRONMENT_MAX_ENHANCER_RETRIES`/`BATTLE_MAX_MODIFIER_RETRIES`. If exhausted with consensus still not reached, proposed fallback: **force-proceed with the last-generated candidate** (mirrors the existing `Decider`-exhaustion pattern already established in `ai_worker/nodes.md` — "accept the best available rather than block forever") rather than aborting the whole lobby.
+### 6.1 Session ownership, roster, and availability
+
+- Lobby size is `1..10`; the invoker is the initial participant and owner. Solo play is valid.
+- Join/Leave is available only while the lobby is open. Owner has Start/Abort. If the owner becomes unavailable, ownership transfers to the earliest joined participant still available; if none remains, abort.
+- Start/countdown expiry freezes a participant snapshot (ID, display name, join order). No participant may join afterward; the active roster may only shrink.
+- Environment and fighter collectors run in parallel under their shared deadlines. Remove each missing/unavailable submitter when at least one submitted participant remains; otherwise abort. A participant who already submitted remains represented by snapshot ID even if they later leave Discord.
+- Ballot membership is the active roster for that candidate. Every member must vote; a missing vote aborts and is never interpreted as Approve or Decline.
+- Owner Abort remains available in every nonterminal phase, including while an AI task is running.
+- All submitted strings are trimmed, Unicode-NFC normalized, and reject control characters plus literal `@everyone`/`@here`. Any user text later echoed still uses no allowed mentions.
+
+### 6.2 Interaction and message ownership
+
+The initial slash command and every button/modal interaction are acknowledged or deferred within Discord's acknowledgement window. After acknowledgement, every phase message/send/edit uses the authenticated Bot client with `guild_id`, `channel_id`, optional `thread_id`, and `message_id`. Interaction tokens are never retained or “re-fetched.”
+
+Ordinary lobby/collector/progress/result UI uses `AllowedMentions.none()`. There is no `@everyone` ping. The sole exception is the final winner line, whose allowed-user list is exactly the validated winner IDs.
 
 **Step-by-step:**
 
-1. **Lobby** (`LobbyView`) — owner invokes, `@everyone` ping + lobby message. Participants join/leave freely; owner can Start early or Abort; countdown auto-starts the battle at `timeout`. No minimum participant count — owner alone is a valid battle, per legacy.
+1. **Lobby** (`LobbyView`) — post without mentions. `1..10` participants may join/leave; current owner may Start or Abort. Countdown uses the option's 30–600-second range/default 60 and auto-starts with the current roster. Start freezes the participant snapshot.
 2. **Environment branch** on `custom_environment`:
-   - **Generic:** pick a static arena from `prompts/static/generic_environments/*.txt` (`ai_worker/prompts.md` §3) — no AI call, skip directly to step 6.
-   - **Custom:** `SequentialCollector` prompts each participant once for a free-text description (button→modal, owner can abort). Once all descriptions are in, proceed to step 3.
-3. **Environment generation** — `ai_tasks` message to the `environment` graph, `input_type: "initial"`, `raw_input` = all collected descriptions. New `TaskProgressContainer` message tracks `queued→launching→composing→refining→finishing` (`task_progress.md` §6.1).
-4. **Environment display + consensus gate** — on `ai_tasks_results`, post the `final_environment.description` in a new message (Info/blurple, `visuals.md` §2) together with `EnvironmentApprovalView` (Approve / Decline buttons per participant). Decline opens `decline_reason_modal.py`. Waits for **every** participant to respond (no timeout, owner can still Abort — same as legacy's other collection steps).
-5. **Consensus check:**
-   - **≥70% approve** (proposed rounding above) → proceed to step 7 (fighter collection).
+   - **Generic:** uniformly choose a Bot-packaged UTF-8 arena from `src/bot/resources/generic_environments/*.txt`. Validate nonblank/≤4,000 chars and convert to `Environment(description=text, tags=["generic", stem], setting=selected_setting)`. No AI call; skip to step 6.
+   - **Custom:** prompt the snapshot roster in parallel for one `1..500` character description under a 120-second deadline. Remove missing submitters if at least one remains; otherwise abort. Then proceed to step 3.
+3. **Environment generation** — wait ≤60 seconds for the node AI slot, then publish `environment`/`initial`. Record it as the session's sole expected task ID, graph, and revision `0`. A new `TaskProgressContainer` tracks progress.
+4. **Environment display + complete ballot** — accept only the expected result. Split the ≤4,000-character description at paragraph boundaries into pieces ≤1,900 characters (at most three); attach Approve/Decline to the final stable message. Decline requires a `1..300` character comment. Every active participant must respond within 120 seconds; one missing vote aborts.
+5. **Threshold check:**
+   - approvals `>= ceil(active_roster_count * 0.70)` → proceed to step 6 (fighter collection).
    - **<70% approve**, revision rounds remain → re-invoke `environment` graph, `input_type: "revision"`, `existing_environment` = current candidate, `raw_input` = decliners' comments only (approvers contribute nothing to this list). New `TaskProgressContainer`, back to step 4 with the new candidate.
-   - **<70% approve**, revision rounds exhausted → proposed force-proceed fallback (above) with the last candidate, flagged as unconfirmed in §14.
-6. **Fighter collection** — `SequentialCollector` prompts each participant once for the merged name+description+strategy modal. Owner can abort.
-7. **Battle generation** — `ai_tasks` message to the `battle` graph: `fighters` (mapped from Discord `Member.id`→`player_id`, `Member.display_name`→`player_nick`, per `battle.md` §5's `Fighter` shape), `environment` (from step 4/5's accepted candidate), `setting`, `language_locale`, `random_winner_mode: false` (§3). New `TaskProgressContainer` tracks `battle.md` §11's phase mapping (`composing` = `planner`+`storyteller`, `refining` = `Validator`↔`Modifier`, `finishing` = `Decider`?+`ResolveWinners`).
-8. **Battle display** — on `ai_tasks_results`, post the final `story` text plus a `🏆` winner-highlight line (`@mention` per entry in `winners`), Success/green accent. Battle result also persisted to Azure Blob Storage (§9).
+   - threshold fails after revision `3` (initial + three revisions/four candidates total) → abort with the last environment displayed; do not continue.
+6. **Fighter collection** — prompt in parallel under a 180-second deadline for `fighter_name` (`1..80`), `description` (`1..1,000`), optional strategy (`1..500`). Remove missing submitters if at least one remains; otherwise abort. This is consistently step 6.
+7. **Battle generation** — wait ≤60 seconds for the AI slot, publish one expected `battle` task with final roster, accepted environment, setting, locale, and `random_winner_mode:false`.
+8. **Battle display** — accept only the expected result. Deliver `story` in paragraph-bound chunks ≤1,900 characters: at most three messages; if longer, send a ≤1,900-character preview plus full UTF-8 `.txt` attachment. Render exact validated winners or localized no-victor text. Archive the full untruncated story best-effort (§9).
 
 **Diagram:**
 
@@ -124,9 +153,9 @@ stateDiagram-v2
         ApprovalGate --> [*] : all participants responded
     }
 
-    EnvDisplay --> FighterCollection : approve_ratio >= 70%
+    EnvDisplay --> FighterCollection : approvals >= ceil(N * 0.70)
     EnvDisplay --> EnvRevise : approve_ratio < 70%,\nrounds remain
-    EnvDisplay --> FighterCollection : approve_ratio < 70%,\nrounds exhausted\n(proposed force-proceed, unconfirmed)
+    EnvDisplay --> Aborted : threshold fails after\ninitial + 3 revisions
 
     EnvRevise --> EnvDisplay : ai_tasks_results\n(new final_environment)
 
@@ -140,21 +169,37 @@ stateDiagram-v2
 
 ## 7. AI / Graph Integration
 
-Two distinct graphs, invoked as separate `ai_tasks` (confirmed cross-graph relationship, `graphs/environment.md` §1) — `environment` may be invoked **multiple times** per lobby (once per consensus-loop round, §6), `battle` exactly once.
+Two distinct graphs are separate `ai_tasks`: `environment` may run once initially plus up to three revisions; `battle` runs exactly once after threshold approval.
 
 | | `environment` (`graphs/environment.md`) | `battle` (`graphs/battle.md`) |
 |---|---|---|
-| **Invoked** | Once per round: `initial` the first time, `revision` on every subsequent round (§6 step 5) | Once, after consensus is reached (or the fallback triggers) |
+| **Invoked** | `initial` once, then at most three `revision` calls | Once after a ballot meets threshold |
 | **Key inputs** | `input_type`, `raw_input` (all descriptions on `initial`; decliners' comments only on `revision`), `setting`, `language_locale`, `existing_environment` (revision only) | `fighters`, `environment` (the accepted candidate), `setting`, `language_locale`, `random_winner_mode: false` (§3) |
 | **Progress UI** | Own `TaskProgressContainer` per invocation (§6 step 3/5) | Own `TaskProgressContainer` (§6 step 7) |
 | **Result consumed** | `final_environment` → displayed + voted on (§6 step 4) | `story` + `winners` → final message (§6 step 8) |
 
 `language_locale` and `setting` are sourced identically for both calls, per `contracts/localization.md` §3/§4 — this command never resolves them itself beyond reading the guild's configured locale and the `setting` command option.
 
+For every invocation, the session stores one expected task ID, graph, and revision number. Replacing an environment task makes the prior ID superseded before the new publish. Progress/results for unknown, late, wrong-graph, or wrong-revision IDs are discarded. The stable delivery reference is channel/thread/message IDs, never an interaction token (`contracts/ai_task.md` §6).
+
 ## 8. Backend / Service Logic
 
 - **`battle_process.py`** — top-level orchestrator; owns the lobby, sequences environment phase → fighter collection → battle phase, and posts the final result (§6 steps 1, 6, 7, 8).
-- **`environment_phase.py`** — everything specific to the consensus loop: sending `initial`/`revision` `ai_tasks` messages, tallying `EnvironmentVote`s, applying the 70% threshold (§6 step 5), and the round-cap fallback. Isolated from `battle_process.py` because this is the one phase with genuinely non-trivial control flow (a loop with an exit condition), matching why `architecture.md`'s file tree already carved out `service/environment.py` as an "Optional" file distinct from `battle_process.py`.
+- **`environment_phase.py`** — complete-ballot loop: initial/revision tasks, `ceil(70%)`, three-revision cap, and terminal abort on exhaustion.
+
+### 8.1 Abort, timeout, and restart matrix
+
+| Cause | Views/session | Open AI task | User-visible result |
+|---|---|---|---|
+| Owner Abort in any phase | Disable active components; terminal cleanup; decrement workflow once | If present, `revoke(terminate=True)`, remove expected/map entries | Bot-authenticated localized abort acknowledgement |
+| Lobby/collector/ballot deadline | Apply §6 outcome; terminal paths disable UI and decrement once | None unless a separately running task exists | Localized timeout/roster/ballot failure |
+| AI admission 60s | Terminal cleanup | Nothing published | Localized busy/timeout |
+| AI stall 120s / overall 900s | Terminal cleanup | Do **not** revoke; forget expected ID; eventual result discarded | Distinct localized task timeout |
+| Worker failed result | Terminal cleanup | Already terminal | Localized generation error |
+| Hard-stop/update | Disable/edit tracked surface | Purge/revoke per `ai_task.md` §8 | “Update in progress; retry” |
+| Bot restart | In-memory session expires; stale components return ephemeral session-expired | Late progress/results discarded | User must start again |
+
+Participant Leave exists only in the open lobby. After snapshot, unavailable participants follow §6.1: missing collector submissions shrink the roster if at least one remains; a submitted fighter remains by snapshot identity; a missing ballot aborts.
 
 ## 9. Data Read/Written
 
@@ -168,7 +213,7 @@ Two distinct graphs, invoked as separate `ai_tasks` (confirmed cross-graph relat
 
 ## 10. Localization
 
-UI strings live under the `commands.quick-battle.*` namespace (already established in legacy's `lang/*.json` — `communication.*`, `environment.*`, `fighter.*`). **New keys needed, not present in legacy:** the consensus gate (`environment.approval.*` — Approve/Decline button labels, decline-reason modal, "regenerating" status text, threshold-not-met message) and the winner-highlight line (`communication.winner_announcement` or similar). The merged fighter modal (§6) collapses what were separately `fighter.*` and `strategy.*` key groups in legacy into one `fighter.*` group with three fields instead of two rounds — exact key restructuring is an authoring detail, not decided further here.
+UI strings live under the `commands.quick-battle.*` namespace (already established in legacy's `lang/*.json` — `communication.*`, `environment.*`, `fighter.*`). **New keys needed, not present in legacy:** the ballot gate (`environment.approval.*` — Approve/Decline button labels, decline-reason modal, "regenerating" status text, threshold-not-met message) and winner/no-victor lines. The merged fighter modal (§6) collapses the legacy fighter/strategy rounds into one three-field group; exact key names remain implementation-owned.
 
 ## 11. Logging
 
@@ -178,11 +223,12 @@ Per-message and per-task tags: `trace_id`, `guild_id`, `command: "quick-battle"`
 
 | Failure | Detection | Recovery |
 |---|---|---|
-| `environment` or `battle` `ai_task` fails/exhausts retries | Synthetic error result on `ai_tasks_results` (`ai_worker.md` §9's "light crash" pattern) | Post an error message to the channel, abort the lobby — no partial-progress resume exists |
-| Consensus never reached within the round cap | `approval_round == QUICKBATTLE_MAX_ENVIRONMENT_REVISION_ROUNDS` (proposed default `3`, §6) | Proposed force-proceed fallback (§6) — **unconfirmed**, see §14 |
-| A participant never responds to the approval gate | No timeout mechanism (inherited from legacy's identical gap on `FighterCreator`/`EnvironmentCreator`) | Not handled — owner's Abort button is the only escape hatch. Flagged in §14, not newly introduced by this doc |
-| Discord interaction/follow-up token expires mid-flow | Discord API rejects a stale interaction response | **Not addressed** — this command's total wall-clock time is now human-response-bound (approval votes) on top of LLM latency, materially longer than legacy ever risked. Real, unresolved risk — see §14 |
-| Lobby has zero non-owner participants at timeout | N/A — not actually a failure | Proceeds normally, owner alone is a valid battle (legacy behavior, unchanged) |
+| `environment` or `battle` task fails/exhausts retries/deadline/token budget | Failed result | Post localized error and abort; no partial resume |
+| Approval threshold fails after initial + three revisions | Fourth complete ballot below `ceil(70%)` | Abort with last environment visible; do not continue |
+| Participant misses environment/fighter deadline | Shared deadline | Remove missing submitters if at least one remains; otherwise abort |
+| Participant misses ballot deadline | 120-second complete-ballot deadline | Abort; never infer a vote |
+| Long flow outlives original interaction token | N/A by design | Every interaction is acknowledged; later sends/edits use authenticated Bot + stable IDs (§6.2) |
+| Solo participant reaches battle | One final fighter | Valid. `outcome_type` may be `none` or `one`; empty winners render no-victor text |
 | A drain timeout escalates to hard-stop while this lobby/collector/vote/task is open (**new this revision, P0.3**) | `Head`'s `HEAD_DRAIN_TIMEOUT_SEC` elapses with `in_flight_workflows > 0` (`contracts/drain_status.md` §2) | `Bot` edits the active view's message to a localized "update in progress, please retry" notice and disables its components before Gateway disconnect — see §4. No partial result is synthesized. |
 
 ## 13. Dependencies
@@ -202,10 +248,6 @@ Per-message and per-task tags: `trace_id`, `guild_id`, `command: "quick-battle"`
 
 ## 14. Open Items / Future Work
 
-- **70% rounding rule is proposed, not confirmed** (§6) — `ceil(participant_count * 0.7)` is a reasonable default but hasn't been explicitly signed off.
-- **Consensus loop cap and its exhaustion fallback are proposed, not confirmed** (§6, §12) — both the default round count and "force-proceed with the last candidate" need explicit sign-off before implementation.
-- **No timeout on approval votes or fighter/environment submissions** — inherited gap from legacy's identical behavior on `FighterCreator`/`EnvironmentCreator`, now arguably higher-stakes since the consensus gate can loop. Not resolved here.
-- **Discord interaction token expiry risk** (§12) — this command's now-unbounded human-response time (consensus voting) needs a real answer (webhook-based messaging instead of interaction follow-ups? re-fetching a fresh token per phase?) that this doc doesn't attempt to solve.
 - **`EnvironmentApprovalView` is a promotion candidate** for `bot/visuals.md` if any future command needs a similar per-participant poll-with-threshold pattern — stays command-specific for now per the "≥2 consumers" promotion rule.
-- **Cooldown/rate-limiting** on this command doesn't exist (§4) — flagged as a gap given real AI Worker cost per invocation, not a deliberate absence.
 - `random_winner_mode` is hardcoded `false` (§3) — if a future revision wants to expose scripted-winner mode, `battle.md` §12's own open item on that field's ideal source (guild config vs. per-lobby option) still applies.
+- P1.1 session behavior is resolved. Remaining items here are promotion/future-exposure concerns and do not block Phase 5.

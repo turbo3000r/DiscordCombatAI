@@ -16,12 +16,12 @@ To improve length and quality over a single massive generation call, the story i
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `fighters` | `list[Fighter]` (§5) | Yes | One entry per participant. Carries both `player_id` (real Discord ID) and `player_nick` (display name used in prose) — see §5's design note on why both are needed. |
+| `fighters` | `list[Fighter]` (§5) | Yes | `1..10` unique participants. Carries exact Discord `player_id` and snapshot `player_nick`. A solo fighter is valid and may either survive (`outcome_type="one"`) or die/no victor (`"none"`); no winner is assumed. |
 | `environment` | `Environment` (per `graphs/environment.md` §5) | Yes | The finished arena from the `environment` graph. `battle` never generates or modifies it. |
-| `setting` | `str` (enum) | Yes | Same `prompts/setting/<name>.txt` values as `environment` — see `graphs/environment.md` §2. Directs narrative tone/rules per `prompts/core/core_simple_battle.txt`'s existing `{SETTING}` usage. |
+| `setting` | `str` (enum) | Yes | Same target `prompts/elements/setting/<name>.txt` values as `environment` (§2 there). Directs narrative tone/rules. |
 | `language_locale` | `str` | Yes | Same as `environment`: value **after** Bot's UI→AI mapping (`contracts/localization.md` §4), e.g. `uk-UA` for stored `ua`. Injected via `prompts/elements/language.txt`. |
-| `random_winner_mode` | `bool` | Yes | **Confirmed design fork (project owner):** if `true`, `Predefine` commits to specific winner(s) up front and the story is written to reach that outcome. If `false`, the winner emerges from the narrative and is resolved after the fact by `ResolveWinners` (§3, §6). **Origin of this flag (guild setting? host's per-lobby choice?) is undocumented** — flagged in §12, same shape of gap as `environment`'s `language_locale` origin. |
-| `max_modifier_retries` | `int` | No — defaults to `BATTLE_MAX_MODIFIER_RETRIES` (§8) | Independent retry budget from `environment`'s — see `ai_worker/nodes.md` §4 on why these aren't shared. |
+| `random_winner_mode` | `bool` | Yes | If `true`, `Predefine` commits to winner(s); if `false`, winners emerge and `ResolveWinners` resolves exact IDs. `/quick-battle` always supplies `false` in v1. Future exposure/source is P2 and does not affect this graph contract. |
+| `max_modifier_retries` | `int` | No — defaults to `BATTLE_MAX_MODIFIER_RETRIES` (§8) | `0..3`; callers may lower but never raise the v1 cap. |
 | `trace_id`, `guild_id` | `str` | Yes | Correlation metadata for logging. |
 | `api_key`, `model` | `str` | Yes | **Added this revision** — same per-guild Gemini credential/model pair as `graphs/environment.md` §2, attached by `Bot` when publishing the `ai_tasks` message (`ai_worker.md` §1/§4). Never logged (`ai_worker.md` §7). |
 
@@ -31,7 +31,7 @@ To improve length and quality over a single massive generation call, the story i
 |---|---|---|
 | `story` | `str` | The full, finished battle narrative — either `Validator`-approved or `Decider`'s pick. |
 | `winners` | `list[str]` | Real Discord `player_id`s of the victor(s). Empty list if `outcome_type == "none"`. |
-| `attempts_used` | `int` | How many `Modifier` passes were needed, including the first pass. |
+| `attempts_used` | `int` | Total recorded story candidates, exactly `len(attempts)` (`1..4`), including attempt #0. |
 | `forced_selection` | `bool` | `true` if no candidate ever passed `Validator` and `Decider` had to choose among imperfect attempts. |
 
 ---
@@ -102,9 +102,8 @@ At `episode_count == 2` (the confirmed minimum, §3), `LastEpisodeCheck` is imme
 
 ```python
 class Fighter(TypedDict):
-    """Confirmed design (project owner): both identity fields are always present.
-    The LLM is given both and is responsible for mapping its own narrated player_nick
-    back to the correct player_id when declaring winners — see ResolveWinners, §6."""
+    """Both identity fields are always present. player_id is the only winner identity;
+    player_nick is snapshot prose/display context and is never fuzzy-matched."""
     player_id: str        # real Discord user ID — ground truth, never guessed/fuzzy-matched after the fact
     player_nick: str       # display name used in prose (prompts/elements/fighters.txt's `## FIGHTERS:` block)
     fighter_name: str
@@ -153,6 +152,44 @@ class BattleGraphState(TypedDict):
 
 `predetermined_winners` vs the final `winners` output deliberately stay separate fields: in `random_winner_mode`, `ResolveWinners` just carries `predetermined_winners` forward (§6); in emergent mode, `predetermined_winners` stays `None` for the entire run and `winners` is populated for the first time at `ResolveWinners`.
 
+Input bounds: `fighters` has `1..10` entries with unique decimal-string `player_id`; `player_nick` and `fighter_name` are trimmed `1..80` characters; `description` is `1..1,000`; optional `strategy` is `1..500` when present. Control characters are rejected. `environment` must satisfy `environment.md` §5.
+
+### 5a. Exact LLM structured outputs
+
+```python
+class PredefineOutput(TypedDict):
+    outcome_type: Literal["none", "one", "multiple"]
+    episode_count: int                         # 2..5
+    predetermined_winners: list[str] | None    # exact player_ids
+
+class SkeletonOutput(TypedDict):
+    episodes: list[EpisodeSkeleton]            # exact episode_count, contiguous 0-based indices
+
+class EpisodeOutput(TypedDict):
+    episode_index: int                         # exact requested index
+    text: str                                  # 1..3,500 chars
+
+class StoryOutput(TypedDict):
+    story: str                                 # 1..12,000 chars
+
+class WinnerResolution(TypedDict):
+    winner_ids: list[str]                      # exact input player_ids only
+```
+
+| Node | Structured output |
+|---|---|
+| `Predefine` | `PredefineOutput` |
+| `CreateSkeleton` | `SkeletonOutput`; each summary `1..500` chars |
+| `ImplementFirstEpisode` / `ImplementNextEpisode` / `ImplementLastEpisode` | `EpisodeOutput` |
+| `Validator` | Shared `ValidatorVerdict` with the battle rubric (`nodes.md` §2a) |
+| `Modifier` | `StoryOutput` |
+| `Decider` | Shared `DeciderSelection` (`nodes.md` §3) |
+| `ResolveWinners` | `WinnerResolution` in emergent mode; no LLM call in scripted mode |
+
+Outcome cardinality is exact: `none` requires zero winners; `one` exactly one; `multiple` requires `2..len(fighters)` and is invalid for a solo fighter. In emergent mode `predetermined_winners` must be `null`; in scripted mode it must contain unique exact input IDs matching cardinality. `Predefine` values outside these rules are malformed structured output: use the shared retry budget, then fail at `Predefine`; never clamp episode count or repair IDs.
+
+The strict parser/coercion policy is `nodes.md` §1a. Final joined story length is checked after every episode append and Modifier output.
+
 ---
 
 ## 6. Nodes
@@ -167,7 +204,7 @@ class BattleGraphState(TypedDict):
 | `Validator` | `refiner` (shared) | Judges `current_story` against `setting`, `outcome_type`, and fighter/environment consistency. | `current_story`, `setting`, `outcome_type`, `fighters`, `environment` | `attempts[-1].validator_verdict`, `active_request` (on failure) | Yes | `ai_worker/prompts.md` §4.2, §5 — `nodes/validator_base.txt` (shared) + `graphs/battle/validator_criteria.txt` (**content not written yet**) | `ai_worker/nodes/validation.py` — shared with `environment`, see `ai_worker/nodes.md` §2 |
 | `Modifier` | `refiner` | Applies `active_request` to `current_story`. **Prose-only** (confirmed decision) — never revises `skeleton`; if an issue genuinely requires restructuring episodes, that's out of scope for v1 (§7, §12). | `current_story`, `active_request`, `setting`, `language_locale` | `current_story`, appends `AttemptRecord` | Yes | `ai_worker/prompts.md` §4.2 — `graphs/battle/modifier.txt` (**content not written yet**) | `graphs/battle/nodes/modifier.py` (graph-specific "fixer," per `ai_worker/nodes.md` §4) |
 | `Decider` | `refiner` (fallback, shared) | Reached when `retry_count == max_modifier_retries` and still invalid. Picks the best of all attempts, including #0. | `attempts` (full history) | `story` (candidate), `forced_selection = true` | Yes | `ai_worker/prompts.md` §4.2, §5 — `nodes/decider_base.txt` (shared) + `graphs/battle/decider_criteria.txt` (**content not written yet**) | `ai_worker/nodes/decider.py` — shared with `environment`, see `ai_worker/nodes.md` §3 |
-| `ResolveWinners` | `finishing` | Produces the final `winners: list[player_id]`. **`random_winner_mode == true`:** trivial passthrough of `predetermined_winners`, no LLM call. **`random_winner_mode == false`:** LLM call over the finished `story` + `fighters` (which carry both `player_nick` and `player_id`), mapping whichever nickname(s) got narrated as victor(s) to their real ID. | `story`, `fighters`, `predetermined_winners`, `random_winner_mode` | `winners` | Conditional — no in scripted mode, yes in emergent mode | `ai_worker/prompts.md` §4.2 — `graphs/battle/resolve_winners.txt` (**content not written yet**; emergent mode only) | `graphs/battle/nodes/resolve_winners.py` |
+| `ResolveWinners` | `finishing` | Produces `winners: list[player_id]`. **Scripted mode:** validated passthrough of `predetermined_winners`, no LLM call. **Emergent mode:** structured `WinnerResolution` containing exact supplied IDs; nicknames are prose context only and are never matched after the fact. Invalid IDs/cardinality retry, then fail closed. | `story`, `fighters`, `predetermined_winners`, `random_winner_mode`, `outcome_type` | `winners` | Conditional — no in scripted mode, yes in emergent mode | `ai_worker/prompts.md` §4.2 — `graphs/battle/resolve_winners.txt` (prompt prose authored in Phase 4) | `graphs/battle/nodes/resolve_winners.py` |
 
 > **Prompt inventory note:** the target prompt file structure and per-node mapping is now fully designed — see `ai_worker/prompts.md` §4.2 (not yet migrated on disk, its §1). No content is authored yet for any node in this graph. `prompts/core/core_simple_battle.txt` (legacy) is the closest existing artifact (single-shot battle narration with `player_nick` winner declaration) and is a usable tone/logic reference for `ImplementFirstEpisode`/`ImplementLastEpisode`, but it predates the episode concept entirely and is not a direct source for any single new file — see `prompts.md` §6's legacy mapping table.
 
@@ -183,6 +220,9 @@ class BattleGraphState(TypedDict):
   2. `retry_count` reaches `max_modifier_retries`, still invalid → `Decider` → `ResolveWinners` → graph ends, `forced_selection = true`.
 - **`Modifier` never touches `skeleton`** (confirmed decision) — every fix is a prose-level edit to `current_story`, exactly mirroring `environment`'s `Enhancer` never re-deriving from scratch. If this proves insufficient in practice (an issue that genuinely requires re-planning episode structure), that's a v2 concern, not handled here — see §12.
 - **`ResolveWinners` always runs once, after `refiner` concludes** — regardless of which exit path was taken, and regardless of `random_winner_mode`. It is not part of the `refiner` loop itself.
+- **Winner validation is fail-closed.** Scripted mode uses only previously validated predetermined IDs. Emergent mode rejects the entire structured result if any ID is unknown/duplicated or cardinality disagrees with `outcome_type`; after shared retries, the task fails at `ResolveWinners`. Never filter partially, fuzzy-match, randomly choose, or convert an invalid non-`none` outcome to no winner.
+- **Validator enforces scripted consistency** whenever `random_winner_mode=true`: the narrated victor(s) must equal `predetermined_winners`. `/quick-battle` remains emergent-only in v1, but the graph contract is valid for both modes.
+- **Outcome identity is a non-negotiable postcondition after Decider.** Decider may choose an imperfect candidate only if it still satisfies winner cardinality/identity and scripted-winner consistency. If no recorded candidate satisfies those hard gates, Decider fails the task instead of selecting contradictory prose. Other rubric issues may remain under `forced_selection=true`.
 
 ---
 
@@ -191,9 +231,17 @@ class BattleGraphState(TypedDict):
 | Name | Default | Description |
 |---|---|---|
 | `BATTLE_MIN_EPISODES` | `2` | Floor enforced on `Predefine`'s `episode_count` output (§3). Not exposed as a graph input — this is a hard structural constraint on the graph itself, not something a caller should override per-call. |
+| `BATTLE_MAX_EPISODES` | `5` | Hard ceiling on `Predefine`; values outside `2..5` are malformed, not clamped. |
 | `BATTLE_MAX_MODIFIER_RETRIES` | `3` | Ceiling on `Validator`-driven retries before falling back to `Decider`. Exposed as the graph input `max_modifier_retries` (§2). Independent budget from `ENVIRONMENT_MAX_ENHANCER_RETRIES` — see `ai_worker/nodes.md` §4. |
+| `BATTLE_TASK_DEADLINE_SEC` | `840` | Hard worker-side wall-clock deadline from graph invocation through winner resolution. |
+| `BATTLE_MAX_INPUT_TOKENS` | `350000` | Cumulative input-token ceiling across all Gemini calls and retries. |
+| `BATTLE_MAX_OUTPUT_TOKENS` | `90000` | Cumulative output-token ceiling across all Gemini calls and retries. |
 
-> Both variables are graph-specific and belong in this doc permanently — mirroring `graphs/environment.md` §8's `ENVIRONMENT_MAX_ENHANCER_RETRIES`. The graph-agnostic `AI_WORKER_LLM_MAX_RETRIES` this graph's Failure Modes (§9) also depends on is defined once in `ai_worker.md` §3, not redefined here.
+> These variables are graph-specific and belong in this doc. The graph-agnostic `AI_WORKER_LLM_MAX_RETRIES` remains defined once in `ai_worker.md` §3.
+
+At five episodes and three Modifier retries, the worst path is 16 logical LLM calls: `Predefine` + `CreateSkeleton` + 5 episode calls + 4 Validators + 3 Modifiers + `Decider` + emergent `ResolveWinners`. With two retries after each first attempt, the absolute cap is 48 API attempts, further bounded by the 840-second and token ceilings. Across one `/quick-battle` with an initial environment plus three revisions, the combined maxima are 55 logical calls / 165 API attempts before deadline/token cuts. Gemini usage is accumulated after each call; reserve the next node's configured maximum output before calling and fail before the call if the remaining budget cannot cover it.
+
+The 30-second progress heartbeat runs independently while Gemini calls are pending, giving four heartbeat opportunities within the 120-second Bot stall window. `BATTLE_TASK_DEADLINE_SEC=840` leaves 60 seconds inside `BOT_AI_TASK_TIMEOUT_SEC=900` for dispatch/result handling. This remains sound because `contracts/ai_task.md` §5a permits only one outstanding AI task per Bot node; queued task latency is otherwise unbounded.
 
 ---
 
@@ -202,10 +250,11 @@ class BattleGraphState(TypedDict):
 | Failure | Detection | Recovery |
 |---|---|---|
 | Gemini API call fails/times out, or any LLM node returns structurally invalid output | Exception / schema validation error | Same shared `AI_WORKER_LLM_MAX_RETRIES` wrapper as `environment` — see `ai_worker/nodes.md` §5. Not redefined per-graph. |
-| `Predefine` emits `episode_count < BATTLE_MIN_EPISODES` (i.e. `< 2`) | Output validation immediately after `Predefine` | **Not yet decided** — open item. Likely folds into the same structural-retry bucket as any other malformed LLM output (§9 row above) rather than a distinct mechanism, but not explicitly confirmed. |
-| `max_modifier_retries` reached with zero valid attempts | `retry_count == max_modifier_retries`, last verdict still invalid | **Not a failure — expected, by-design path**, identical in spirit to `environment.md` §9: routes to `Decider`, whose pick is always accepted as final (no further escalation, no full re-plan from `Predefine`). |
-| `ResolveWinners` (emergent mode) can't match the story's narrated winner nickname to any `Fighter.player_nick` in state | No detection mechanism specified | **Not yet decided** — open item, and arguably the most important new failure mode this graph introduces. Unlike `environment`'s "Normalise never fails" design (which sidesteps an entire failure class by construction), there is currently no equivalent safety net here if the LLM narrates an ambiguous, misspelled, or non-existent nickname as the victor. |
-| `predetermined_winners` (scripted mode) turns out inconsistent with what `ImplementLastEpisode` actually narrated | Would have to be `Validator`'s job, if anything checks it at all | **Not yet decided** — open item. `Validator`'s battle-specific criteria (§6) presumably should check outcome consistency, but this isn't confirmed anywhere yet. |
+| `Predefine` violates episode, outcome, or predetermined-winner rules | Structured validation immediately after `Predefine` | Same malformed-output retry budget as any LLM node; exhaustion fails the task at `Predefine`. No clamping/coercion. |
+| `max_modifier_retries` reached with zero fully valid attempts | `retry_count == max_modifier_retries`, last verdict still invalid | Expected Decider path. It may force-select an imperfect story only when winner/outcome hard postconditions still hold; otherwise Decider fails the task (§7). No full re-plan from `Predefine`. |
+| `ResolveWinners` returns unknown/duplicate IDs or wrong cardinality | Exact membership/cardinality validation | Retry structured output; exhaustion fails at `ResolveWinners`. No nickname fallback or partial filtering. |
+| Scripted story contradicts `predetermined_winners` | Validator's required battle rubric | Invalid candidate; Modifier receives the fix request. Decider prioritizes outcome consistency if retries exhaust. |
+| Graph deadline or cumulative token budget would be exceeded | Monotonic deadline / accumulated Gemini usage | Stop before the next call and publish `AiTaskResultFailed`; never deliver a partial story. |
 
 ---
 
@@ -234,11 +283,9 @@ class BattleGraphState(TypedDict):
 
 ## 12. Open Items / Future Work
 
-- ~~No prompts exist yet for any node in this graph~~ — **partially resolved**: target file structure and per-node mapping is now fully designed in `ai_worker/prompts.md` §4.2. What remains open is purely **authoring the content** of all 9 target prompt files — none exist yet. Still the single larger gap than `environment`'s equivalent (which at least has `Generator`'s content already written), but no longer an undocumented structure gap.
+- Phase 4 must author the nine target prompt files in `ai_worker/prompts.md` §4.2. Prompt prose implements the already-fixed schemas/rubrics/bounds; it is not a remaining architecture decision.
 - ~~Whether `prompts/core/core_simple_battle.txt` gets adapted into `ImplementLastEpisode`'s prompt, split across multiple episode nodes, or fully replaced~~ — **narrowed, not fully resolved**: `ai_worker/prompts.md` §6 recommends treating it as a tone/logic *reference* for `ImplementFirstEpisode`/`ImplementLastEpisode` rather than a direct source for either (it predates the episode concept and covers the entire battle single-shot). The actual content still needs to be authored from that reference, not copied.
-- `random_winner_mode`'s origin (guild default? per-lobby host choice?) is still undocumented — **not addressed in this revision** (out of scope, only `language_locale`'s sourcing was settled this round — see `docs/contracts/localization.md`). If it turns out to follow the same guild-`/config` mechanism, that's a decision for a future revision, not assumed here.
-- `ResolveWinners`'s nickname-to-`player_id` mismatch failure mode (§9) is unresolved — this graph has no equivalent of `environment`'s "`Normalise` never fails" safety net.
-- Whether `Validator` actually checks `predetermined_winners`-consistency in scripted mode is unconfirmed (§9).
-- `Validator`'s and `Decider`'s battle-specific criteria (what makes a story "valid," what makes one attempt "better" than another) are undecided — same shape of gap already flagged in `ai_worker/nodes.md` §6.
+- `random_winner_mode` is hardcoded `false` by `/quick-battle` in v1. Future exposure/source remains P2 and does not block graph implementation.
+- ResolveWinners identity validation/failure, scripted consistency, Validator/Decider rubrics, bounds, and scaling are resolved in §5a/§7/§8 and `nodes.md`.
 - Whether `Modifier`'s prose-only restriction (§7) proves sufficient in practice, or whether some issues genuinely need skeleton-level revision, is a v2 concern not addressed here.
-- The exact task-boundary handoff between `environment` and `battle` remains under **P1.1** / `bot/commands/quick-battle.md` — there is no `ai_worker/graphs/quick-battle.md` (same item as `graphs/environment.md` §12).
+- Task handoff is resolved: each environment generation/revision and the final battle are separate expected `ai_task` values owned by the same Bot session (`bot/commands/quick-battle.md`).

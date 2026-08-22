@@ -130,11 +130,17 @@ class AiTaskResultFailed(TypedDict):
 | Timer | Env var | Default | Resets on | Fires when |
 |---|---|---|---|---|
 | **Stall timer** | `BOT_AI_TASK_STALL_TIMEOUT_SEC` | `120` | Every `progress/ai_worker/<task_id>` message received for this task — **including the new periodic heartbeat tick**, not only phase-change ticks (`contracts/task_progress.md` §3/§4, redesigned in this same revision specifically so this timer has something to reset against even mid-phase) | No progress message of any kind (phase-change or heartbeat) received within the window — the strongest available signal that the specific `AI Worker` instance handling this task has died or hung. |
-| **Overall timer** | `BOT_AI_TASK_TIMEOUT_SEC` | `900` (raised from the previous flat `300` — **default proposed, needs confirmation**, see §8) | Never — absolute cap from the moment `Bot` publishes the `ai_tasks` message | Total task duration exceeds the cap, regardless of how healthy the progress ticks looked — a hard ceiling against a task that's alive, ticking normally, but never converging (e.g. `refiner` loop pathologically re-triggering, or a graph bug). |
+| **Overall timer** | `BOT_AI_TASK_TIMEOUT_SEC` | `900` (confirmed) | Never — absolute cap from the moment `Bot` publishes the `ai_tasks` message | Total task duration exceeds the cap, regardless of how healthy the progress ticks looked — a hard ceiling against a task that's alive, ticking normally, but never converging (e.g. `refiner` loop pathologically re-triggering, or a graph bug). |
 
 Whichever timer fires first, `Bot` treats the task as failed **locally**: synthesizes its own `AiTaskResultFailed` (§4) — `node: "bot_stall_timeout"` or `node: "bot_task_timeout"` respectively, with a `reason` describing which — removes the entry from its task map (`discord_bot.md` §6.3), and notifies the user, without waiting for RabbitMQ to ever deliver anything. The other timer is cancelled at the same time (the task is being given up on entirely, not per-timer).
 
 This closes a gap no other doc addressed: without a client-side timeout, a task that's stuck because no `AI Worker` is running at all (not crashed — simply never started, so no heartbeat *or* phase tick ever arrives) would wait forever, since nothing on the broker side would ever produce a result to time out against. The stall timer additionally catches the case where a worker claimed the task and then died mid-execution — the overall timer alone (previous design) would still have waited the full 900s even though the specific failure was detectable within `BOT_AI_TASK_STALL_TIMEOUT_SEC`.
+
+### 5a. Admission bound required by the timers
+
+`Bot` permits **one outstanding AI task per Bot node** (queued or running). A `/quick-battle` workflow waits at most `QUICKBATTLE_AI_ADMISSION_TIMEOUT_SEC=60` for that slot; if it cannot acquire the slot, it terminates with a localized busy/timeout message and publishes nothing. The slot is released on accepted terminal result, local stall/overall timeout, user abort, publish failure, or hard-stop.
+
+This serialization is load-bearing: the stall timer starts at publish time, while an unclaimed RabbitMQ task emits no worker heartbeat. Allowing multiple queued tasks could therefore trigger a false 120-second stall before a worker claimed the later task. Human-only lobby/collection/ballot phases do not hold the slot.
 
 ---
 
@@ -145,6 +151,10 @@ Given §2's accepted redelivery-can-duplicate-generation trade-off, `Bot` must n
 - If an `ai_tasks_results` message arrives for a `task_id` no longer in `Bot`'s local task map (already resolved, already timed out per §5 — by **either** timer, or from a `Bot` instance that has since restarted), `Bot` **silently discards it** — same convention `task_progress.md` §7 already uses for progress ticks with an unrecognized `task_id`, extended here to the terminal result.
 - This is a discard, not an error — a duplicate arriving after the user already got their answer is an expected consequence of the redelivery model (§2), not a bug to alert on.
 - **This is also the correctness backstop for a stall-timer false positive** (§5): if `Bot` gives up on `bot_stall_timeout` but the `AI Worker` handling that task was actually still alive and just failed to publish a heartbeat (e.g. a transient Mosquitto hiccup on the worker's side only), the eventual real `ai_tasks_results` message simply lands here and is discarded — the user already got a (premature) failure message, but nothing crashes or double-delivers. Accepted cost of the stall timer's existence, not a new failure mode to solve separately.
+
+For a multi-task workflow such as `/quick-battle`, the owning session additionally records exactly one `expected_task_id`, expected `graph`, and environment revision number. A result is accepted only when all three match the session's current state. Replaced/superseded task IDs are removed from the task map before the next task becomes expected; their late results and progress are discarded by this section's normal unknown-ID rule.
+
+The Bot-side task record stores a stable Discord delivery reference as IDs — `guild_id`, `channel_id`, optional `thread_id`, active `message_id`, and phase kind. An interaction token is never a delivery/recovery address. These IDs allow Bot-authenticated edits while the in-memory record exists; v1 does not persist task/session records across Bot restart (`bot/discord_bot.md` §6.3).
 
 ---
 
@@ -165,7 +175,7 @@ Given §2's accepted redelivery-can-duplicate-generation trade-off, `Bot` must n
 
 | Cause | Bot action | `revoke`? | Synthetic result? |
 |---|---|---|---|
-| User-initiated abort (future feature — mechanism documented now even though no command wires it to a UI action yet) | `revoke(task_id, terminate=True)`; remove the `task_id` from the local task map (`discord_bot.md` §6.3) | Yes | No — `Bot` already knows to stop caring about this `task_id`; there is no user surface left to notify. |
+| User-initiated abort | `revoke(task_id, terminate=True)`; remove the `task_id` from the local task map (`discord_bot.md` §6.3); acknowledge the abort directly on the owning Discord surface | Yes | No — direct Bot UI acknowledgement is authoritative; no synthetic worker result is needed. |
 | Stall timeout (`BOT_AI_TASK_STALL_TIMEOUT_SEC`, §5) | Give up locally | **No** — the worker may legitimately still be alive; letting it finish is harmless since the eventual real result is discarded per §6 regardless | `AiTaskResultFailed`, `node: "bot_stall_timeout"` |
 | Overall timeout (`BOT_AI_TASK_TIMEOUT_SEC`, §5) | Give up locally | **No**, same reasoning | `AiTaskResultFailed`, `node: "bot_task_timeout"` |
 | Drain timeout (`contracts/drain_status.md`, P0.3) | Abandon and let `AI Worker`'s own pause/finish happen naturally | **No**, same reasoning — escalates into the hard-stop row below once drain timeout itself elapses | None at drain-timeout itself — see hard-stop row |
@@ -217,7 +227,7 @@ Phase 2 proves the wire path without LangGraph/Gemini. Rules:
 }
 ```
 
-3. The `result` object must validate against `graphs/environment.md` §2 Output State / shared `EnvironmentState` models.
+3. The `result` object must validate against `graphs/environment.md` §2 Output State / shared `EnvironmentState` models. `attempts_used=0` is the transport-shell exception because no generated candidate or `AttemptRecord` exists; real graph runs define it as `len(attempts)` and therefore return `1..4`.
 4. Trigger only from tests/acceptance harnesses that exercise Bot’s Celery dispatch + task map. No temporary Discord command or production endpoint.
 5. Production default is `AI_WORKER_TRANSPORT_SHELL=false`. Real `environment`/`battle` graphs remain Phase 4 (P1.2).
 
@@ -229,6 +239,5 @@ Phase 2 proves the wire path without LangGraph/Gemini. Rules:
 - ~~Hard-stop authorship~~ — **resolved**, §2/§8.
 - ~~Celery app import path / task name drift (`ai_worker_tasks` vs `ai_worker.tasks`)~~ — **resolved**, §2 / Phase 2.
 - ~~Topology declare-on-connect ownership~~ — **resolved**: definitions.json is canonical (§2).
-- **`BOT_AI_TASK_TIMEOUT_SEC=900` is a proposed default, not yet confirmed** — revisit once real timing data exists (P1.2).
-- **`AI_WORKER_PROGRESS_HEARTBEAT_SEC=30` sized by inference** — same flag as above.
+- **Timing defaults are confirmed:** worker graph deadlines are 600s (`environment`) / 840s (`battle`), progress heartbeat 30s, Bot stall timeout 120s, Bot overall timeout 900s, with one outstanding AI task per Bot node (§5/§5a; graph cost math in `graphs/battle.md` §8).
 - Broker-side secret exposure accepted in `rabbitmq.md` §3/§6/§13.

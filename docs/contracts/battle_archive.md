@@ -31,11 +31,13 @@
   "task_id": "…",
   "guild_id": "…",
   "graph": "battle",
-  "winners": ["user_id_or_fighter_id", "…"],
+  "winners": ["discord_player_id", "…"],
   "created_at": "2026-07-15T17:02:00Z",
   "content_type": "text/plain; charset=utf-8"
 }
 ```
+
+`winners` contains only exact Discord participant IDs from the battle graph's input `Fighter.player_id` values. It is empty when `outcome_type == "none"`. Nicknames, display names, invented fighter IDs, fuzzy matches, and unknown IDs are never archived.
 
 ---
 

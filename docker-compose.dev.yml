@@ -32,9 +32,12 @@ services:
       DCA_RUNTIME_MODE: development
       DEV_COMPOSE_OVERLAY_ACTIVE: "true"
       DEV_SUPPORT_URL: http://dev-support:8080
-      DISCORD_DEVELOPMENT_GUILD_ID: ${DISCORD_DEVELOPMENT_GUILD_ID:?set DISCORD_DEVELOPMENT_GUILD_ID}
-      DISCORD_DEVELOPMENT_APPLICATION_ID: ${DISCORD_DEVELOPMENT_APPLICATION_ID:?set DISCORD_DEVELOPMENT_APPLICATION_ID}
-      DISCORD_BOT_TOKEN: ${DISCORD_DEVELOPMENT_BOT_TOKEN:?set DISCORD_DEVELOPMENT_BOT_TOKEN}
+      # Runtime fail-closed in Bot/Web/dev-support. Avoid required Compose
+      # interpolation so merged `config` and broker-only `up` still work
+      # without Discord secrets.
+      DISCORD_DEVELOPMENT_GUILD_ID: ${DISCORD_DEVELOPMENT_GUILD_ID:-}
+      DISCORD_DEVELOPMENT_APPLICATION_ID: ${DISCORD_DEVELOPMENT_APPLICATION_ID:-}
+      DISCORD_BOT_TOKEN: ${DISCORD_DEVELOPMENT_BOT_TOKEN:-}
       # Clear Azure markers so development fail-closed guards pass.
       AZURE_TENANT_ID: ""
       BOT_AZURE_CLIENT_ID: ""
@@ -64,7 +67,7 @@ services:
       DCA_RUNTIME_MODE: development
       DEV_COMPOSE_OVERLAY_ACTIVE: "true"
       NODE_ID: ${NODE_ID:-node-local}
-      DISCORD_DEVELOPMENT_GUILD_ID: ${DISCORD_DEVELOPMENT_GUILD_ID:?set DISCORD_DEVELOPMENT_GUILD_ID}
+      DISCORD_DEVELOPMENT_GUILD_ID: ${DISCORD_DEVELOPMENT_GUILD_ID:-}
       DEV_SUPPORT_DB_PATH: /data/dev-support.db
       DEV_SUPPORT_HOST: 0.0.0.0
       DEV_SUPPORT_PORT: "8080"
@@ -104,7 +107,7 @@ services:
       DCA_RUNTIME_MODE: development
       DEV_COMPOSE_OVERLAY_ACTIVE: "true"
       DEV_SUPPORT_URL: http://dev-support:8080
-      DISCORD_DEVELOPMENT_GUILD_ID: ${DISCORD_DEVELOPMENT_GUILD_ID:?set DISCORD_DEVELOPMENT_GUILD_ID}
+      DISCORD_DEVELOPMENT_GUILD_ID: ${DISCORD_DEVELOPMENT_GUILD_ID:-}
       WEB_LOCAL_ADMIN_OID: ${WEB_LOCAL_ADMIN_OID:-local-dev-admin}
       WEB_PORT: "8080"
       # Clear Azure/Entra markers for development.

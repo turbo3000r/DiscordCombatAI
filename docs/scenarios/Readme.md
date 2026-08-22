@@ -2,7 +2,7 @@
 
 > **Closes P0.8.** These are end-to-end architecture acceptance cases, not test-code prescriptions. Each file names preconditions, ordered steps (messages / state transitions), durable writes, timeouts, user-visible result, and the invariant checked.
 >
-> Prefer linking to canonical contracts and container docs over inventing new behavior. Where a detail remains a P1 product rule (especially Quick Battle numbers), the scenario stays at architecture level and notes that P1.1 applies.
+> Prefer linking to canonical contracts and container docs over inventing new behavior. Quick Battle and graph bounds are concrete in S11 now that P1.1/P1.2 are closed; unrelated unresolved P1 behavior remains referenced rather than invented.
 >
 > **Phase 2:** S03, S04, S05, S07, S08, and S10 each include a **Phase 2 acceptance ownership** matrix labeling steps `complete`, `integration-only`, or `deferred`. Do not claim Discord slash-command recovery before the command phases.
 >

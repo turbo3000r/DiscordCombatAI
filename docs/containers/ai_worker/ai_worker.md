@@ -57,7 +57,7 @@ ai_worker/
 | `AI_WORKER_MOSQUITTO_PORT` | No | `1883` | Mosquitto broker port. |
 | `AI_WORKER_LLM_MAX_RETRIES` | No | `2` | **Canonical home for this variable**. Shared retry budget for transient Gemini API failures **and** malformed/unparseable structured LLM output — Phase 4+ graphs. Not used by the Phase 2 transport shell. |
 | `AI_WORKER_CELERY_CONCURRENCY` | No | `1` | Number of tasks a single `AI Worker` instance processes concurrently. |
-| `AI_WORKER_PROGRESS_HEARTBEAT_SEC` | No | `30` | While a task is in flight, re-publish the current progress tick on this cadence (`contracts/task_progress.md` §3). |
+| `AI_WORKER_PROGRESS_HEARTBEAT_SEC` | No | `30` | Confirmed cadence: while a task is in flight, re-publish the current progress tick (`contracts/task_progress.md` §3). Four heartbeat opportunities fit within Bot's 120-second stall window. |
 | `AI_WORKER_HEARTBEAT_INTERVAL_SEC` | No | `30` | Cadence of `status/ai_worker/heartbeat`; Head marks it stale after `HEAD_SERVICE_HEARTBEAT_STALE_SEC` (default 90). Canonical schema: `contracts/telemetry.md` §2.2. |
 | `AI_WORKER_TRANSPORT_SHELL` | No | `false` | **Phase 2.** When `true`, `run_graph` uses the canned `environment` success path (`contracts/ai_task.md` §11) instead of LangGraph. Harness/compose-test only; production images keep `false`. |
 
@@ -66,6 +66,8 @@ ai_worker/
 > **RabbitMQ broker credentials (username/password/vhost) are resolved project-wide this revision** — see `rabbitmq.md` §3/§13, referenced above rather than duplicated.
 >
 > **Graph-specific tunables are NOT listed here, by design** — `ENVIRONMENT_MAX_ENHANCER_RETRIES` (`graphs/environment.md` §8), `BATTLE_MIN_EPISODES`, and `BATTLE_MAX_MODIFIER_RETRIES` (`graphs/battle.md` §8) belong permanently in their own graph docs, per the same "don't duplicate a variable defined elsewhere" convention `azure.md` §3 established. Only `AI_WORKER_LLM_MAX_RETRIES` lives here, because it's graph-agnostic.
+>
+> Graph-specific hard bounds are also canonical there: environment 600s / 120k input / 30k output tokens; battle 840s / 350k input / 90k output tokens. `AI Worker` accumulates provider-reported usage across retries, reserves the next node's configured maximum output before calling, and fails before a call that cannot fit the remaining deadline/token budget. There is no fixed USD cap because guild-selected model pricing is external and mutable; call/token/deadline ceilings are the enforceable v1 cost bound.
 
 ---
 
@@ -119,6 +121,8 @@ Independently of task-progress ticks, the process publishes `status/ai_worker/he
 4. Invoke the graph to completion. As execution crosses each graph's own internal phase boundaries, publish `composing` / `refining` / `finishing` phase updates — the mapping from internal nodes to these phases is defined once per graph in `docs/contracts/task_progress.md` §6.1, not re-derived here. Each phase-change publish also resets the heartbeat timer from step 2 (no need to publish twice in quick succession).
 5. On success, manually publish the graph's output state as the `ai_tasks_results` message (correlated via `correlation_id = task_id`, publisher confirms enabled, `contracts/ai_task.md` §2) and, once that publish is confirmed, acknowledge the `ai_tasks` message. Stop the heartbeat timer.
 6. On unrecoverable failure (§9), publish an `AiTaskResultFailed` (`contracts/ai_task.md` §4) instead — `node` set to whichever LangGraph node was actually executing when the failure occurred (not a generic code, corrected this revision). Stop the heartbeat timer.
+
+The progress heartbeat timer runs independently of a pending Gemini request. Graph execution uses a monotonic per-graph deadline and cumulative token ledger; retries are not started when the next attempt cannot fit the remaining bound. Deadline/token exhaustion is an ordinary failed result, never a partial success.
 
 **Graph selection mechanism — resolved P0.4 / Phase 2 path names:** `tasks.py` defines one generic Celery task registered as **`ai_worker.tasks.run_graph`**, bound to the single `ai_tasks` queue, on app **`ai_worker.celery_app:app`**. It unwraps the `envelope` kwarg and branches on `envelope.graph`. Phase 2 transport shell (`AI_WORKER_TRANSPORT_SHELL=true`) handles `environment` with the canned result (`contracts/ai_task.md` §11) and does not call LangGraph. There is no per-graph Celery task, no per-graph queue, and no `stub` graph discriminator.
 
@@ -202,5 +206,5 @@ The complete v1 AI Worker observability surface is the heartbeat in `contracts/t
 - Heartbeat schema, dependency scope, and staleness are resolved in `contracts/telemetry.md` §2 (§11).
 - ~~Standalone RabbitMQ outage behavior~~ — **resolved (P1.5):** `rabbitmq.md` §8a/§9, this doc §9, S05.
 - Mosquitto control loss remains fail-closed via Head/Bot leadership contracts; AI Worker pause/resume simply cannot be delivered while the broker is down (accepted).
-- **`AI_WORKER_PROGRESS_HEARTBEAT_SEC=30`** (§3, §6) remains a proposed default sized by inference — see `ai_task.md` §12.
+- **Progress and graph timing are confirmed:** heartbeat 30s; environment deadline 600s; battle deadline 840s; Bot stall/overall 120s/900s (`ai_task.md`, both graph docs).
 - ~~Whether `Bot` publishes `ai_tasks` via a real Celery client or raw AMQP~~ — **resolved P0.4 / Phase 2**: Bot uses `send_task("ai_worker.tasks.run_graph", ...)`.

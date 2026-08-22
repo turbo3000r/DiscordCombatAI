@@ -75,7 +75,7 @@ src/bot/
 | `BOT_DRAIN_PROGRESS_INTERVAL_SEC` | No | `5` | **New this revision (P0.3)** — cadence of the `status/bot/drain_progress` publish (§6.3a, `contracts/drain_status.md` §1) while `bot.draining` is set. |
 | `BOT_QUEUE_POLL_INTERVAL_SEC` | No | `300` | How often `Bot` polls Azure Queue Storage for suggestion-response notifications (§6.6). Formalizes the "every 5 minutes" already stated in `architecture.md`'s Data Storage table. |
 | `BOT_AI_TASK_STALL_TIMEOUT_SEC` | No | `120` | **New this revision** — per-task stall timer (`contracts/ai_task.md` §5): if no `progress/ai_worker/<task_id>` message (phase-change **or** heartbeat tick, `contracts/task_progress.md` §3) arrives within this window, `Bot` gives up on the task locally. Resets on every progress message, not just phase changes. |
-| `BOT_AI_TASK_TIMEOUT_SEC` | No | `900` | **New this revision, replaces an earlier flat `300` default** — absolute per-task cap from publish to result, regardless of how healthy the progress ticks look (`contracts/ai_task.md` §5). **Proposed default, not yet confirmed against real Gemini latency** — see that contract's §8. |
+| `BOT_AI_TASK_TIMEOUT_SEC` | No | `900` | Confirmed absolute per-task cap from publish to result, regardless of healthy progress ticks (`contracts/ai_task.md` §5). Worker graph deadlines are 600s environment / 840s battle. |
 | `BOT_SUGGESTION_SWEEP_INTERVAL_SEC` | No | `900` | How often `Bot`'s Cosmos-side reconciliation sweep (§6.6) checks for suggestions stuck at `notification_status: "pending"` (after min-age), independent of Queue Storage. |
 | `BOT_SUGGESTION_SWEEP_MIN_AGE_SEC` | No | `600` | **P0.5.1.** Sweep only claims `pending` tickets whose last update into pending is older than this (avoids racing the queue fast path). Canonical: `contracts/suggestion.md` §3. |
 | `BOT_SUGGESTION_MAX_DM_ATTEMPTS` | No | `5` | Combined attempt ceiling (fast path + sweep) before `notification_status` is set to `"failed"` (`contracts/suggestion.md` §3). |
@@ -192,8 +192,13 @@ This section is the shared **plumbing** underneath the live task-progress status
 ```python
 class TaskRecord(TypedDict):
     command: str                              # e.g. "quick-battle" — which command owns this task
-    discord_message_ref: Any                  # the message/interaction Bot needs to edit as phases progress
+    guild_id: str
+    channel_id: str
+    thread_id: str | None
+    message_id: str                           # active Bot-authenticated delivery/edit surface
+    phase_kind: str                           # command-defined phase owning this message
     graph: Literal["environment", "battle"]
+    expected_revision: int | None             # environment candidate number; null for battle
     current_phase: str                        # queued | launching | composing | refining | finishing
     phase_history: list[tuple[str, str]]      # ordered (phase, ISO-8601-timestamp) pairs — every phase this task has visibly entered, used both to render each checklist line's state and to compute Duration
     created_at: str                            # ISO 8601 — set the moment Bot publishes the ai_tasks message, before AI Worker's own first "launching" tick even arrives
@@ -203,9 +208,17 @@ class TaskRecord(TypedDict):
                                                  # stall timer (contracts/ai_task.md §5) actually checks against.
 ```
 
+An interaction token is never stored as a task delivery reference. The owning `/quick-battle` session separately holds exactly one `expected_task_id`, expected graph, and expected environment revision. A result or progress event is actionable only while those values match the current session; replaced/superseded IDs become ordinary unknown task IDs and are discarded (`contracts/ai_task.md` §6).
+
 - **On publish:** `Bot` creates the `TaskRecord` immediately when it pushes the `ai_tasks` message — `current_phase` starts at `queued` locally, matching `task_progress.md` §4's phase vocabulary, even though that first tick technically originates from `Bot` itself, not `AI Worker`. `last_progress_at` is also initialized to this same moment, so the stall timer (§9) has a valid starting point even before `AI Worker`'s first real tick arrives.
 - **On a `progress/ai_worker/<task_id>` tick:** looks up `task_id` in the map (silently discards a miss, per `task_progress.md` §7's already-documented "no error" stance). Always updates `last_progress_at` to the tick's timestamp, resetting the stall timer — regardless of whether this tick is a phase change or a same-phase heartbeat (§3, new this revision). Only appends to `phase_history` and updates `current_phase`/re-renders `TaskProgressContainer` if the phase actually changed — a heartbeat tick with an unchanged phase resets the stall timer silently, with no visible UI update, since nothing about the checklist state actually changed.
 - **On the terminal `ai_tasks_results` message (RabbitMQ), or on either timeout firing (§9):** the `TaskRecord` is removed from the map — these are the **only** cleanup paths (expanded this revision — previously only the RabbitMQ result path existed). A task whose result never arrives **and** never stalls/times out (impossible by construction once both timers are running, §9) is no longer a real gap — the dangling-entry risk is now bounded to "`Bot` itself crashes/restarts mid-task," which loses all in-memory state including the timers themselves, still flagged as an open item (§13).
+
+**AI admission:** one node-wide asynchronous slot covers queued-or-running AI work. A command waits at most 60 seconds before failing busy; only after acquisition may it publish and create `TaskRecord`. Release on accepted result, timeout, abort/revoke, publish failure, or hard-stop. Human lobby/collection/ballot phases do not hold the slot (`contracts/ai_task.md` §5a).
+
+**Bounded Discord edit scheduler:** same-phase heartbeat ticks never render. Duration refresh is every 15 seconds. A phase transition may render immediately only when the prior edit is at least 5 seconds old; otherwise it coalesces to that boundary. All progress containers share a queue capped at one edit per second, with terminal result/error replacement ahead of periodic refreshes. This supersedes the former unbounded “every few seconds” duration suggestion.
+
+**Restart behavior (confirmed v1):** task records and pre-task lobby/collector/ballot sessions are in-memory and are not reconstructed. On restart, late results/progress miss the map and are discarded. Persistent component custom IDs that reach the fresh process are rejected with a localized ephemeral “session expired; start again”; the Bot never resumes or mutates the stale message from guessed state.
 
 **Heartbeat / status reporting** (`modules/services/heartbeat.py`), feeding both `Head` telemetry and `Web` “now” cards (`contracts/telemetry.md`, `contracts/status_document.md`):
 - Every `BOT_HEARTBEAT_INTERVAL_SEC`, publishes `status/bot/heartbeat` using the exact schema in `contracts/telemetry.md` §2.1: `node_id`, required `APPLICATION_VERSION`, audit timestamp, Gateway state, `latency_ms`, `guild_count`, and the latest `rabbitmq_connected` / `cosmos_ok` / `azure_queue_ok` / `status_blob_ok` results. No active probing is performed just to build the heartbeat; dependency booleans reflect the latest real connection/operation.
@@ -216,7 +229,7 @@ class TaskRecord(TypedDict):
 
 **Canonical contract: `contracts/drain_status.md`.** This subsection states only what `Bot` itself does; the wire schema, QoS, and `Head`'s consuming side live there.
 
-`Bot` maintains one authoritative local counter, `in_flight_workflows` — a strict superset of the task map (§6.3): every `/quick-battle` lobby, collector, vote, **or** `ai_tasks` entry currently open counts as one unit, incremented on creation and decremented on terminal resolution (success, user cancel, error, or a user-visible timeout). This closes the backlog finding that waiting only for RabbitMQ work does not drain the command workflow — a lobby, collector, or vote can be open with nothing yet published to `ai_tasks` at all, and still must count.
+`Bot` maintains one authoritative local counter, `in_flight_workflows`. One accepted `/quick-battle` is exactly one unit from lobby creation through every nested collector/ballot/task and terminal delivery; stage transitions and nested AI tasks do not change the count. Standalone transport-harness tasks count once while open. Decrement exactly once on terminal success, abort, error, restart expiry, or user-visible timeout. Canonical arithmetic and race guard: `contracts/drain_status.md` §1.
 
 On receiving a `draining` grant (`contracts/leadership_control.md` §3.2):
 1. `Bot` immediately sets `bot.draining = True` (existing behavior, §6.4's opt-in block).
@@ -258,7 +271,7 @@ Implementation may be a decorator factory or thin wrapper; behavior below is man
 
 #### `required_guild_enabled`
 
-When `True`, load the typed guild config and require `enabled == true` with a non-empty validated `api_key` and non-empty `model` (same enablement bar as `/config` Apply — `contracts/guild_config.md` §9). On failure → ephemeral localized “guild AI not enabled / not configured” denial. `/config` and `/suggest` use `False`. `/quick-battle` (later) uses `True` once P1.1 closes.
+When `True`, load the typed guild config and require an active document (`left_at == null`), `enabled == true`, non-empty previously validated `api_key`, and non-empty `model` (same enablement bar as `/config` Apply). Do not re-probe Gemini on every command. Failure → ephemeral localized “guild AI not enabled / not configured” denial. `/config` and `/suggest` use `False`; `/quick-battle` uses `True`.
 
 #### Discord permissions (`allowed_permissions`)
 
@@ -279,7 +292,7 @@ Phase 3 command defaults:
 |---|---|---|---|---|
 | `/config` | `True` | `False` | administrator | `False` (available during drain) |
 | `/suggest` | `False` (prod guild-or-DM) | `False` | none | `False` (available during drain) |
-| `/quick-battle` (later) | `True` | `True` | per P1.1 | `True` |
+| `/quick-battle` (Phase 5) | `True` | `True` | none | `True` |
 
 #### Production versus local-development guild filtering
 
@@ -422,7 +435,7 @@ Business counters such as `commands_invoked_total`, `ai_tasks_published_total`, 
 | Active grant expires or Head grant/watchdog disappears | Local monotonic deadline | Hard-stop autonomously; no Head publish is required. |
 | **New this revision** — a task's progress/heartbeat ticks stop arriving for longer than `BOT_AI_TASK_STALL_TIMEOUT_SEC` (§3, §6.3's `last_progress_at`) | `Bot`'s own per-task stall timer expires | `Bot` synthesizes an `AiTaskResultFailed` (`contracts/ai_task.md` §4) with `node: "bot_stall_timeout"`, removes the `TaskRecord` (§6.3), and notifies the user — without waiting for RabbitMQ. If the task was actually still alive (e.g. a transient Mosquitto hiccup on `AI Worker`'s side only), the eventual real result is safely discarded on arrival (`ai_task.md` §6) — accepted false-positive cost, not a bug. |
 | **New this revision** — a task's total duration exceeds `BOT_AI_TASK_TIMEOUT_SEC`, regardless of how healthy its progress ticks looked | `Bot`'s own per-task overall timer expires | Same synthesis/cleanup as the stall-timeout row, with `node: "bot_task_timeout"` instead — this is the absolute ceiling against a task that's ticking normally but never actually converging. |
-| `Bot` process crashes or restarts mid-task (after publishing `ai_tasks`, before consuming the matching `ai_tasks_results`) | N/A — no detection mechanism | The in-memory task map (§6.3), including both timers above, is lost entirely. On restart, if the matching `ai_tasks_results` message still arrives, it has no `TaskRecord` to update and is effectively orphaned — no reconciliation exists. This is now the **only** remaining shape of this gap — a task that survives `Bot`'s own process lifetime is always eventually resolved by either a real result or one of the two timers above. Flagged in §13. |
+| `Bot` process crashes or restarts during a lobby, collector, ballot, or task | Fresh process has no in-memory session/task record | Confirmed v1 expiry policy (§6.3): do not reconstruct; reject stale component interactions as session-expired; discard late task progress/results; user starts a new lobby. |
 | `RabbitMQ` unreachable when publishing `ai_tasks` | `send_task` / confirm failure | **Resolved (P1.5):** no `TaskRecord`; localized command error (Phase 2: harness asserts this); Gateway stays up; client reconnects per `rabbitmq.md` §8a. Canonical scenario: S05. |
 
 ---
@@ -455,7 +468,7 @@ No HTTP endpoint — unlike `Head`/`Launcher`, `Bot` exposes nothing for another
 - `Bot` shares the coordinated version tag with `Head`, `AI Worker`, and `Web` (`Launcher.md` §12) — it does not version independently.
 - The local container receives required `APPLICATION_VERSION` from Compose; Launcher recreates it only as part of the fixed `head`/`bot`/`ai_worker` image set.
 - Participates in the planned update sequence by draining, then completing hard-stop and best-effort acknowledgement **before** Head voluntarily releases the lease (`contracts/leadership_control.md` §6). The drain-completion signal/counts are resolved in `contracts/drain_status.md` (P0.3) — `in_flight_workflows` (§6.3a) is what `Head` actually watches.
-- No persistent state to preserve across a restart beyond what already lives in Cosmos DB (`contracts/guild_config.md`) — the in-memory task map (§6.3) and the `bot.draining` flag (§6.4) are both lost on restart by design, and a fresh instance starts clean once `Head` signals `activate` again.
+- No command/task session state is persisted across restart. The task map, pre-task sessions, counters, and `bot.draining` flag are lost by design; stale sessions expire per §6.3, and a fresh instance starts clean once `Head` grants activation.
 
 ---
 
@@ -465,8 +478,8 @@ No HTTP endpoint — unlike `Head`/`Launcher`, `Bot` exposes nothing for another
 
 - Leadership control is resolved in `contracts/leadership_control.md`: retained safe desired mode plus non-retained short-lived grants, including the confirmed hard-stop sequence. ~~The separate P0.3 drain-completion/count contract remained open~~ — **resolved this revision**: `contracts/drain_status.md`.
 - ~~No fallback exists if a DM to a suggestion's original author fails (§6.6, §9)~~ — **resolved this revision**: reconciliation sweep + `notification_status: "failed"` terminal state after `BOT_SUGGESTION_MAX_DM_ATTEMPTS`.
-- ~~Dangling task-map entries for a task whose result never arrives~~ — **resolved this revision** (§6.3, §9): the stall timer (`BOT_AI_TASK_STALL_TIMEOUT_SEC`) and overall timer (`BOT_AI_TASK_TIMEOUT_SEC`) together guarantee every task is eventually resolved one way or another, as long as `Bot` itself stays alive. **Narrowed, not eliminated:** dangling entries are still possible if `Bot` itself crashes/restarts mid-task, since the timers are in-memory and don't survive that — a task whose result arrives after `Bot` has already forgotten about it (crash, not timeout) is still simply dropped, no reconciliation exists for that specific case.
-- **New this revision** — `BOT_AI_TASK_TIMEOUT_SEC=900` and `BOT_AI_TASK_STALL_TIMEOUT_SEC=120` (§3) are proposed defaults, not confirmed against real Gemini/LangGraph timing — see `contracts/ai_task.md` §8 for the full reasoning and the explicit flag that these need revisiting once real latency data exists.
+- ~~Dangling task-map entries for a task whose result never arrives~~ — **resolved** for a live Bot by stall/overall timers. Restart behavior is explicitly session expiry + late-result discard (§6.3), not reconciliation.
+- **AI timing is confirmed:** heartbeat 30s, stall 120s, environment/battle worker deadlines 600s/840s, Bot overall 900s, and one outstanding task per node.
 - ~~Whether `Bot` publishes to `ai_tasks` via a Celery client or raw AMQP was undecided~~ — **resolved P0.4 / Phase 2**: `Bot` uses `send_task("ai_worker.tasks.run_graph", ...)` (`contracts/ai_task.md` §2/§3), so `task_id` doubles as a revocable Celery task id and `revoke(terminate=True)` (§6.5) is directly reachable.
 - `DISCORD_BOT_TOKEN` (§3) was a previously-undocumented gap across the entire docs tree, not specific to this revision's scope — formalized here for the first time; worth double-checking no other in-progress doc silently assumed a different variable name for it.
 - Bot-owned counters beyond the canonical heartbeat are explicitly deferred from v1 (§8); this is a scope decision, not an unresolved transport contract.

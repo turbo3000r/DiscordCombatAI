@@ -93,7 +93,11 @@ services:
       NODE_ID: ${NODE_ID:-node-local}
       BOT_NODE_ID: ${NODE_ID:-node-local}
       DCA_RUNTIME_MODE: ${DCA_RUNTIME_MODE:-production}
-      DISCORD_DEVELOPMENT_GUILD_ID: ${DISCORD_DEVELOPMENT_GUILD_ID:?set DISCORD_DEVELOPMENT_GUILD_ID}
+      # Required by Bot at process start (runtime fail-closed). Do not use
+      # Compose required-interpolation here: Docker interpolates profile-gated
+      # services during `config` / broker-only `up`, which must work without
+      # a filled .env.
+      DISCORD_DEVELOPMENT_GUILD_ID: ${DISCORD_DEVELOPMENT_GUILD_ID:-}
       DISCORD_BOT_TOKEN: ${DISCORD_BOT_TOKEN:-replace-me-in-env}
       BOT_MOSQUITTO_HOST: ${BOT_MOSQUITTO_HOST:-mosquitto}
       BOT_MOSQUITTO_PORT: ${BOT_MOSQUITTO_PORT:-1883}

@@ -281,7 +281,7 @@ Production topology above (Head + Blob Lease + Azure-mediated Web) is unchanged.
 - `./infra/mosquitto/mosquitto.conf` → Mosquitto config
 - `./infra/rabbitmq/enabled_plugins`, `rabbitmq.conf`, and `definitions.json` (canonical topology) → RabbitMQ
 
-**Prompts:** `ai_worker` bind-mounts `./prompts` (or image-copies at build) read-only — exact path ownership for generic arenas remains a P1.1 item; Compose must still reserve the mount point.
+**Prompts and static arenas:** `ai_worker` bind-mounts `./prompts` (or image-copies it at build) read-only for LLM prompt files. Generic no-AI arenas are separate Bot-owned packaged data under `src/bot/resources/generic_environments/*.txt`; AI Worker does not mount/read them (`graphs/environment.md` §1).
 
 **Restart:** `unless-stopped` for all local services.
 
