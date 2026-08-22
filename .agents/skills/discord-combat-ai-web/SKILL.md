@@ -1,7 +1,6 @@
 ---
 name: discord-combat-ai-web
 description: Implements and changes the DiscordCombatAI Web admin dashboard (FastAPI + React) under src/web/, including Entra/local-admin auth, Phase 3 Suggestions list/detail/respond, shared suggestion response service, Queue enqueue, and later Home/Guilds/Dashboard/Performance/webhook slices. Use when working under src/web/, Web Docker/deployment wiring, or Web-side S12–S13 coverage.
-disable-model-invocation: true
 ---
 
 # DiscordCombatAI Web

@@ -1,7 +1,6 @@
 ---
 name: discord-combat-ai-implementation
 description: Implements DiscordCombatAI architecture in small, verified slices while enforcing its canonical documentation, contracts, subsystem readiness gates, and acceptance scenarios. Use for every source code, infrastructure, configuration, migration, or implementation-planning task in this repository.
-disable-model-invocation: true
 ---
 
 # DiscordCombatAI Implementation

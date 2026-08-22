@@ -1,7 +1,6 @@
 ---
 name: discord-combat-ai-bot
 description: Implements and changes the DiscordCombatAI Python Bot container, including Gateway lifecycle under leadership grants, guild sync, Celery AI-task dispatch/result transport, task tracking, MQTT control/progress, drain/hard-stop, ProcessCommand, /config, /suggest, Components V2, localization, suggestion Queue poller/sweep/DM delivery, and Bot-side S03–S05, S07–S08, S10, S12 coverage. Use when working under src/bot/, Bot Docker/Compose wiring, discord.py integration, or Bot-side scenario coverage.
-disable-model-invocation: true
 ---
 
 # DiscordCombatAI Bot

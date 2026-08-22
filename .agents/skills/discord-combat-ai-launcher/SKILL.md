@@ -1,7 +1,6 @@
 ---
 name: discord-combat-ai-launcher
 description: Implements and changes the DiscordCombatAI Go Launcher host service, including authenticated Head↔Launcher IPC, durable update admission, Docker/Compose image pull and recreate, verification, rollback, CLI, and host-service packaging. Use when working on launcher/, launcher IPC endpoints, version history, GHCR pulls, Compose recreation, or Launcher CLI/daemon behavior.
-disable-model-invocation: true
 ---
 
 # DiscordCombatAI Launcher

@@ -1,7 +1,6 @@
 ---
 name: discord-combat-ai-brokers
 description: Implements and changes DiscordCombatAI broker infrastructure for RabbitMQ, Celery transport, Mosquitto, Docker Compose, healthchecks, networking, volumes, and broker integration tests. Use when configuring queues, DLX, MQTT topics, broker credentials, Compose services, reconnect behavior, or transport-level broker tests.
-disable-model-invocation: true
 ---
 
 # DiscordCombatAI Brokers

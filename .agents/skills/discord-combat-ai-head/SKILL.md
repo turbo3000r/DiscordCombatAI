@@ -1,7 +1,6 @@
 ---
 name: discord-combat-ai-head
 description: Implements and changes the DiscordCombatAI Python Head coordinator, including fail-closed Mosquitto control, Blob Lease election, cluster Web PubSub, Bot fencing grants, drain/update orchestration, Launcher IPC client, release polling, log aggregation, and telemetry. Use when working under src/head/, Head Docker/Compose wiring, leadership state machines, or Head-side scenario coverage for S01–S09.
-disable-model-invocation: true
 ---
 
 # DiscordCombatAI Head

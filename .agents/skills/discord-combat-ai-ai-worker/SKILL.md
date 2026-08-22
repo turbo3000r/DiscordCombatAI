@@ -1,7 +1,6 @@
 ---
 name: discord-combat-ai-ai-worker
 description: Implements and changes the DiscordCombatAI AI Worker Celery container, including celery_app/tasks registration, RabbitMQ consume/result publish, Mosquitto progress/pause/heartbeat, transport-shell mode, and later LangGraph environment/battle graphs. Use when working under src/ai_worker/, AI Worker Docker/Compose wiring, Celery prefetch/ack policy, or worker-side scenario coverage for S05 and S10.
-disable-model-invocation: true
 ---
 
 # DiscordCombatAI AI Worker

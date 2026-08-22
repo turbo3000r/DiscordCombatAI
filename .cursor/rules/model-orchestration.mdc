@@ -1,0 +1,36 @@
+---
+description: Cost-aware model and subagent routing for DiscordCombatAI; load umbrella + one specialist skill; avoid Max/Fast and explore swarms
+alwaysApply: true
+---
+
+# DiscordCombatAI Model Orchestration
+
+Apply this on every Agent session in this repository.
+
+## Model tiers
+
+| Work | Route to | Models |
+| --- | --- | --- |
+| Bounded research / trivial code / data gathering | `bounded-worker` or parent if one-step | Cursor Grok 4.6 High → Composer 2.5 → GPT-5.6 Luna Medium |
+| One subsystem / multi-file slice | `slice-owner` | GPT-5.6 Terra Medium |
+| Feature/phase, architecture, docs reconciliation | `feature-owner` or `docs-architect-agent` (docs-only writes) | GPT-5.6 Sol Medium → Terra Medium → Kimi K3 |
+
+Never use Fast mode, `effort=max`, or Max Mode unless the user explicitly requests it. Do not pin `model: inherit` for tiered work when a custom agent exists.
+
+## Skills
+
+- For any implementation/config/infra work: follow `discord-combat-ai-implementation` plus **only** the matching specialist (`bot`, `head`, `ai-worker`, `web`, `launcher`, `azure`, `brokers`, `contracts`, or `scenario-testing`).
+- Do not load all ten skills. Bot work may also use the global `discord-py-api` skill.
+- Docs-only architecture/editing: prefer `docs-architect-agent`; stay inside `docs/`.
+
+## Delegation limits
+
+- Skip subagents for one-step tasks.
+- Cap built-in Explore at **two** parallel, non-overlapping scopes with `quick` or `medium` thoroughness only.
+- Explore must not decide P1 gates, contracts, or architecture.
+- Do not assign an entire phase to one broad `generalPurpose` child.
+- Quota fallback onto a cheaper model must not continue Feature-tier decisions; stop and report.
+
+## Sources of truth
+
+Canonical order: `docs/contracts/` → `docs/containers/` → `docs/scenarios/` → `docs/to_resolve.md`. On conflict, stop and report; do not invent defaults.
