@@ -198,7 +198,23 @@ The strict parser/coercion policy is canonical in `nodes.md` §1a. Malformed out
 
 > Naming follows the `HEAD_*`-style prefix convention from `head.md` §3. `ENVIRONMENT_MAX_ENHANCER_RETRIES` is graph-specific and belongs in this doc permanently; `AI_WORKER_LLM_MAX_RETRIES` is graph-agnostic and lives in `ai_worker.md` §3.
 
-Worst-case logical calls: initial path `Generator + 4 Validator + 3 Enhancer + Decider = 9`; revision path `Normalise + 4 Enhancer + 4 Validator + Decider = 10`. With two retries after the first API attempt, the absolute API-attempt caps are 27 and 30 respectively, further bounded by the 600-second and token ceilings. Usage returned by Gemini is accumulated after every call; before a new call, the worker must reserve that node's configured maximum output and reject if the remaining budget cannot cover it. An individual response can exceed an estimate only up to its own configured per-call maximum.
+### 8a. Per-node Gemini output limits
+
+These are hard `max_output_tokens` values supplied to Gemini for every API attempt, including retries:
+
+| Node | Maximum output tokens |
+|---|---:|
+| `Generator` | `4096` |
+| `Normalise` | `2048` |
+| `Enhancer` | `4096` |
+| `Validator` | `2048` |
+| `Decider` | `1024` |
+
+The limits reflect each node's maximum schema size: `Generator`/`Enhancer` may return the complete 4,000-character environment; `Normalise` returns one bounded modification request; `Validator` returns bounded issues plus at most one fix request; `Decider` returns only an attempt index and short reason. They are implementation constants, not environment variables or caller overrides.
+
+Worst-case logical calls: initial path `Generator + 4 Validator + 3 Enhancer + Decider = 9`; revision path `Normalise + 4 Enhancer + 4 Validator + Decider = 10`. Before API retries, reserving every logical call at its per-node maximum totals `25,600` output tokens for initial and `27,648` for revision, so either complete path fits under `ENVIRONMENT_MAX_OUTPUT_TOKENS=30,000`. With two retries after the first API attempt, the absolute API-attempt caps are 27 and 30 respectively, but retries consume the same cumulative budget and may therefore terminate the task before those theoretical attempt caps.
+
+Usage returned by Gemini is accumulated after every call. Before each API attempt, the worker reserves that node's configured maximum output and fails before calling if the remaining output budget cannot cover it. The configured `max_output_tokens` prevents an individual response from exceeding its reservation.
 
 ---
 

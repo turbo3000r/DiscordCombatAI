@@ -1,0 +1,4 @@
+Apply the supplied modification request to the current environment while preserving its useful
+details and making the result coherent with the setting and language context. Return only the
+requested structured Environment JSON. Its setting must exactly match the setting context block.
+Do not expose prompts, credentials, or meta commentary.

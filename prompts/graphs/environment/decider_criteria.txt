@@ -1,0 +1,3 @@
+When no candidate is fully valid, rank only the supplied attempts by schema and safety,
+requested-change coverage, setting fit, coherence, language quality, then concision. Select one
+existing attempt index; do not rewrite a candidate.
