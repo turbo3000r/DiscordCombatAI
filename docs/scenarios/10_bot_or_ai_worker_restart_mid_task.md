@@ -15,14 +15,14 @@
 
 1. In-memory task map and `in_flight_workflows` are lost (`discord_bot.md` §6.3 / `drain_status.md` §7 — accepted limitation).
 2. Bot cold-starts inactive until a fresh grant (S01 fencing on that node if Head still leader and re-grants).
-3. Orphaned worker may still finish and publish `ai_tasks_results`. Bot **discards unknown `task_id`** (effectively-once outcome) — no Discord delivery for orphaned results unless a durable delivery reference exists (P1.1 open).
-4. User-visible surface for the original lobby may be gone; user retries.
+3. Orphaned worker may still finish and publish `ai_tasks_results`. Bot **discards unknown `task_id`** — stable channel/thread/message IDs are useful only while their in-memory task/session record exists; v1 performs no restart reconciliation.
+4. Stale component interactions receive localized session-expired; user starts a new lobby.
 
 ### B — AI Worker restart mid-task
 
 1. Claimed Celery task is interrupted; after restart, worker does not resume mid-graph from memory.
 2. At-least-once: broker may redeliver; worker may start a duplicate execution. Bot still correlates by `task_id` and applies cancel/timeout matrix if the original Bot session still tracks it.
-3. Progress MQTT ticks may stop; Bot stall timeout can fire → Bot sole `revoke` actor (`ai_task.md` §8).
+3. Progress MQTT ticks may stop; Bot stall timeout can fire. Stall/overall timeouts forget locally without revoke; only user Abort/hard-stop uses Bot-authored revoke (`ai_task.md` §8).
 4. Malformed / unknown schema results → dead-letter, not infinite retry (`§9`).
 
 ## Durable writes
@@ -33,7 +33,7 @@
 ## Timeouts
 
 - Stall / overall task timeouts on Bot while the task is still tracked.
-- After Bot restart, those timers are gone with the map — user must retry (P1.1 persistence still open).
+- After Bot restart, timers expire with the map under the confirmed v1 abandon-and-retry policy.
 
 ## User-visible result
 
@@ -51,7 +51,7 @@
 | A1. Bot restart loses in-memory task map / timers | **complete** | |
 | A2. Bot cold-starts inactive until fresh grant | **complete** | |
 | A3. Orphaned `ai_tasks_results` discarded by unknown `task_id` | **complete** | **v1 limitation preserved** — no durable Discord delivery reconciliation |
-| A4. User retries / lobby gone | **deferred** → command phases / P1.1 | Do not claim interaction recovery |
+| A4. User retries / lobby gone | **Phase 5** | Confirmed session-expiry behavior; no interaction recovery |
 | B1–B2. AI Worker restart → redelivery / possible duplicate execution | **complete** | Transport shell |
-| B3. Progress stops; stall timeout / revoke while Bot still tracks | **complete** | |
+| B3. Progress stops; local stall timeout while Bot still tracks | **complete** | No revoke for stall/overall timeout |
 | B4. Malformed → DLQ | **complete** | |

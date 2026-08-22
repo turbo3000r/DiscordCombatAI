@@ -10,10 +10,12 @@
 
 `Bot` maintains one authoritative local counter, **`in_flight_workflows`**:
 
-- Every `/quick-battle` lobby, collector, or vote currently open counts as one unit, **and** every `ai_tasks` entry currently open (the existing task map, `discord_bot.md` §6.3) counts as one unit. `in_flight_workflows` is a strict superset of the task map — it must also cover lobby/collector/vote states that never touch RabbitMQ at all.
-- Incremented on creation (lobby opened, collector/vote started, or `ai_tasks` published).
-- Decremented on terminal resolution: success, user cancel, error, or a user-visible timeout.
-- One workflow unit may span multiple sub-stages (e.g. a `/quick-battle` lobby that later opens an environment-approval vote) — it is still counted once per top-level command invocation, not once per sub-stage, since the goal is "is there still a user-visible in-progress command," not a stage-by-stage tally.
+- One accepted top-level `/quick-battle` invocation counts as **exactly one unit** from lobby creation through all collectors, ballots, environment tasks/revisions, fighter collection, battle task, and terminal delivery. Moving between those stages never increments or decrements the counter.
+- A standalone AI task created by a transport/acceptance harness with no owning command workflow counts as one unit while its task-map entry is open.
+- Increment the command unit once when its lobby is created. Increment a standalone harness unit once when its `ai_tasks` entry is published.
+- Decrement exactly once on terminal success, user abort, error, restart-expiry handling, or a user-visible timeout. Guard against double-decrement when cleanup paths race.
+
+The counter is therefore a strict superset of *currently represented user workflows*, not an arithmetic sum of every nested lobby/collector/vote/task object. This resolves the former contradictory wording that could count one `/quick-battle` multiple times as it moved between stages.
 
 On receiving a `draining` grant (`contracts/leadership_control.md` §3.2), `Bot`:
 
@@ -114,12 +116,12 @@ For `Web` specifically — independently deployed, with no direct peer protocol 
 |---|---|---|
 | `status/bot/drain_progress` is lost/delayed over Mosquitto | `Head` sees no update within its own polling/read cadence | Not treated as an error — `Head` simply keeps waiting up to `HEAD_DRAIN_TIMEOUT_SEC`, then escalates per §2 regardless of whether the last-known count was zero. A single missed tick does not falsely trigger early escalation, since `Head` only acts on timeout expiry or an explicit `in_flight_workflows == 0` observation. |
 | `status/ai_worker/pause_ack` is lost | N/A — informational only | No recovery needed; never blocks drain completion (§3). |
-| `Bot` itself crashes mid-drain | Grant/watchdog expiry (`contracts/leadership_control.md` §5.4) | Same as any other `Bot` crash — `Head` proceeds through its own failure transitions; the in-memory `in_flight_workflows` counter is lost along with the rest of `Bot`'s in-memory state, consistent with `discord_bot.md` §6.3's existing accepted restart-loses-in-memory-state limitation. |
+| `Bot` itself crashes mid-drain | Grant/watchdog expiry (`contracts/leadership_control.md` §5.4) | Same as any other `Bot` crash — `Head` proceeds through its own failure transitions; the in-memory `in_flight_workflows` counter and pre-task sessions expire with the process. A fresh Bot starts with no recovered sessions; stale component interactions are rejected as expired (`discord_bot.md` §6.3). |
 | Two different `update_available` broadcasts arrive for the same version in quick succession | `target_version` string comparison (§4) | Second (and any further) broadcast for an already-acted-on version is ignored — idempotent by design. |
 
 ---
 
 ## 7. Open Items
 
-- No persistence for `in_flight_workflows` across a `Bot` restart — consistent with `discord_bot.md` §6.3's existing accepted limitation for the task map, not a new gap introduced by this contract.
+- No persistence for `in_flight_workflows` across a `Bot` restart — confirmed v1 behavior. Pre-task sessions expire rather than recover; unknown late task results are discarded (`discord_bot.md` §6.3).
 - Whether `Head` should log/alert specifically when a drain timeout escalates to hard-stop with `in_flight_workflows > 0` (vs. a clean `== 0` completion) is recommended but not formally specified — an implementation detail, not a contract gap.

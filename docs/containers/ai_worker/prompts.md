@@ -55,26 +55,23 @@ prompts/
 │       ├── modifier.txt                # NEW
 │       ├── validator_criteria.txt      # NEW
 │       ├── decider_criteria.txt        # NEW
-│       └── resolve_winners.txt         # NEW — emergent-mode only; nickname → player_id mapping instructions
+│       └── resolve_winners.txt         # NEW — emergent-mode only; exact player_id selection instructions
 │
-├── elements/                           # reusable injection wrappers — same role as today
-│   ├── setting/                        # moved from top-level prompts/setting/ — same 7 files/names, now grouped with other injectable-value fragments (confirmed decision)
-│   │   ├── realistic.txt
-│   │   ├── realistic-urban.txt
-│   │   ├── realistic-nature.txt
-│   │   ├── dreamcore.txt
-│   │   ├── unpredictable-realistic.txt
-│   │   ├── unpredictable-dreamcore.txt
-│   │   └── unpredictable-funny.txt
-│   ├── language.txt                    # unchanged
-│   ├── environment.txt                 # renamed from custom_environment.txt — "custom" was a legacy-arch qualifier with no remaining distinct meaning
-│   └── fighters.txt                    # unchanged
-│
-└── static/                             # renamed from core/generic_environments/ — no-AI, pre-written fallback content (graphs/environment.md §1's out-of-scope third mode)
-    └── generic_environments/
-        ├── generic_environment0.txt
-        └── generic_environment1.txt
+└── elements/                           # reusable injection wrappers — same role as today
+    ├── setting/                        # moved from top-level prompts/setting/ — same 7 files/names, now grouped with other injectable-value fragments (confirmed decision)
+    │   ├── realistic.txt
+    │   ├── realistic-urban.txt
+    │   ├── realistic-nature.txt
+    │   ├── dreamcore.txt
+    │   ├── unpredictable-realistic.txt
+    │   ├── unpredictable-dreamcore.txt
+    │   └── unpredictable-funny.txt
+    ├── language.txt                    # unchanged
+    ├── environment.txt                 # renamed from custom_environment.txt — "custom" was a legacy-arch qualifier with no remaining distinct meaning
+    └── fighters.txt                    # unchanged
 ```
+
+Generic no-AI arenas are not prompts and are not mounted into AI Worker. Their target is Bot-owned packaged data under `src/bot/resources/generic_environments/*.txt`; ownership and `.txt` → `Environment` conversion are canonical in `graphs/environment.md` §1 and `bot/commands/quick-battle.md`.
 
 ---
 
@@ -103,7 +100,7 @@ prompts/
 | `Validator` (shared) | `nodes/validator_base.txt` + `graphs/battle/validator_criteria.txt` | `elements/fighters.txt`, `elements/environment.txt`, `elements/setting/<setting>.txt` |
 | `Modifier` | `graphs/battle/modifier.txt` | `elements/language.txt`, `elements/setting/<setting>.txt` |
 | `Decider` (shared) | `nodes/decider_base.txt` + `graphs/battle/decider_criteria.txt` | `elements/environment.txt` (once per attempt) |
-| `ResolveWinners` (emergent mode only) | `graphs/battle/resolve_winners.txt` | `elements/fighters.txt` + fighter list (needs both `player_nick` and `player_id` present, per `graphs/battle.md` §5's `Fighter` design note) |
+| `ResolveWinners` (emergent mode only) | `graphs/battle/resolve_winners.txt` | `elements/fighters.txt` + fighter list; output must contain exact supplied `player_id` values and is never derived by nickname matching (`graphs/battle.md` §5/§6) |
 
 ---
 
@@ -116,7 +113,7 @@ Validator's final prompt = nodes/validator_base.txt + graphs/<name>/validator_cr
 Decider's final prompt   = nodes/decider_base.txt   + graphs/<name>/decider_criteria.txt   + <all attempts presented via elements/*>
 ```
 
-Neither `validator_criteria.txt` nor `decider_criteria.txt` exists yet for either graph — this is the actual content gap, tracked in both graphs' own §12 and in `nodes.md` §6.
+Neither `validator_criteria.txt` nor `decider_criteria.txt` exists yet for either graph. Their normative behavioral rubrics are fixed in `nodes.md` §2a/§3; Phase 4 authors prompt prose that implements those rubrics without changing them.
 
 ---
 
@@ -130,7 +127,7 @@ Neither `validator_criteria.txt` nor `decider_criteria.txt` exists yet for eithe
 | `prompts/elements/language.txt` | `prompts/elements/language.txt` | Unchanged |
 | `prompts/elements/custom_environment.txt` | `prompts/elements/environment.txt` | Rename only, content unchanged |
 | `prompts/elements/fighters.txt` | `prompts/elements/fighters.txt` | Unchanged |
-| `prompts/core/generic_environments/*.txt` (2 files) | `prompts/static/generic_environments/*.txt` | Directory move only |
+| `prompts/core/generic_environments/*.txt` (2 files) | `src/bot/resources/generic_environments/*.txt` | Move into the Bot image; these are static product data, not AI prompts |
 | *(none — new)* | `prompts/nodes/validator_base.txt`, `prompts/nodes/decider_base.txt` | New content to author |
 | *(none — new)* | Every other file in §3's target tree not listed above | New content to author |
 
@@ -140,5 +137,5 @@ Neither `validator_criteria.txt` nor `decider_criteria.txt` exists yet for eithe
 
 - **Actually authoring the ~14 new/adapted prompt files' content is unstarted** — this doc only fixes their target location and name, per §1. This is the single biggest concrete gap for implementing either graph beyond `Generator`.
 - **The physical migration on disk (moving/renaming the legacy files per §6) hasn't happened yet** — this doc describes the target state; someone still needs to actually perform the moves and update whatever code path constructs each node's final prompt (§2).
-- `validator_criteria.txt` / `decider_criteria.txt` don't exist for either graph yet (§5) — same gap already flagged in `nodes.md` §6.
+- `validator_criteria.txt` / `decider_criteria.txt` prompt prose does not exist yet (§5). Schemas and acceptance rubrics are resolved in `nodes.md`; authoring remains Phase 4 implementation work.
 - Whether `implement_first_episode.txt` and `implement_last_episode.txt` end up sharing significant text (both being "large, detailed" episodes per `graphs/battle.md` §6) or are fully independent prompts is undecided — a judgment call for whoever authors them.

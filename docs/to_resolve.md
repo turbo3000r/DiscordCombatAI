@@ -13,7 +13,7 @@
 
 **No remaining P0 blockers.** Documentation gates closed through **Phase 3** (`/config`, `/suggest`, S12).
 
-**Still open before later subsystems:** P1.1 (`/quick-battle`), P1.2 (AI graphs), offline guild-removal sweep (P1.3 leftover), P1.6 (remaining Web API/ops), and P2 items. None of those change already-resolved cross-service topology or wire contracts.
+**Quick Battle and AI graph gates are closed:** P1.1 and P1.2 now have canonical session, schema, rubric, bound, timeout, and acceptance behavior. Still open only in unrelated later scope: offline guild-removal sweep (P1.3 leftover), P1.6 (remaining Web API/ops), and P2 items.
 
 | Gate | Status | Canonical home |
 |---|---|---|
@@ -22,6 +22,8 @@
 | Phase 2 Bot/AI transport | Closed | `ai_task.md`, `discord_bot.md` §6.0, scenarios S03–S05/S07/S08/S10 |
 | Phase 2.5 local-dev | Closed (docs) | `local_development.md`, S14 |
 | Phase 3 `/config`+`/suggest` | Closed | `discord_bot.md` §6.4/§6.6, `guild_config.md`, `suggestion.md`, S12 |
+| Phase 4 AI graphs | Closed (docs) | `nodes.md`, `environment.md`, `battle.md`, `ai_task.md` |
+| Phase 5 `/quick-battle` | Closed (docs) | `quick-battle.md`, `discord_bot.md` §6.3–§6.5, S11 |
 
 ---
 
@@ -54,6 +56,8 @@ Compact index only. Full schemas, state machines, and env defaults live in the l
 | P1.7 | Azure RBAC / transient vs permanent / retries | `containers/azure.md` |
 | P1.8 | Heartbeats, staleness, live caps | `contracts/telemetry.md` |
 | P1.9 | Locale enum + AI mapping | `contracts/localization.md` |
+| P1.1 | Quick Battle session behavior, Discord lifecycle, cancellation, delivery | `bot/commands/quick-battle.md`, `discord_bot.md` §6.3–§6.5, S11 |
+| P1.2 | Structured graph schemas, attempts, rubrics, bounds, winner validation, timing | `ai_worker/nodes.md`, both graph docs, `contracts/ai_task.md` |
 
 ## Phase documentation gates
 
@@ -73,57 +77,25 @@ Compact index only. Full schemas, state machines, and env defaults live in the l
 
 ---
 
-# P1 — Subsystem blockers (open)
+# P1 — Subsystem blockers
 
-## P1.1 Quick Battle session behavior and Discord constraints
+## P1.1 Quick Battle session behavior and Discord constraints — resolved
 
-**Evidence:** `bot/commands/quick-battle.md` §3–§14; `bot/discord_bot.md` §6.4; `ai_worker/graphs/battle.md` §9/§12.
+Canonical: `bot/commands/quick-battle.md` §3–§14, `bot/discord_bot.md` §6.3–§6.5, `contracts/ai_task.md` §5–§8, and S11.
 
-Resolve before implementing `/quick-battle`:
+Closed behavior includes complete-ballot `ceil(70%)`; initial + three revisions then abort; concrete human/AI deadlines; 1–10 participants; one lobby per guild; snapshot/shrink/owner-transfer rules; input/output/token limits; all-phase abort/timeout/restart handling; cooldown/admission controls; safe mentions; Bot-owned static arenas; Bot-authenticated messaging; exact winner IDs; enabled-guild guard; expected task/revision correlation; stable delivery IDs; and bounded progress edits. Fighter collection is consistently step 6.
 
-1. Approval threshold rounding.
-2. Revision-round cap and exhaustion result (force-proceed vs. abort).
-3. Deadlines and outcomes for lobby, environment input, votes, and fighter input.
-4. Maximum participants, one active lobby policy (per guild/channel/user), and concurrent-invocation behavior.
-5. Participant snapshot and behavior when someone leaves the lobby, guild, or becomes unavailable after start.
-6. Input length/content limits and Gemini context/cost budget.
-7. Output delivery when story/UI content exceeds Discord limits (chunking, attachment, or truncation).
-8. Abort/cancellation behavior in every phase, including already-running AI tasks and late results.
-9. Cooldown/rate limit and cost-abuse policy.
-10. Remove or constrain the documented `@everyone` ping. Define `allowed_mentions` and missing-permission behavior.
-11. Static arena ownership: Bot cannot read a directory mounted only in AI Worker. Choose Bot image data, shared package data, or an explicit worker task. Also define how a raw `.txt` arena becomes the battle graph's required `Environment {description, tags, setting}` object.
-12. Long-flow Discord messaging: interaction tokens cannot be “re-fetched.” Specify that the initial interaction and every component/modal interaction are acknowledged on time, and whether later phase messages use Bot-authenticated channel sends/message edits rather than an expired original follow-up token.
-13. Winner identity: duplicate display names make nickname matching ambiguous. Require structured winner IDs from the model and validate that every ID belongs to input fighters; define invalid/empty/multiple-winner handling.
-14. Enabled-guild guard: define the exact `enabled`/non-empty key/model validation before any task is published and the localized response when the guard fails.
-15. Persist or explicitly abandon active lobby/collector/vote state on Bot restart. This is broader than the task-map result problem because a lobby may not have published an AI task yet.
-16. Track the currently expected environment/battle `task_id` per lobby and define handling for late or superseded revision-round results.
-17. Define the durable Discord delivery reference stored for each task (channel/thread/message IDs vs. interaction token) so timeout and hard-stop notifications target a surface that is still usable.
-18. Bound progress-container edit cadence. The independent Duration refresh plus phase changes must respect Discord rate limits when many tasks are active.
-
-Also correct the step-number inconsistencies in §6 (fighter collection is step 6, not step 7).
-
-**Not a v1 blocker:** `random_winner_mode` origin while the command hardcodes it to `false`; `EnvironmentApprovalView` promotion to shared UI.
+`random_winner_mode` remains hardcoded `false`; future exposure and UI-component promotion remain P2/non-blocking.
 
 ---
 
-## P1.2 AI graph state and bounded-generation contracts
+## P1.2 AI graph state and bounded-generation contracts — resolved
 
-**Evidence:** `ai_worker/nodes.md` §1–§6; `ai_worker/graphs/environment.md` §2/§5–§12; `ai_worker/graphs/battle.md` §2/§5–§12; `ai_worker/prompts.md`.
+Canonical: `ai_worker/nodes.md` §1–§5, `graphs/environment.md` §2/§5–§9, `graphs/battle.md` §2/§5–§9, `ai_worker.md` §3/§6, and `contracts/ai_task.md` §5.
 
-Resolve before graph implementation:
+Closed behavior includes exact structured schemas and strict coercion; nullable-then-filled Validator verdicts; `attempts_used=len(attempts)`; 2–5 episodes and content/token/deadline bounds; malformed Predefine failure; exact winner cardinality/IDs with fail-closed emergent resolution; scripted consistency; environment/battle Validator and Decider rubrics; one-call Decider over at most four candidates; and worst-case call/latency math tied to 30s/120s/900s heartbeat/stall/overall timers.
 
-1. Exact structured output schema and validation/coercion policy for every LLM-backed node.
-2. `AttemptRecord.validator_verdict` cannot be required when a candidate is appended before Validator runs. Make it optional/null until validation or change the append timing.
-3. Define `attempts_used` consistently as total candidates/attempts; current “Enhancer/Modifier passes including the first pass” wording is false for Generator/storyteller attempt #0.
-4. Add a maximum episode count/token/cost bound. A minimum of 2 with no maximum allows unbounded calls and can violate task timeouts/Discord output limits.
-5. Define `Predefine` invalid-output handling and allowed `outcome_type`/winner cardinalities, including the explicit `episode_count < BATTLE_MIN_EPISODES` path.
-6. Define deterministic winner-ID validation/fallback; nickname-to-ID matching is not safe.
-7. Confirm whether Validator enforces scripted winner consistency, even if scripted mode is deferred.
-8. Define the behavioral rubrics for Validator/Decider in both graphs. Prompt wording is implementation work; the acceptance criteria are architecture.
-9. Decide Decider scaling behavior if the candidate pool can exceed one prompt's context (single call vs. bounded tournament), or prove the pool is strictly bounded.
-10. Reconcile maximum graph cost/latency with `AI_WORKER_PROGRESS_HEARTBEAT_SEC`, `BOT_AI_TASK_STALL_TIMEOUT_SEC`, and `BOT_AI_TASK_TIMEOUT_SEC`; confirm defaults only after the bounded worst case is defined.
-
-Prompt file authoring and physical migration remain implementation tasks once these behavioral contracts are fixed.
+Prompt wording/content and physical migration remain Phase 4 implementation work. They may implement but not redefine the canonical schemas/rubrics/bounds.
 
 ---
 
@@ -188,21 +160,19 @@ Move an item back to P1 only if implementation proves it changes a public contra
 
 # Remaining documentation cleanup
 
-Only unfinished mechanical items:
+Only unfinished mechanical items outside the closed P1.1/P1.2 gates:
 
-1. Correct `quick-battle.md` step numbers — **open under P1.1**.
-2. Remove stale “resolved” tombstones from component docs over time — ongoing hygiene.
-3. Remove any remaining wording that Web PubSub group presence is used for leader election (heartbeat transport only) — if found.
-4. Reconcile `web/pages/home.md` `version` response with the status document — **P1.6**.
-5. Update `web/pages/template.md` stale “eventual authenticated admin” wording — **P1.6**.
+1. Remove stale “resolved” tombstones from component docs over time — ongoing hygiene.
+2. Remove any remaining wording that Web PubSub group presence is used for leader election (heartbeat transport only) — if found.
+3. Reconcile `web/pages/home.md` `version` response with the status document — **P1.6**.
+4. Update `web/pages/template.md` stale “eventual authenticated admin” wording — **P1.6**.
 
 ---
 
 # Suggested resolution order
 
-1. **Quick Battle + AI graph bounded behavior** (P1.1–P1.2).
-2. **Offline guild-removal sweep** (P1.3 leftover), if needed before full guild lifecycle ops.
-3. **Web details** (P1.6) for non-Suggestions pages and operational polish.
+1. **Offline guild-removal sweep** (P1.3 leftover), if needed before full guild lifecycle ops.
+2. **Web details** (P1.6) for non-Suggestions pages and operational polish.
 
 When all P0 items and the P1 items for a target subsystem are closed, that subsystem's docs are ready for implementation.
 
@@ -259,7 +229,7 @@ Build after domain models exist; can proceed in parallel with Phase 2 transport 
 **Deferred (not spine gate):**
 
 - Web wiring (local-admin auth, banner, loopback host publish, live feed, webhook dry-run) until `src/web/` / P1.6.
-- `/config`, `/suggest` command exercise — **Phase 3 docs closed**; implement in Phase 3. `/quick-battle` remains until command phase / P1.1–P1.2.
+- `/config`, `/suggest` command exercise — **Phase 3 docs closed**; implement in Phase 3. `/quick-battle` implementation remains Phase 5; its P1.1/P1.2 documentation is closed.
 - Full S14 steps that require commands/Web.
 
 **Documentation gate:** Resolved → Local product-development architecture is closed. Implement against `contracts/local_development.md`; do not invent an Azure emulator.
@@ -281,29 +251,40 @@ These slices give useful functionality without depending on the unresolved battl
 
 ## Phase 4 — AI graphs
 
-The AI Worker container cannot be completed in one pass:
+Documentation gate is closed. Implement in three reviewable gates:
 
-1. Close P1.2 and P1.9.
-2. Implement shared LLM retry, Validator, Decider, and refiner-node contracts.
-3. Implement the `environment` graph and its structured-output tests.
-4. Implement the `battle` graph, bounded episode loop, winner-ID validation, and timeout/cost tests.
+### Phase 4A — shared graph contracts
 
-Do not replace missing rubrics, bounds, or malformed-output behavior with ad hoc code defaults. Prompt text may be tuned later, but graph acceptance behavior must be fixed first.
+Implement strict structured parsing/coercion, usage/deadline accounting, shared retry wrapper, nullable-then-filled `AttemptRecord`, Validator/Decider schemas and rubrics, one-call ≤4-candidate Decider, and shared contract tests. Author prompt prose against—without changing—those contracts.
+
+**Gate:** malformed output, retry exhaustion, deadline/token exhaustion, rubric verdict shape, Decider index validation, and attempts accounting tests pass independently of either full graph.
+
+### Phase 4B — environment graph
+
+Implement initial/revision routing, exact node schemas, maximum four candidates, 600s/120k-input/30k-output bounds, and deterministic output tests. Static generic arenas are not part of this graph.
+
+**Gate:** initial/revision success, malformed-node retry/failure, Decider fallback, deadline/token failure, and `attempts_used` tests pass.
+
+### Phase 4C — battle graph
+
+Implement 2–5 episode planning/composition, exact outcome/winner cardinality, solo no-victor support, scripted consistency, emergent fail-closed winner IDs, 840s/350k-input/90k-output bounds, and worst-case tests.
+
+**Gate:** episode boundaries, every node schema, story bounds, all outcome cardinalities, invalid/late winner IDs, Decider fallback, and call/deadline/token tests pass.
 
 ## Phase 5 — `/quick-battle`
 
 The Bot container's flagship command must be split into reviewable subtasks:
 
-1. command guards, options, and drain admission;
-2. lobby ownership, participant snapshot, timeout, and restart policy;
-3. generic-arena ownership plus `.txt` → `Environment` conversion;
-4. custom environment collection and environment-graph task;
-5. approval/revision consensus loop;
+1. command enabled/config guards, one-lobby/membership/cooldown/AI-slot admission, and drain gate;
+2. 1–10 participant ownership, snapshot/shrink/transfer rules, concrete deadlines, and restart expiry;
+3. Bot-owned generic arenas plus strict `.txt` → `Environment`;
+4. custom environment collection and expected environment task IDs;
+5. complete-ballot `ceil(70%)` loop, three revisions, then abort;
 6. fighter collection and validation;
-7. battle-graph task, bounded progress edits, result delivery, and archive;
-8. abort/timeout/hard-stop behavior across every phase.
+7. expected battle task, bounded progress edits, safe mentions, chunk/attachment delivery, and archive;
+8. full abort/timeout/hard-stop/late-result/unavailable matrix.
 
-**Gate:** close P1.1, P1.2, and P1.9 before implementing the affected subtask; validate all S11 invariants at completion.
+**Gate:** Phase 4A–4C complete for real AI execution; all concrete S11 invariants pass. P1.1, P1.2, and P1.9 documentation are already closed.
 
 ## Phase 6 — Web
 
