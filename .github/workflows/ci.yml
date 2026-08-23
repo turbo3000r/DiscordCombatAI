@@ -38,6 +38,7 @@ jobs:
               - '.github/workflows/python.yml'
               - 'src/**'
               - '!src/web/frontend/**'
+              - 'prompts/**'
               - 'tests/**'
               - 'pyproject.toml'
               - 'uv.lock'
@@ -54,6 +55,7 @@ jobs:
               - 'infra/**'
               - 'docker-compose.yml'
               - 'docker-compose.dev.yml'
+              - 'src/ai_worker/**'
               - 'tests/integration/**'
               - 'tests/unit/infra/**'
             web:

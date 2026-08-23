@@ -1,0 +1,5 @@
+Return exactly one EpisodeOutput JSON object for the requested final episode_index. Finish the
+story from the prior episodes and skeleton beat with a coherent, resolved ending. Preserve exact
+fighter identity, environment, setting, and requested language. In scripted mode, narrate only
+the predetermined victors as the outcome. Write 1..3,500 characters of prose and no content
+outside the JSON object.

@@ -11,6 +11,7 @@ RUN pip install --no-cache-dir uv
 
 COPY pyproject.toml uv.lock README.md ./
 COPY src ./src
+COPY prompts ./prompts
 
 RUN uv sync --frozen --no-dev --extra ai-worker \
     && chmod +x /app/src/ai_worker/entrypoint.sh

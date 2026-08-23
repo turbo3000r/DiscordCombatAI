@@ -165,12 +165,18 @@ Consumed by: `Bot` (publish `ai_tasks`, consume `ai_tasks_results`), `AI Worker`
 
 ```yaml
 healthcheck:
-  test: ["CMD", "rabbitmq-diagnostics", "-q", "check_running"]
+  test:
+    [
+      "CMD-SHELL",
+      "rabbitmq-diagnostics -q check_running && rabbitmqctl -q list_queues -p \"$RABBITMQ_DEFAULT_VHOST\" name | grep -qx ai_tasks_results",
+    ]
   interval: 10s
   timeout: 5s
-  retries: 5
-  start_period: 30s
+  retries: 8
+  start_period: 90s
 ```
+
+Healthy means the broker process is up **and** `definitions.json` has created `ai_tasks_results`. `check_running` alone can pass before the entrypoint's `import_definitions`, which is too early for Bot/AI Worker passive-declare.
 
 Dependent services (`bot`, `ai_worker`, and Head's event-bridge readiness) use `depends_on: condition: service_healthy`. Bot and AI Worker expose `rabbitmq_connected` in their exact heartbeat schemas (`contracts/telemetry.md` §2); it is optional for Head's own status. The broker container check remains separate and fixed here.
 

@@ -95,6 +95,40 @@ def broker_stack() -> Iterator[None]:
         _wait_for_tcp("127.0.0.1", 1883)
         _wait_for_tcp("127.0.0.1", 15672)
         _wait_for_http_json("http://127.0.0.1:15672/api/overview")
+        vhost = urllib.parse.quote(RABBIT_VHOST, safe="")
+        deadline = time.monotonic() + 90
+        last_error: Exception | None = None
+        while time.monotonic() < deadline:
+            try:
+                _http_json(f"http://127.0.0.1:15672/api/queues/{vhost}/ai_tasks_results")
+                break
+            except urllib.error.HTTPError as exc:
+                last_error = exc
+                if exc.code == 404:
+                    subprocess.run(
+                        args
+                        + [
+                            "exec",
+                            "-T",
+                            "rabbitmq",
+                            "rabbitmqctl",
+                            "import_definitions",
+                            "/etc/rabbitmq/definitions.json",
+                        ],
+                        check=False,
+                        cwd=ROOT,
+                        capture_output=True,
+                        text=True,
+                    )
+            except (
+                OSError,
+                urllib.error.URLError,
+                json.JSONDecodeError,
+            ) as exc:
+                last_error = exc
+            time.sleep(1)
+        else:
+            raise AssertionError(f"ai_tasks_results was not ready: {last_error}")
         yield
     finally:
         subprocess.run(args + ["down", "-v", "--remove-orphans"], check=False, cwd=ROOT)

@@ -11,6 +11,7 @@ from pydantic import ValidationError
 
 from shared.messaging import AI_WORKER_RUN_GRAPH_TASK
 from shared.models import (
+    AiTaskResultFailed,
     AiTaskResultSuccess,
     EnvironmentAiTaskEnvelope,
     EnvironmentState,
@@ -21,6 +22,8 @@ from shared.models import (
 from shared.security.redact import redact_sensitive
 
 from .celery_app import app
+from .graphs.battle import run_battle_graph
+from .graphs.environment import run_environment_graph
 from .progress import (
     NoOpProgressPublisher,
     ProgressPublisher,
@@ -47,10 +50,6 @@ WORKER_PHASES = (
 )
 
 
-class Phase4GraphUnavailableError(RuntimeError):
-    """Raised when transport shell is disabled and real graphs are not implemented."""
-
-
 def _settings() -> AiWorkerSettings:
     return AiWorkerSettings()  # type: ignore[call-arg]
 
@@ -63,8 +62,10 @@ def run_graph_impl(
     progress: ProgressPublisher | None = None,
     results: ResultPublisher | None = None,
     journal: list[str] | None = None,
+    environment_runner: Any = run_environment_graph,
+    battle_runner: Any = run_battle_graph,
 ) -> dict[str, Any]:
-    """Execute the Phase 2 transport shell (or reject when shell is disabled)."""
+    """Execute the transport shell or the selected real Phase 4 graph."""
     events = journal if journal is not None else []
     progress_publisher = progress or NoOpProgressPublisher()
     result_publisher = results or KombuResultPublisher(settings.broker_url())
@@ -81,39 +82,89 @@ def run_graph_impl(
                 requeue=False,
             )
 
-        if not settings.transport_shell:
-            raise Reject(
-                str(
-                    Phase4GraphUnavailableError(
-                        "AI_WORKER_TRANSPORT_SHELL is false; "
-                        "real LangGraph graphs are Phase 4"
-                    )
-                ),
-                requeue=False,
-            )
-
-        if not isinstance(envelope, EnvironmentAiTaskEnvelope):
-            raise Reject("transport shell accepts graph=environment only", requeue=False)
-
         # Ensure any accidental stringification of the envelope redacts api_key.
         _ = redact_sensitive(json.dumps({"api_key": envelope.api_key}))
 
-        for phase in WORKER_PHASES:
+        if settings.transport_shell:
+            if not isinstance(envelope, EnvironmentAiTaskEnvelope):
+                raise Reject(
+                    "transport shell supports graph=environment only",
+                    requeue=False,
+                )
+            for phase in WORKER_PHASES:
+                safe_publish_phase(
+                    progress_publisher,
+                    task_id=str(envelope.task_id),
+                    graph=envelope.graph,
+                    phase=phase,
+                )
+                events.append(phase.value)
+            EnvironmentState.model_validate(TRANSPORT_SHELL_RESULT["final_environment"])
+            result: AiTaskResultSuccess | AiTaskResultFailed = AiTaskResultSuccess(
+                task_id=envelope.task_id,
+                graph="environment",
+                result=dict(TRANSPORT_SHELL_RESULT),
+                completed_at=datetime.now(tz=UTC),
+            )
+        else:
             safe_publish_phase(
                 progress_publisher,
                 task_id=str(envelope.task_id),
                 graph=envelope.graph,
-                phase=phase,
+                phase=TaskPhase.launching,
             )
-            events.append(phase.value)
+            events.append(TaskPhase.launching.value)
+            last_phase: TaskPhase | None = TaskPhase.launching
 
-        EnvironmentState.model_validate(TRANSPORT_SHELL_RESULT["final_environment"])
-        result = AiTaskResultSuccess(
-            task_id=envelope.task_id,
-            graph="environment",
-            result=dict(TRANSPORT_SHELL_RESULT),
-            completed_at=datetime.now(tz=UTC),
-        )
+            def publish_graph_phase(phase: TaskPhase) -> None:
+                nonlocal last_phase
+                if phase != last_phase:
+                    safe_publish_phase(
+                        progress_publisher,
+                        task_id=str(envelope.task_id),
+                        graph=envelope.graph,
+                        phase=phase,
+                    )
+                    events.append(phase.value)
+                    last_phase = phase
+
+            try:
+                if isinstance(envelope, EnvironmentAiTaskEnvelope):
+                    graph_result = environment_runner(
+                        envelope,
+                        llm_max_retries=settings.llm_max_retries,
+                        publish_phase=publish_graph_phase,
+                        max_enhancer_retries=settings.environment_max_enhancer_retries,
+                        deadline_sec=settings.environment_task_deadline_sec,
+                        max_input_tokens=settings.environment_max_input_tokens,
+                        max_output_tokens=settings.environment_max_output_tokens,
+                    )
+                    EnvironmentState.model_validate(graph_result["final_environment"])
+                else:
+                    graph_result = battle_runner(
+                        envelope,
+                        llm_max_retries=settings.llm_max_retries,
+                        publish_phase=publish_graph_phase,
+                        max_modifier_retries=settings.battle_max_modifier_retries,
+                        deadline_sec=settings.battle_task_deadline_sec,
+                        max_input_tokens=settings.battle_max_input_tokens,
+                        max_output_tokens=settings.battle_max_output_tokens,
+                    )
+                result = AiTaskResultSuccess(
+                    task_id=envelope.task_id,
+                    graph=envelope.graph,
+                    result=graph_result,
+                    completed_at=datetime.now(tz=UTC),
+                )
+            except Exception as exc:
+                node = getattr(exc, "node", "invalid_input")
+                result = AiTaskResultFailed(
+                    task_id=envelope.task_id,
+                    graph=envelope.graph,
+                    node=node,
+                    reason="graph execution failed",
+                    completed_at=datetime.now(tz=UTC),
+                )
 
         try:
             result_publisher.publish_result(result)
@@ -139,7 +190,6 @@ def run_graph(self: Any, envelope: Any) -> dict[str, Any]:
 __all__ = [
     "TRANSPORT_SHELL_RESULT",
     "WORKER_PHASES",
-    "Phase4GraphUnavailableError",
     "run_graph",
     "run_graph_impl",
 ]

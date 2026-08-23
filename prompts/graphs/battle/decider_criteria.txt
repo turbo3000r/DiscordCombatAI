@@ -1,0 +1,5 @@
+Select the best recorded candidate by strict priority: outcome/winner identity correctness,
+fighter fidelity, narrative completeness and coherence, environment/setting fidelity, then
+prose quality. You may tolerate only soft quality defects. Never select a candidate that breaks
+winner cardinality, uses an unknown identity, or contradicts scripted winners; report no
+invented index and do not rewrite a candidate.

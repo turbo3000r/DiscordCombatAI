@@ -48,6 +48,30 @@ class AiWorkerSettings(BaseSettings):
     heartbeat_interval_sec: float = Field(default=30, gt=0)
     transport_shell: bool = False
     llm_max_retries: int = Field(default=2, ge=0)
+    environment_max_enhancer_retries: int = Field(
+        default=3, validation_alias="ENVIRONMENT_MAX_ENHANCER_RETRIES", ge=0, le=3
+    )
+    environment_task_deadline_sec: int = Field(
+        default=600, validation_alias="ENVIRONMENT_TASK_DEADLINE_SEC", gt=0
+    )
+    environment_max_input_tokens: int = Field(
+        default=120_000, validation_alias="ENVIRONMENT_MAX_INPUT_TOKENS", gt=0
+    )
+    environment_max_output_tokens: int = Field(
+        default=30_000, validation_alias="ENVIRONMENT_MAX_OUTPUT_TOKENS", gt=0
+    )
+    battle_max_modifier_retries: int = Field(
+        default=3, validation_alias="BATTLE_MAX_MODIFIER_RETRIES", ge=0, le=3
+    )
+    battle_task_deadline_sec: int = Field(
+        default=840, validation_alias="BATTLE_TASK_DEADLINE_SEC", gt=0
+    )
+    battle_max_input_tokens: int = Field(
+        default=350_000, validation_alias="BATTLE_MAX_INPUT_TOKENS", gt=0
+    )
+    battle_max_output_tokens: int = Field(
+        default=90_000, validation_alias="BATTLE_MAX_OUTPUT_TOKENS", gt=0
+    )
 
     @model_validator(mode="after")
     def _validate_node_identity(self) -> AiWorkerSettings:

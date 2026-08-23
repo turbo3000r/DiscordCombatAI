@@ -1,0 +1,3 @@
+Accept only an Environment that satisfies its structured bounds, covers the supplied descriptions
+or active modification request, exactly matches the selected setting, uses the requested language
+locale, is internally coherent, and contains no prompt/meta commentary or credential leakage.

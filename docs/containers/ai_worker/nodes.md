@@ -49,7 +49,7 @@ Every LLM-backed node uses a node-specific structured schema declared by its gra
 | **Location** | `ai_worker/nodes/validation.py` |
 | **Responsibility** | Judges a candidate against graph-supplied criteria; returns a `ValidatorVerdict`. If invalid, formulates `fix_request` (a `ModificationRequest` with `origin: "validator"`). |
 | **Parameters each graph supplies** | Its own validation criteria/prompt, and however it renders its candidate as text for the LLM (e.g. `environment`'s `environment.txt` element wrapper — see `ai_worker/prompts.md` §4.1). |
-| **Prompt** | `prompts/nodes/validator_base.txt` (shared) + `prompts/graphs/<name>/validator_criteria.txt` (per-graph) — see `ai_worker/prompts.md` §5 for the split rationale. Neither criteria file is authored yet for either graph. |
+| **Prompt** | `prompts/nodes/validator_base.txt` (shared) + `prompts/graphs/<name>/validator_criteria.txt` (per-graph) — see `ai_worker/prompts.md` §5 for the split rationale. |
 | **Consumers** | `environment` (`graphs/environment.md`), `battle` (`graphs/battle.md`) |
 
 ### 2a. Normative graph rubrics
@@ -70,7 +70,7 @@ The prompt prose is authored during Phase 4; these acceptance criteria are alrea
 | **Location** | `ai_worker/nodes/decider.py` |
 | **Responsibility** | Reached only when a `refiner` loop's retry budget is exhausted with no valid candidate. Picks the best of all recorded `AttemptRecord`s (including attempt #0) and sets `forced_selection = true` on the parent graph's output. |
 | **Parameters each graph supplies** | A short criteria/prompt fragment describing what "better" means when nothing is fully valid (e.g. `environment`: closeness to setting standards; `battle`: narrative coherence + outcome-shape correctness). |
-| **Prompt** | `prompts/nodes/decider_base.txt` (shared) + `prompts/graphs/<name>/decider_criteria.txt` (per-graph) — see `ai_worker/prompts.md` §5. Neither criteria file is authored yet for either graph. |
+| **Prompt** | `prompts/nodes/decider_base.txt` (shared) + `prompts/graphs/<name>/decider_criteria.txt` (per-graph) — see `ai_worker/prompts.md` §5. |
 | **Consumers** | `environment`, `battle` |
 
 The v1 pool is strictly bounded to at most four records: attempt #0 plus three fixer retries. `Decider` makes one structured-output call over that pool and returns:
@@ -88,9 +88,9 @@ It selects by the following lexicographic priorities:
 
 An unknown index or malformed selection uses the shared retry budget; exhaustion fails the task at `Decider`. There is no tournament/pairwise mode in v1 because the candidate pool cannot exceed four.
 
-Graph-specific hard postconditions still apply to the selected candidate. In `battle`, winner cardinality/identity and scripted-winner consistency are non-negotiable: if no candidate satisfies them, Decider fails rather than force-selecting contradictory prose (`graphs/battle.md` §7).
+Battle winner cardinality and identity are validated deterministically at `Predefine` (scripted IDs) and `ResolveWinners` (emergent IDs). Scripted narrative consistency is a semantic Validator/Decider rubric: those nodes receive fighter IDs, outcome, and `predetermined_winners` in prompt context and judge whether prose honors them. Because story candidates are prose strings, Decider may force-select imperfect prose and does not fail the task on a non-deterministic prose-to-ID comparison (`graphs/battle.md` §7/§9).
 
-> **Status note:** promoted from graph-specific to shared once `battle` confirmed it needs the identical fallback behavior `environment` already had. Prompt wording remains Phase 4 implementation work; the schemas and behavioral rubrics above are normative.
+> **Status note:** promoted from graph-specific to shared once `battle` confirmed it needs the identical fallback behavior `environment` already had. Prompt files exist at the target paths; the schemas and behavioral rubrics above remain normative.
 
 ---
 

@@ -4,11 +4,14 @@
 
 ---
 
-## 1. Status: Rewrite In Progress
+## 1. Status: Target Layout Authored
 
 **The legacy prompt system was built for a simpler, pre-LangGraph architecture** — one monolithic system prompt per graph (`environment_combiner.txt` for the whole `environment` graph, `core_simple_battle.txt` for the whole `battle` graph in a single shot). That no longer matches reality: `environment` now has 5 nodes and `battle` has 9, most of which need their own distinct instructions.
 
-**This section documents the TARGET structure (design confirmed, project owner) — not yet migrated on disk.** As of this revision, `prompts/` on disk still reflects the legacy layout (§6 has the full legacy → target mapping). This doc fixes the **file structure and naming only** — actually authoring the ~14 new prompt files' content is a separate, larger, and still-open task (§7).
+**The target graph/node prompt layout is now authored on disk and is mounted as a runtime
+input.** Legacy files remain reference material where noted in §6; the graph code loads only
+the target paths from §3. This document fixes the load-bearing structure and injection
+wrappers; prompt prose implements the already-canonical graph schemas and rubrics.
 
 **Scope note, confirmed this revision (project owner):** the ~14 per-node system prompt files (`graphs/environment/*.txt`, `graphs/battle/*.txt`, `nodes/*_base.txt`) are expected to be almost entirely rewritten during implementation to actually support LangGraph's per-node structure — legacy content is a tone/logic *reference* at most (§6 already says this for `core_simple_battle.txt` specifically), never a dependency to preserve. This doc does not need to specify their content any further than it already does (§4's mapping table) — that's implementation work, not a documentation gap. **What genuinely is load-bearing and must stay nailed down here:** the `elements/` injection wrappers (`setting/*.txt`, `language.txt`, `environment.txt`, `fighters.txt`, §2/§3) — every new per-node system prompt is written *against* these blocks' exact labelled format (`## SETTING:`, `## LANGUAGE-LOCALE:`, etc.), so whoever authors new prompt content is depending on this doc's §2/§3 being accurate, even though the system prompts themselves are free to be rewritten from scratch.
 
@@ -97,9 +100,9 @@ Generic no-AI arenas are not prompts and are not mounted into AI Worker. Their t
 | `ImplementFirstEpisode` | `graphs/battle/implement_first_episode.txt` | `elements/fighters.txt`, `elements/environment.txt`, `elements/setting/<setting>.txt`, `elements/language.txt` |
 | `ImplementNextEpisode` | `graphs/battle/implement_next_episode.txt` | same as `ImplementFirstEpisode`, plus prior episode text |
 | `ImplementLastEpisode` | `graphs/battle/implement_last_episode.txt` | same as `ImplementFirstEpisode`, plus all prior episode text |
-| `Validator` (shared) | `nodes/validator_base.txt` + `graphs/battle/validator_criteria.txt` | `elements/fighters.txt`, `elements/environment.txt`, `elements/setting/<setting>.txt` |
+| `Validator` (shared) | `nodes/validator_base.txt` + `graphs/battle/validator_criteria.txt` | `elements/fighters.txt` + fighter list, `elements/environment.txt`, `elements/setting/<setting>.txt`, plus `## OUTCOME:` (`outcome_type`, `random_winner_mode`, `predetermined_winners`) |
 | `Modifier` | `graphs/battle/modifier.txt` | `elements/language.txt`, `elements/setting/<setting>.txt` |
-| `Decider` (shared) | `nodes/decider_base.txt` + `graphs/battle/decider_criteria.txt` | `elements/environment.txt` (once per attempt) |
+| `Decider` (shared) | `nodes/decider_base.txt` + `graphs/battle/decider_criteria.txt` | Same identity context as Validator; each attempt presented as labelled story text (`## ATTEMPT <index>:`) |
 | `ResolveWinners` (emergent mode only) | `graphs/battle/resolve_winners.txt` | `elements/fighters.txt` + fighter list; output must contain exact supplied `player_id` values and is never derived by nickname matching (`graphs/battle.md` §5/§6) |
 
 ---
@@ -113,7 +116,9 @@ Validator's final prompt = nodes/validator_base.txt + graphs/<name>/validator_cr
 Decider's final prompt   = nodes/decider_base.txt   + graphs/<name>/decider_criteria.txt   + <all attempts presented via elements/*>
 ```
 
-Neither `validator_criteria.txt` nor `decider_criteria.txt` exists yet for either graph. Their normative behavioral rubrics are fixed in `nodes.md` §2a/§3; Phase 4 authors prompt prose that implements those rubrics without changing them.
+The graph-specific criteria files are authored at the paths in §3. Their normative behavioral
+rubrics remain fixed in `nodes.md` §2a/§3; prompt prose implements those rubrics without
+changing them.
 
 ---
 
@@ -135,7 +140,7 @@ Neither `validator_criteria.txt` nor `decider_criteria.txt` exists yet for eithe
 
 ## 7. Open Items
 
-- **Actually authoring the ~14 new/adapted prompt files' content is unstarted** — this doc only fixes their target location and name, per §1. This is the single biggest concrete gap for implementing either graph beyond `Generator`.
-- **The physical migration on disk (moving/renaming the legacy files per §6) hasn't happened yet** — this doc describes the target state; someone still needs to actually perform the moves and update whatever code path constructs each node's final prompt (§2).
-- `validator_criteria.txt` / `decider_criteria.txt` prompt prose does not exist yet (§5). Schemas and acceptance rubrics are resolved in `nodes.md`; authoring remains Phase 4 implementation work.
-- Whether `implement_first_episode.txt` and `implement_last_episode.txt` end up sharing significant text (both being "large, detailed" episodes per `graphs/battle.md` §6) or are fully independent prompts is undecided — a judgment call for whoever authors them.
+- Legacy prompt files may remain as non-runtime references during compatibility cleanup, but
+  graph nodes must continue to load only the target paths in §3.
+- Prompt tuning may improve prose quality, but it must not alter the canonical schemas, bounds,
+  identity rules, or semantic Validator/Decider rubrics.

@@ -163,12 +163,15 @@ The strict parser/coercion policy is canonical in `nodes.md` §1a. Malformed out
 |---|---|---|---|---|---|---|---|
 | `RouteInput` | `composer` | Pure conditional routing on `input_type`. | `input_type` | — | No | none | `graphs/environment/nodes/route_input.py` (graph-specific) |
 | `Generator` | `composer` | Generates a brand-new environment by synthesizing all of `raw_input` (one description per player) into one arena, directed by `setting` + `language_locale`. Never reads `existing_environment` (must be `null` on this path — see §9). | `raw_input`, `setting`, `language_locale` | `current_environment`, `attempts[0]` | Yes | `ai_worker/prompts.md` §4.1 — `graphs/environment/generator.txt` (already written, content migrating from legacy `environment_combiner.txt`) | `graphs/environment/nodes/generator.py` (graph-specific) |
-| `Normalise` | `composer` | Converts free-text player comments into a `ModificationRequest`. **By design, never rejects input** — see design decision below. | `raw_input`, `existing_environment`, `setting`, `language_locale` | `origin_request`, `active_request` | Yes | `ai_worker/prompts.md` §4.1 — `graphs/environment/normalise.txt` (**content not written yet**, flagged in §12) | `graphs/environment/nodes/normalise.py` (graph-specific) |
-| `Enhancer` | `composer` (1st pass) + `refiner` (retries) | Applies `active_request` to `current_environment`, respecting `setting`/`language_locale`. Same function serves both call sites (§3). | `current_environment`, `active_request`, `setting`, `language_locale` | `current_environment`, appends `AttemptRecord` | Yes | `ai_worker/prompts.md` §4.1 — `graphs/environment/enhancer.txt` (**content not written yet**, flagged in §12) | `graphs/environment/nodes/enhancer.py` (graph-specific) |
-| `Validator` | `refiner` | Judges whether `current_environment` satisfies `setting`'s standards; if not, formulates `fix_request`. | `current_environment`, `setting`, `language_locale` | `attempts[-1].validator_verdict`, `active_request` (on failure) | Yes | `ai_worker/prompts.md` §4.1, §5 — `nodes/validator_base.txt` (shared) + `graphs/environment/validator_criteria.txt` (**content not written yet**, flagged in §12) | `ai_worker/nodes/validation.py` — **shared with `battle`** (confirmed; environment-specific criteria are passed in as parameters, not hardcoded in the shared module) |
-| `Decider` | `refiner` (fallback only) | Reached only when `retry_count == max_enhancer_retries` and the latest attempt is still invalid. Picks the best candidate from **all** recorded attempts. | `attempts` (full history, including attempt #0) | `final_environment`, `forced_selection = true` | Yes | `ai_worker/prompts.md` §4.1, §5 — `nodes/decider_base.txt` (shared) + `graphs/environment/decider_criteria.txt` (**content not written yet**, flagged in §12) | `ai_worker/nodes/decider.py` — **shared with `battle`** (confirmed, promoted from graph-specific in this revision — see `ai_worker/nodes.md` §3) |
+| `Normalise` | `composer` | Converts free-text player comments into a `ModificationRequest`. **By design, never rejects input** — see design decision below. | `raw_input`, `existing_environment`, `setting`, `language_locale` | `origin_request`, `active_request` | Yes | `ai_worker/prompts.md` §4.1 — `graphs/environment/normalise.txt` | `graphs/environment/nodes/normalise.py` (graph-specific) |
+| `Enhancer` | `composer` (1st pass) + `refiner` (retries) | Applies `active_request` to `current_environment`, respecting `setting`/`language_locale`. Same function serves both call sites (§3). | `current_environment`, `active_request`, `setting`, `language_locale` | `current_environment`, appends `AttemptRecord` | Yes | `ai_worker/prompts.md` §4.1 — `graphs/environment/enhancer.txt` | `graphs/environment/nodes/enhancer.py` (graph-specific) |
+| `Validator` | `refiner` | Judges whether `current_environment` satisfies `setting`'s standards; if not, formulates `fix_request`. | `current_environment`, `setting`, `language_locale` | `attempts[-1].validator_verdict`, `active_request` (on failure) | Yes | `ai_worker/prompts.md` §4.1, §5 — `nodes/validator_base.txt` (shared) + `graphs/environment/validator_criteria.txt` | `ai_worker/nodes/validation.py` — **shared with `battle`** (confirmed; environment-specific criteria are passed in as parameters, not hardcoded in the shared module) |
+| `Decider` | `refiner` (fallback only) | Reached only when `retry_count == max_enhancer_retries` and the latest attempt is still invalid. Picks the best candidate from **all** recorded attempts. | `attempts` (full history, including attempt #0) | `final_environment`, `forced_selection = true` | Yes | `ai_worker/prompts.md` §4.1, §5 — `nodes/decider_base.txt` (shared) + `graphs/environment/decider_criteria.txt` | `ai_worker/nodes/decider.py` — **shared with `battle`** (confirmed, promoted from graph-specific in this revision — see `ai_worker/nodes.md` §3) |
 
-> **Prompt inventory note:** the target prompt file structure and per-node mapping is now fully designed — see `ai_worker/prompts.md` (not yet migrated on disk, its §1). Only `Generator`'s content actually exists today (as the legacy `core/environment_combiner.txt`, describing synthesizing multiple fresh descriptions). The entire revision machinery (`Normalise`/`Enhancer`/`Validator`'s environment criteria/`Decider`'s environment criteria) has a defined target file but no authored content yet — don't infer their tone/structure from `environment_combiner.txt`, they need to be written from scratch.
+> **Prompt inventory note:** the target prompt file structure and per-node mapping is authored
+> and mounted at runtime — see `ai_worker/prompts.md`. Legacy
+> `core/environment_combiner.txt` is reference-only; graph nodes use the target files named
+> above.
 
 > **Design decision — `Normalise` never fails (project owner):** even a comment with no apparent relevance must be creatively reinterpreted into a valid, setting-consistent modification request rather than erroring out — e.g. a player commenting just "peach" should become something like *"add a peach orchard to the scene"* or *"a giant peach crashes onto the battlefield"*, not a rejection. Consequently there is **no** "normalization failed" failure mode in this graph — see §9's explicit note on this.
 
@@ -198,7 +201,23 @@ The strict parser/coercion policy is canonical in `nodes.md` §1a. Malformed out
 
 > Naming follows the `HEAD_*`-style prefix convention from `head.md` §3. `ENVIRONMENT_MAX_ENHANCER_RETRIES` is graph-specific and belongs in this doc permanently; `AI_WORKER_LLM_MAX_RETRIES` is graph-agnostic and lives in `ai_worker.md` §3.
 
-Worst-case logical calls: initial path `Generator + 4 Validator + 3 Enhancer + Decider = 9`; revision path `Normalise + 4 Enhancer + 4 Validator + Decider = 10`. With two retries after the first API attempt, the absolute API-attempt caps are 27 and 30 respectively, further bounded by the 600-second and token ceilings. Usage returned by Gemini is accumulated after every call; before a new call, the worker must reserve that node's configured maximum output and reject if the remaining budget cannot cover it. An individual response can exceed an estimate only up to its own configured per-call maximum.
+### 8a. Per-node Gemini output limits
+
+These are hard `max_output_tokens` values supplied to Gemini for every API attempt, including retries:
+
+| Node | Maximum output tokens |
+|---|---:|
+| `Generator` | `4096` |
+| `Normalise` | `2048` |
+| `Enhancer` | `4096` |
+| `Validator` | `2048` |
+| `Decider` | `1024` |
+
+The limits reflect each node's maximum schema size: `Generator`/`Enhancer` may return the complete 4,000-character environment; `Normalise` returns one bounded modification request; `Validator` returns bounded issues plus at most one fix request; `Decider` returns only an attempt index and short reason. They are implementation constants, not environment variables or caller overrides.
+
+Worst-case logical calls: initial path `Generator + 4 Validator + 3 Enhancer + Decider = 9`; revision path `Normalise + 4 Enhancer + 4 Validator + Decider = 10`. Before API retries, reserving every logical call at its per-node maximum totals `25,600` output tokens for initial and `27,648` for revision, so either complete path fits under `ENVIRONMENT_MAX_OUTPUT_TOKENS=30,000`. With two retries after the first API attempt, the absolute API-attempt caps are 27 and 30 respectively, but retries consume the same cumulative budget and may therefore terminate the task before those theoretical attempt caps.
+
+Usage returned by Gemini is accumulated after every call. Before each API attempt, the worker reserves that node's configured maximum output and fails before calling if the remaining output budget cannot cover it. The configured `max_output_tokens` prevents an individual response from exceeding its reservation.
 
 ---
 

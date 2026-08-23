@@ -1,0 +1,2 @@
+## SETTING:
+Real-world: Arenas are vast, physically demanding environments (e.g., docks, construction sites, mountainous terrain) where gravity, friction, and mass are unforgiving constants. Battles are wars of attrition where resource exhaustion, momentum, and severe, predictable injury dictate failure.

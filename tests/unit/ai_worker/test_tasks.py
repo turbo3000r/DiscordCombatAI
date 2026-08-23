@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 from celery.exceptions import Reject
 
+from ai_worker.graphs.foundation import NodeExecutionError
 from ai_worker.progress import RecordingProgressPublisher
 from ai_worker.rabbitmq import RecordingResultPublisher
 from ai_worker.settings import AiWorkerSettings
@@ -122,15 +123,97 @@ def test_task_id_mismatch_rejected_without_requeue() -> None:
     assert exc_info.value.requeue is False
 
 
-def test_shell_disabled_rejected_without_requeue() -> None:
-    with pytest.raises(Reject) as exc_info:
-        run_graph_impl(
-            _envelope(),
-            celery_task_id=TASK_ID,
-            settings=_settings(transport_shell=False),
-            results=RecordingResultPublisher(),
-        )
-    assert exc_info.value.requeue is False
+def test_shell_disabled_runs_real_environment_graph() -> None:
+    results = RecordingResultPublisher()
+    payload = run_graph_impl(
+        _envelope(),
+        celery_task_id=TASK_ID,
+        settings=_settings(transport_shell=False),
+        results=results,
+        environment_runner=lambda *_args, **_kwargs: {
+            "final_environment": TRANSPORT_SHELL_RESULT["final_environment"],
+            "attempts_used": 1,
+            "forced_selection": False,
+        },
+    )
+    result = parse_ai_task_result(payload)
+    assert result.status == "success"
+    assert result.result["attempts_used"] == 1
+
+
+def test_real_graph_receives_validated_worker_bounds() -> None:
+    received: dict[str, object] = {}
+
+    def environment_runner(*_args: object, **kwargs: object) -> dict[str, object]:
+        received.update(kwargs)
+        return {
+            "final_environment": TRANSPORT_SHELL_RESULT["final_environment"],
+            "attempts_used": 1,
+            "forced_selection": False,
+        }
+
+    settings = _settings(transport_shell=False).model_copy(
+        update={
+            "environment_max_enhancer_retries": 2,
+            "environment_task_deadline_sec": 601,
+            "environment_max_input_tokens": 120_001,
+            "environment_max_output_tokens": 30_001,
+        }
+    )
+    run_graph_impl(
+        _envelope(),
+        celery_task_id=TASK_ID,
+        settings=settings,
+        results=RecordingResultPublisher(),
+        environment_runner=environment_runner,
+    )
+
+    assert received["llm_max_retries"] == 2
+    assert callable(received["publish_phase"])
+    assert received["max_enhancer_retries"] == 2
+    assert received["deadline_sec"] == 601
+    assert received["max_input_tokens"] == 120_001
+    assert received["max_output_tokens"] == 30_001
+
+
+def test_real_graph_progress_order_and_publish_failures_do_not_block_result() -> None:
+    progress = RecordingProgressPublisher(fail=True)
+    journal: list[str] = []
+
+    def graph_with_phases(
+        _envelope: object, *, publish_phase: object, **_kwargs: object
+    ) -> dict[str, object]:
+        assert callable(publish_phase)
+        publish_phase(TaskPhase.composing)
+        publish_phase(TaskPhase.refining)
+        publish_phase(TaskPhase.finishing)
+        return {
+            "final_environment": TRANSPORT_SHELL_RESULT["final_environment"],
+            "attempts_used": 1,
+            "forced_selection": False,
+        }
+
+    results = RecordingResultPublisher()
+    payload = run_graph_impl(
+        _envelope(),
+        celery_task_id=TASK_ID,
+        settings=_settings(transport_shell=False),
+        progress=progress,
+        results=results,
+        journal=journal,
+        environment_runner=graph_with_phases,
+    )
+    assert parse_ai_task_result(payload).status == "success"
+    assert journal == [
+        "launching",
+        "composing",
+        "refining",
+        "finishing",
+        "result_confirmed",
+        "task_return",
+    ]
+    assert len(results.published) == 1
+    assert progress.stopped is True
 
 
 def test_battle_graph_rejected_in_transport_shell() -> None:
@@ -143,6 +226,46 @@ def test_battle_graph_rejected_in_transport_shell() -> None:
             results=RecordingResultPublisher(),
         )
     assert exc_info.value.requeue is False
+
+
+def test_battle_graph_dispatches_real_runner_without_transport_shell() -> None:
+    battle = json.loads((FIXTURES / "ai_task_battle.json").read_text(encoding="utf-8"))
+    results = RecordingResultPublisher()
+    payload = run_graph_impl(
+        battle,
+        celery_task_id=str(battle["task_id"]),
+        settings=_settings(transport_shell=False),
+        results=results,
+        battle_runner=lambda *_args, **_kwargs: {
+            "story": "A finished battle.",
+            "winners": [],
+            "attempts_used": 1,
+            "forced_selection": False,
+        },
+    )
+    result = parse_ai_task_result(payload)
+    assert result.status == "success"
+    assert result.graph == "battle"
+    assert result.result["story"] == "A finished battle."
+
+
+def test_graph_failure_publishes_actual_failing_node() -> None:
+    results = RecordingResultPublisher()
+
+    def fail_graph(*_args: object, **_kwargs: object) -> dict[str, object]:
+        raise NodeExecutionError("Enhancer", "retry budget exhausted")
+
+    payload = run_graph_impl(
+        _envelope(),
+        celery_task_id=TASK_ID,
+        settings=_settings(transport_shell=False),
+        results=results,
+        environment_runner=fail_graph,
+    )
+    result = parse_ai_task_result(payload)
+    assert result.status == "failed"
+    assert result.node == "Enhancer"
+    assert len(results.published) == 1
 
 
 def test_redelivery_same_task_id_is_idempotent_shape() -> None:

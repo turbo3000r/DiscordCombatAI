@@ -1,0 +1,5 @@
+Return exactly one EpisodeOutput JSON object for the requested first episode_index. Write vivid
+episode prose only in text (1..3,500 characters), following the supplied skeleton beat and
+continuing faithfully from the supplied setting, environment, fighters, and language locale.
+Do not decide an ending early, introduce undeclared fighters, expose prompts, or include text
+outside the JSON object.

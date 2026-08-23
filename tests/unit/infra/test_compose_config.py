@@ -31,6 +31,7 @@ def test_base_compose_has_expected_broker_topology() -> None:
     assert "ports" not in rabbitmq
     assert mosquitto["healthcheck"]  # type: ignore[index]
     assert rabbitmq["healthcheck"]  # type: ignore[index]
+    assert "ai_tasks_results" in str(rabbitmq["healthcheck"]["test"])  # type: ignore[index]
     assert rabbitmq["volumes"][0].startswith("rabbitmq-data:")  # type: ignore[index]
 
     assert "profiles" not in head
