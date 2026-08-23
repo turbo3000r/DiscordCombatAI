@@ -193,16 +193,25 @@ def test_battle_graph_rejected_in_transport_shell() -> None:
     assert exc_info.value.requeue is False
 
 
-def test_battle_graph_remains_unavailable_without_transport_shell() -> None:
+def test_battle_graph_dispatches_real_runner_without_transport_shell() -> None:
     battle = json.loads((FIXTURES / "ai_task_battle.json").read_text(encoding="utf-8"))
-    with pytest.raises(Reject) as exc_info:
-        run_graph_impl(
-            battle,
-            celery_task_id=str(battle["task_id"]),
-            settings=_settings(transport_shell=False),
-            results=RecordingResultPublisher(),
-        )
-    assert exc_info.value.requeue is False
+    results = RecordingResultPublisher()
+    payload = run_graph_impl(
+        battle,
+        celery_task_id=str(battle["task_id"]),
+        settings=_settings(transport_shell=False),
+        results=results,
+        battle_runner=lambda *_args, **_kwargs: {
+            "story": "A finished battle.",
+            "winners": [],
+            "attempts_used": 1,
+            "forced_selection": False,
+        },
+    )
+    result = parse_ai_task_result(payload)
+    assert result.status == "success"
+    assert result.graph == "battle"
+    assert result.result["story"] == "A finished battle."
 
 
 def test_graph_failure_publishes_actual_failing_node() -> None:

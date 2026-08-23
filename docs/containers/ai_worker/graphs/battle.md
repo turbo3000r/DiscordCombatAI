@@ -239,7 +239,29 @@ The strict parser/coercion policy is `nodes.md` §1a. Final joined story length 
 
 > These variables are graph-specific and belong in this doc. The graph-agnostic `AI_WORKER_LLM_MAX_RETRIES` remains defined once in `ai_worker.md` §3.
 
-At five episodes and three Modifier retries, the worst path is 16 logical LLM calls: `Predefine` + `CreateSkeleton` + 5 episode calls + 4 Validators + 3 Modifiers + `Decider` + emergent `ResolveWinners`. With two retries after each first attempt, the absolute cap is 48 API attempts, further bounded by the 840-second and token ceilings. Across one `/quick-battle` with an initial environment plus three revisions, the combined maxima are 55 logical calls / 165 API attempts before deadline/token cuts. Gemini usage is accumulated after each call; reserve the next node's configured maximum output before calling and fail before the call if the remaining budget cannot cover it.
+### 8a. Per-node Gemini output limits
+
+These are hard `max_output_tokens` values supplied to Gemini for every API attempt, including retries:
+
+| Node | Maximum output tokens |
+|---|---:|
+| `Predefine` | `1024` |
+| `CreateSkeleton` | `4096` |
+| `ImplementFirstEpisode` | `4096` |
+| `ImplementNextEpisode` | `4096` |
+| `ImplementLastEpisode` | `4096` |
+| `Validator` | `2048` |
+| `Modifier` | `16384` |
+| `Decider` | `1024` |
+| `ResolveWinners` (emergent mode only) | `1024` |
+
+All three episode-writing nodes deliberately share the same `4096` limit because they return the same bounded `EpisodeOutput` schema (`text` ≤3,500 characters). `Modifier` receives the larger `16384` limit because it may return the complete `StoryOutput` (`story` ≤12,000 characters). The planning, validation, selection, and winner-resolution nodes return substantially smaller bounded structures. These are implementation constants, not environment variables or caller overrides. Scripted-mode `ResolveWinners` makes no LLM call and consumes no token reservation.
+
+At five episodes and three Modifier retries, the worst path is 16 logical LLM calls: `Predefine` + `CreateSkeleton` + 5 episode calls + 4 Validators + 3 Modifiers + `Decider` + emergent `ResolveWinners`. Before API retries, reserving every logical call at its per-node maximum totals `84,992` output tokens, so the complete maximum logical path fits under `BATTLE_MAX_OUTPUT_TOKENS=90,000`.
+
+With two retries after each first attempt, the absolute cap is 48 API attempts, but retries consume the same cumulative budget and may terminate the task before that theoretical attempt cap. Across one `/quick-battle` with an initial environment plus three revisions, the combined maxima remain 55 logical calls / 165 API attempts before deadline/token cuts.
+
+Gemini usage is accumulated after every API attempt. Before each attempt, the worker reserves that node's configured maximum output and fails before calling if the remaining output budget cannot cover it. The configured `max_output_tokens` prevents an individual response from exceeding its reservation.
 
 The 30-second progress heartbeat runs independently while Gemini calls are pending, giving four heartbeat opportunities within the 120-second Bot stall window. `BATTLE_TASK_DEADLINE_SEC=840` leaves 60 seconds inside `BOT_AI_TASK_TIMEOUT_SEC=900` for dispatch/result handling. This remains sound because `contracts/ai_task.md` §5a permits only one outstanding AI task per Bot node; queued task latency is otherwise unbounded.
 

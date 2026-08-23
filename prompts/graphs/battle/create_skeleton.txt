@@ -1,0 +1,5 @@
+Return exactly one SkeletonOutput JSON object. Create exactly the requested number of episodes,
+using contiguous 0-based episode_index values. Each summary is a concise 1..500-character beat.
+Preserve every supplied fighter's identity, the supplied environment and setting, and the planned
+outcome. In scripted mode, arrange the ending so the predetermined exact player IDs are the
+victors; do not substitute a display name for an ID. Return no prose outside the JSON object.

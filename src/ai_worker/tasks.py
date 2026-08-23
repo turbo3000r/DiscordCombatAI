@@ -22,6 +22,7 @@ from shared.models import (
 from shared.security.redact import redact_sensitive
 
 from .celery_app import app
+from .graphs.battle import run_battle_graph
 from .graphs.environment import run_environment_graph
 from .progress import (
     NoOpProgressPublisher,
@@ -49,10 +50,6 @@ WORKER_PHASES = (
 )
 
 
-class Phase4GraphUnavailableError(RuntimeError):
-    """Raised when a real graph has not reached its implementation phase."""
-
-
 def _settings() -> AiWorkerSettings:
     return AiWorkerSettings()  # type: ignore[call-arg]
 
@@ -66,8 +63,9 @@ def run_graph_impl(
     results: ResultPublisher | None = None,
     journal: list[str] | None = None,
     environment_runner: Any = run_environment_graph,
+    battle_runner: Any = run_battle_graph,
 ) -> dict[str, Any]:
-    """Execute the shell or the Phase 4B environment graph."""
+    """Execute the transport shell or the selected real Phase 4 graph."""
     events = journal if journal is not None else []
     progress_publisher = progress or NoOpProgressPublisher()
     result_publisher = results or KombuResultPublisher(settings.broker_url())
@@ -84,20 +82,15 @@ def run_graph_impl(
                 requeue=False,
             )
 
-        if not isinstance(envelope, EnvironmentAiTaskEnvelope):
-            raise Reject(
-                str(
-                    Phase4GraphUnavailableError(
-                        "battle LangGraph is not implemented until Phase 4C"
-                    )
-                ),
-                requeue=False,
-            )
-
         # Ensure any accidental stringification of the envelope redacts api_key.
         _ = redact_sensitive(json.dumps({"api_key": envelope.api_key}))
 
         if settings.transport_shell:
+            if not isinstance(envelope, EnvironmentAiTaskEnvelope):
+                raise Reject(
+                    "transport shell supports graph=environment only",
+                    requeue=False,
+                )
             for phase in WORKER_PHASES:
                 safe_publish_phase(
                     progress_publisher,
@@ -136,15 +129,22 @@ def run_graph_impl(
                     last_phase = phase
 
             try:
-                graph_result = environment_runner(
-                    envelope,
-                    llm_max_retries=settings.llm_max_retries,
-                    publish_phase=publish_graph_phase,
-                )
-                EnvironmentState.model_validate(graph_result["final_environment"])
+                if isinstance(envelope, EnvironmentAiTaskEnvelope):
+                    graph_result = environment_runner(
+                        envelope,
+                        llm_max_retries=settings.llm_max_retries,
+                        publish_phase=publish_graph_phase,
+                    )
+                    EnvironmentState.model_validate(graph_result["final_environment"])
+                else:
+                    graph_result = battle_runner(
+                        envelope,
+                        llm_max_retries=settings.llm_max_retries,
+                        publish_phase=publish_graph_phase,
+                    )
                 result = AiTaskResultSuccess(
                     task_id=envelope.task_id,
-                    graph="environment",
+                    graph=envelope.graph,
                     result=graph_result,
                     completed_at=datetime.now(tz=UTC),
                 )
@@ -152,9 +152,9 @@ def run_graph_impl(
                 node = getattr(exc, "node", "invalid_input")
                 result = AiTaskResultFailed(
                     task_id=envelope.task_id,
-                    graph="environment",
+                    graph=envelope.graph,
                     node=node,
-                    reason="environment graph execution failed",
+                    reason="graph execution failed",
                     completed_at=datetime.now(tz=UTC),
                 )
 
@@ -182,7 +182,6 @@ def run_graph(self: Any, envelope: Any) -> dict[str, Any]:
 __all__ = [
     "TRANSPORT_SHELL_RESULT",
     "WORKER_PHASES",
-    "Phase4GraphUnavailableError",
     "run_graph",
     "run_graph_impl",
 ]

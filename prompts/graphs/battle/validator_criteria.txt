@@ -1,0 +1,6 @@
+Apply hard gates before style: the story must respect its schema/bounds, identify only supplied
+fighters, preserve environment and setting continuity, have coherent ordered episodes and a
+resolved ending, and use the requested language. Reject prompt/meta commentary or credential
+leakage. In scripted mode the narrated victors must exactly match the predetermined winners;
+no undeclared victor is allowed. For valid output return is_valid=true, issues=[], and
+fix_request=null. Otherwise return 1..8 concise issues and a validator-origin prose-only fix.

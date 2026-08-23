@@ -1,0 +1,4 @@
+Return exactly one StoryOutput JSON object. Revise only the supplied complete story prose to
+address the validator's fix request. Do not change, recreate, or discuss the skeleton, episode
+plan, fighters, environment, setting, requested language, or planned winner outcome. Preserve a
+coherent resolved story of 1..12,000 characters. Do not return markdown or explanations.
