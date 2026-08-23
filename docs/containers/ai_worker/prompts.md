@@ -100,9 +100,9 @@ Generic no-AI arenas are not prompts and are not mounted into AI Worker. Their t
 | `ImplementFirstEpisode` | `graphs/battle/implement_first_episode.txt` | `elements/fighters.txt`, `elements/environment.txt`, `elements/setting/<setting>.txt`, `elements/language.txt` |
 | `ImplementNextEpisode` | `graphs/battle/implement_next_episode.txt` | same as `ImplementFirstEpisode`, plus prior episode text |
 | `ImplementLastEpisode` | `graphs/battle/implement_last_episode.txt` | same as `ImplementFirstEpisode`, plus all prior episode text |
-| `Validator` (shared) | `nodes/validator_base.txt` + `graphs/battle/validator_criteria.txt` | `elements/fighters.txt`, `elements/environment.txt`, `elements/setting/<setting>.txt` |
+| `Validator` (shared) | `nodes/validator_base.txt` + `graphs/battle/validator_criteria.txt` | `elements/fighters.txt` + fighter list, `elements/environment.txt`, `elements/setting/<setting>.txt`, plus `## OUTCOME:` (`outcome_type`, `random_winner_mode`, `predetermined_winners`) |
 | `Modifier` | `graphs/battle/modifier.txt` | `elements/language.txt`, `elements/setting/<setting>.txt` |
-| `Decider` (shared) | `nodes/decider_base.txt` + `graphs/battle/decider_criteria.txt` | `elements/environment.txt` (once per attempt) |
+| `Decider` (shared) | `nodes/decider_base.txt` + `graphs/battle/decider_criteria.txt` | Same identity context as Validator; each attempt presented as labelled story text (`## ATTEMPT <index>:`) |
 | `ResolveWinners` (emergent mode only) | `graphs/battle/resolve_winners.txt` | `elements/fighters.txt` + fighter list; output must contain exact supplied `player_id` values and is never derived by nickname matching (`graphs/battle.md` §5/§6) |
 
 ---

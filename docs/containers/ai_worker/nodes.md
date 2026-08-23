@@ -88,9 +88,9 @@ It selects by the following lexicographic priorities:
 
 An unknown index or malformed selection uses the shared retry budget; exhaustion fails the task at `Decider`. There is no tournament/pairwise mode in v1 because the candidate pool cannot exceed four.
 
-Graph-specific hard postconditions still apply to the selected candidate. In `battle`, winner cardinality/identity and scripted-winner consistency are non-negotiable: if no candidate satisfies them, Decider fails rather than force-selecting contradictory prose (`graphs/battle.md` §7).
+Battle winner cardinality and identity are validated deterministically at `Predefine` (scripted IDs) and `ResolveWinners` (emergent IDs). Scripted narrative consistency is a semantic Validator/Decider rubric: those nodes receive fighter IDs, outcome, and `predetermined_winners` in prompt context and judge whether prose honors them. Because story candidates are prose strings, Decider may force-select imperfect prose and does not fail the task on a non-deterministic prose-to-ID comparison (`graphs/battle.md` §7/§9).
 
-> **Status note:** promoted from graph-specific to shared once `battle` confirmed it needs the identical fallback behavior `environment` already had. Prompt wording remains Phase 4 implementation work; the schemas and behavioral rubrics above are normative.
+> **Status note:** promoted from graph-specific to shared once `battle` confirmed it needs the identical fallback behavior `environment` already had. Prompt files exist at the target paths; the schemas and behavioral rubrics above remain normative.
 
 ---
 

@@ -32,7 +32,11 @@ services:
     networks:
       - dca-internal
     healthcheck:
-      test: ["CMD", "rabbitmq-diagnostics", "-q", "check_running"]
+      test:
+        [
+          "CMD-SHELL",
+          "rabbitmq-diagnostics -q check_running && rabbitmqctl -q list_queues -p \"$$RABBITMQ_DEFAULT_VHOST\" name | grep -qx ai_tasks_results",
+        ]
       interval: 10s
       timeout: 5s
       retries: 8

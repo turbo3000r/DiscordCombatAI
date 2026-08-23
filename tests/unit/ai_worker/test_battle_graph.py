@@ -130,7 +130,17 @@ def test_episode_boundaries_and_call_limits(episode_count: int) -> None:
         [1024, 4096] + [4096] * episode_count + [2048, 1024]
     )
     assert "## FIGHTERS:" in str(fake.calls[0]["prompt"])
-    assert "## LANGUAGE-LOCALE:\nen" in str(fake.calls[0]["prompt"])
+    assert "111111111111111111:" in str(fake.calls[0]["prompt"])
+    assert "## LANGUAGE-LOCALE:" not in str(fake.calls[0]["prompt"])
+    assert "## LANGUAGE-LOCALE:\nen" in str(fake.calls[2]["prompt"])
+    validator_prompt = str(fake.calls[2 + episode_count]["prompt"])
+    assert "## FIGHTERS:" in validator_prompt
+    assert "## Environment:" in validator_prompt
+    assert "## SETTING:" in validator_prompt
+    assert "## OUTCOME:" in validator_prompt
+    assert '"predetermined_winners":null' in validator_prompt
+    assert '"random_winner_mode":false' in validator_prompt
+    assert "111111111111111111:" in validator_prompt
 
 
 def test_malformed_predefine_and_skeleton_mismatch_retry_then_fail() -> None:
@@ -200,6 +210,15 @@ def test_modifier_decider_and_attempt_accounting() -> None:
     assert result["forced_selection"] is True
     assert result["story"] == "Alice survives the storm."
     assert [call["max_output_tokens"] for call in fake.calls][-4:] == [16384, 2048, 1024, 1024]
+    decider_prompt = str(fake.calls[-2]["prompt"])
+    assert "## FIGHTERS:" in decider_prompt
+    assert "## Environment:" in decider_prompt
+    assert "## SETTING:" in decider_prompt
+    assert "## OUTCOME:" in decider_prompt
+    assert "## ATTEMPT 0:" in decider_prompt
+    assert "## ATTEMPT 1:" in decider_prompt
+    assert "111111111111111111:" in decider_prompt
+    assert '"predetermined_winners":null' in decider_prompt
 
 
 def test_scripted_winners_are_validated_and_need_no_resolution_call() -> None:
@@ -233,6 +252,14 @@ def test_scripted_winners_are_validated_and_need_no_resolution_call() -> None:
 
     assert result["winners"] == ["111111111111111111"]
     assert len(fake.calls) == 5
+    validator_prompt = str(fake.calls[-1]["prompt"])
+    assert "## FIGHTERS:" in validator_prompt
+    assert "## Environment:" in validator_prompt
+    assert "## SETTING:" in validator_prompt
+    assert "## OUTCOME:" in validator_prompt
+    assert '"predetermined_winners":["111111111111111111"]' in validator_prompt
+    assert '"random_winner_mode":true' in validator_prompt
+    assert "111111111111111111:" in validator_prompt
 
 
 def test_graph_input_rejects_duplicate_ids_and_setting_mismatch_without_call() -> None:
@@ -370,6 +397,11 @@ def test_scripted_decider_uses_rubric_selection_and_preserves_predetermined_ids(
     assert result["story"] == "The battle begins.\n\nNobody wins."
     assert result["winners"] == ["111111111111111111"]
     assert result["forced_selection"] is True
+    decider_prompt = str(fake.calls[-1]["prompt"])
+    assert "## FIGHTERS:" in decider_prompt
+    assert "## OUTCOME:" in decider_prompt
+    assert '"predetermined_winners":["111111111111111111"]' in decider_prompt
+    assert "## ATTEMPT 0:" in decider_prompt
 
 
 @pytest.mark.parametrize(

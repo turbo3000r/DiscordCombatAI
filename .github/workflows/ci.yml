@@ -21,7 +21,7 @@ jobs:
       # Manual runs always execute every check; PRs only run affected slices.
       python: ${{ github.event_name != 'pull_request' && 'true' || steps.filter.outputs.python }}
       launcher: ${{ github.event_name != 'pull_request' && 'true' || steps.filter.outputs.launcher }}
-      #brokers: ${{ github.event_name != 'pull_request' && 'true' || steps.filter.outputs.brokers }}
+      brokers: ${{ github.event_name != 'pull_request' && 'true' || steps.filter.outputs.brokers }}
       web: ${{ github.event_name != 'pull_request' && 'true' || steps.filter.outputs.web }}
     steps:
       - name: Checkout
@@ -55,6 +55,7 @@ jobs:
               - 'infra/**'
               - 'docker-compose.yml'
               - 'docker-compose.dev.yml'
+              - 'src/ai_worker/**'
               - 'tests/integration/**'
               - 'tests/unit/infra/**'
             web:

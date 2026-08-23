@@ -264,26 +264,58 @@ class BattleGraph:
             kwargs["sleep"] = self.r.sleep
         return cast(BaseModel, invoke_structured(**cast(Any, kwargs)))
 
-    def _prompt(self, path: str, e: BattleInvocation, extra: str = "") -> str:
-        fighters = "\n".join(
+    def _fighters_block(self, e: BattleInvocation) -> str:
+        listing = "\n".join(
             f"{f.player_id}: {f.player_nick} — {f.fighter_name}: {f.description}"
             for f in e.fighters
         )
-        prompt = self.prompts.assemble(
-            base_path=path,
-            elements=[
-                ("elements/environment.txt", {"env": e.environment.description}),
-                (f"elements/setting/{e.setting}.txt", None),
-                ("elements/language.txt", {"locale": e.language_locale}),
-            ],
+        return f"{self.prompts.element('elements/fighters.txt')}\n{listing}"
+
+    def _outcome_block(self, e: BattleInvocation, plan: PredefineOutput) -> str:
+        return "## OUTCOME:\n" + json.dumps(
+            {
+                "outcome_type": plan.outcome_type,
+                "random_winner_mode": e.random_winner_mode,
+                "predetermined_winners": plan.predetermined_winners,
+            },
+            separators=(",", ":"),
         )
-        return (
-            prompt
-            + "\n\n"
-            + self.prompts.element("elements/fighters.txt")
-            + "\n"
-            + fighters
-            + ("\n\n" + extra if extra else "")
+
+    def _prompt(
+        self,
+        path: str,
+        e: BattleInvocation,
+        extra: str = "",
+        *,
+        language: bool,
+        fighters: bool,
+        environment: bool = True,
+        setting: bool = True,
+    ) -> str:
+        elements: list[tuple[str, dict[str, str] | None]] = []
+        if environment:
+            elements.append(("elements/environment.txt", {"env": e.environment.description}))
+        if setting:
+            elements.append((f"elements/setting/{e.setting}.txt", None))
+        if language:
+            elements.append(("elements/language.txt", {"locale": e.language_locale}))
+        prompt = self.prompts.assemble(base_path=path, elements=elements)
+        if fighters:
+            prompt += "\n\n" + self._fighters_block(e)
+        if extra:
+            prompt += "\n\n" + extra
+        return prompt
+
+    def _identity_context(self, e: BattleInvocation, plan: PredefineOutput) -> str:
+        return "\n\n".join(
+            [
+                self.prompts.element(
+                    "elements/environment.txt", {"env": e.environment.description}
+                ),
+                self.prompts.element(f"elements/setting/{e.setting}.txt"),
+                self._fighters_block(e),
+                self._outcome_block(e, plan),
+            ]
         )
 
     @staticmethod
@@ -327,7 +359,7 @@ class BattleGraph:
         p = self._call(
             e,
             "Predefine",
-            self._prompt("graphs/battle/predefine.txt", e),
+            self._prompt("graphs/battle/predefine.txt", e, language=False, fighters=True),
             PredefineOutput,
             validate=lambda output: self._validate_outcome(
                 cast(PredefineOutput, output), e.fighters, e.random_winner_mode
@@ -341,7 +373,13 @@ class BattleGraph:
         skeleton = self._call(
             e,
             "CreateSkeleton",
-            self._prompt("graphs/battle/create_skeleton.txt", e, p.model_dump_json()),
+            self._prompt(
+                "graphs/battle/create_skeleton.txt",
+                e,
+                p.model_dump_json(),
+                language=False,
+                fighters=True,
+            ),
             SkeletonOutput,
             validate=lambda output: self._validate_skeleton(
                 cast(SkeletonOutput, output), p.episode_count
@@ -360,7 +398,7 @@ class BattleGraph:
         output = self._call(
             e,
             node,
-            self._prompt(path, e, extra),
+            self._prompt(path, e, extra, language=True, fighters=True),
             EpisodeOutput,
             validate=self._episode_validator(index),
         )
@@ -415,10 +453,13 @@ class BattleGraph:
     def _validator(self, state: BattleGraphState) -> dict[str, object]:
         e, story = state["invocation"], state["current_story"]
         self.r.publish_phase and self.r.publish_phase(TaskPhase.refining)
+        plan = state["plan"]
         verdict = validate_candidate(
             context=self._ctx(e, "Validator"),
             base_prompt=self.prompts.read("nodes/validator_base.txt"),
-            criteria=self.prompts.read("graphs/battle/validator_criteria.txt"),
+            criteria=self.prompts.read("graphs/battle/validator_criteria.txt")
+            + "\n\n"
+            + self._identity_context(e, plan),
             candidate=story,
             candidate_serializer=lambda x: x,
             max_retries=self.r.llm_max_retries,
@@ -452,6 +493,9 @@ class BattleGraph:
                 json.dumps(
                     {"story": state["current_story"], "fix": verdict.fix_request.model_dump()}
                 ),
+                language=True,
+                fighters=False,
+                environment=False,
             ),
             StoryOutput,
         )
@@ -468,12 +512,15 @@ class BattleGraph:
         e = state["invocation"]
         self.r.publish_phase and self.r.publish_phase(TaskPhase.finishing)
         attempts = cast(Any, state["attempts"])
+        plan = state["plan"]
         selection = decide_candidate(
             context=self._ctx(e, "Decider"),
             base_prompt=self.prompts.read("nodes/decider_base.txt"),
-            criteria=self.prompts.read("graphs/battle/decider_criteria.txt"),
+            criteria=self.prompts.read("graphs/battle/decider_criteria.txt")
+            + "\n\n"
+            + self._identity_context(e, plan),
             attempts=attempts,
-            candidate_serializer=lambda a: str(a.candidate),
+            candidate_serializer=lambda a: f"## ATTEMPT {a.attempt_index}:\n{a.candidate}",
             max_retries=self.r.llm_max_retries,
             client=self.r.client,
             sleep=self.r.sleep,
@@ -497,7 +544,15 @@ class BattleGraph:
             resolution = self._call(
                 e,
                 "ResolveWinners",
-                self._prompt("graphs/battle/resolve_winners.txt", e, story),
+                self._prompt(
+                    "graphs/battle/resolve_winners.txt",
+                    e,
+                    story,
+                    language=False,
+                    fighters=True,
+                    environment=False,
+                    setting=False,
+                ),
                 WinnerResolution,
                 validate=lambda output: self._validate_winner_resolution(
                     cast(WinnerResolution, output), p, e.fighters
