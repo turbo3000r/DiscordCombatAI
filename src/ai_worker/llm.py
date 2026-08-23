@@ -196,6 +196,12 @@ def invoke_structured(
             if validate is not None:
                 validate(parsed)
             return parsed
+        except NodeExecutionError:
+            # Resource accounting failures happen before a provider attempt (or
+            # immediately after provider usage is recorded). They are graph
+            # budget failures, not Gemini API failures and must retain their
+            # documented node/reason for the failed task result.
+            raise
         except StructuredOutputError as exc:
             retryable = True
             failure = exc

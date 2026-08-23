@@ -141,6 +141,41 @@ def test_shell_disabled_runs_real_environment_graph() -> None:
     assert result.result["attempts_used"] == 1
 
 
+def test_real_graph_receives_validated_worker_bounds() -> None:
+    received: dict[str, object] = {}
+
+    def environment_runner(*_args: object, **kwargs: object) -> dict[str, object]:
+        received.update(kwargs)
+        return {
+            "final_environment": TRANSPORT_SHELL_RESULT["final_environment"],
+            "attempts_used": 1,
+            "forced_selection": False,
+        }
+
+    settings = _settings(transport_shell=False).model_copy(
+        update={
+            "environment_max_enhancer_retries": 2,
+            "environment_task_deadline_sec": 601,
+            "environment_max_input_tokens": 120_001,
+            "environment_max_output_tokens": 30_001,
+        }
+    )
+    run_graph_impl(
+        _envelope(),
+        celery_task_id=TASK_ID,
+        settings=settings,
+        results=RecordingResultPublisher(),
+        environment_runner=environment_runner,
+    )
+
+    assert received["llm_max_retries"] == 2
+    assert callable(received["publish_phase"])
+    assert received["max_enhancer_retries"] == 2
+    assert received["deadline_sec"] == 601
+    assert received["max_input_tokens"] == 120_001
+    assert received["max_output_tokens"] == 30_001
+
+
 def test_real_graph_progress_order_and_publish_failures_do_not_block_result() -> None:
     progress = RecordingProgressPublisher(fail=True)
     journal: list[str] = []

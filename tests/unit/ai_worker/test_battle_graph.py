@@ -11,10 +11,16 @@ from pydantic import BaseModel
 from ai_worker.graphs.battle.graph import (
     BattleGraph,
     BattleGraphRuntime,
+    EpisodeOutput,
+    EpisodeSkeleton,
+    PredefineOutput,
+    SkeletonOutput,
+    StoryOutput,
+    WinnerResolution,
     battle_invocation_from_envelope,
 )
 from ai_worker.graphs.foundation import NodeExecutionError
-from ai_worker.llm import GeminiResponse
+from ai_worker.llm import GeminiResponse, StructuredOutputError, parse_structured_output
 from shared.models import BattleAiTaskEnvelope, TaskPhase
 
 FIXTURES = Path(__file__).resolve().parents[2] / "fixtures" / "contracts"
@@ -101,7 +107,7 @@ def _replies(episode_count: int, *, outcome: str = "one") -> list[str]:
     ]
 
 
-@pytest.mark.parametrize("episode_count", [2, 3, 5])
+@pytest.mark.parametrize("episode_count", [2, 3, 4, 5])
 def test_episode_boundaries_and_call_limits(episode_count: int) -> None:
     fake = FakeGemini(_replies(episode_count))
     phases: list[TaskPhase] = []
@@ -329,7 +335,7 @@ def test_solo_no_victor_and_multiple_outcomes_are_exact() -> None:
     assert result["winners"] == ["111111111111111111", "222222222222222222"]
 
 
-def test_decider_rejects_scripted_story_that_breaks_hard_postcondition() -> None:
+def test_scripted_decider_uses_rubric_selection_and_preserves_predetermined_ids() -> None:
     fake = FakeGemini(
         [
             json.dumps(
@@ -356,9 +362,110 @@ def test_decider_rejects_scripted_story_that_breaks_hard_postcondition() -> None
     graph = BattleGraph(
         BattleGraphRuntime(PROMPTS, llm_max_retries=0, client=fake, sleep=lambda _: None)
     )
-    with pytest.raises(NodeExecutionError, match="Decider"):
-        graph.invoke(
-            battle_invocation_from_envelope(
-                _envelope(random_winner_mode=True, max_modifier_retries=0)
-            )
+    result = graph.invoke(
+        battle_invocation_from_envelope(
+            _envelope(random_winner_mode=True, max_modifier_retries=0)
         )
+    )
+    assert result["story"] == "The battle begins.\n\nNobody wins."
+    assert result["winners"] == ["111111111111111111"]
+    assert result["forced_selection"] is True
+
+
+@pytest.mark.parametrize(
+    ("schema", "payload"),
+    [
+        (
+            PredefineOutput,
+            {"outcome_type": "one", "episode_count": 2, "predetermined_winners": None},
+        ),
+        (EpisodeSkeleton, {"episode_index": 0, "summary": "Beat"}),
+        (SkeletonOutput, {"episodes": [{"episode_index": 0, "summary": "Beat"}]}),
+        (EpisodeOutput, {"episode_index": 0, "text": "Episode"}),
+        (StoryOutput, {"story": "Story"}),
+        (WinnerResolution, {"winner_ids": []}),
+    ],
+)
+def test_every_battle_llm_output_schema_is_strict_and_forbids_unknown_fields(
+    schema: type[BaseModel], payload: dict[str, object]
+) -> None:
+    payload["unexpected"] = True
+    with pytest.raises(StructuredOutputError):
+        parse_structured_output(json.dumps(payload), schema)
+
+
+@pytest.mark.parametrize("episode_count", [1, 6])
+def test_predefine_rejects_episode_counts_outside_documented_bounds(episode_count: int) -> None:
+    fake = FakeGemini(
+        [
+            json.dumps(
+                {
+                    "outcome_type": "one",
+                    "episode_count": episode_count,
+                    "predetermined_winners": None,
+                }
+            )
+        ]
+    )
+    graph = BattleGraph(
+        BattleGraphRuntime(PROMPTS, llm_max_retries=0, client=fake, sleep=lambda _: None)
+    )
+    with pytest.raises(NodeExecutionError, match="Predefine"):
+        graph.invoke(battle_invocation_from_envelope(_envelope()))
+
+
+@pytest.mark.parametrize(
+    "winner_ids",
+    [
+        ["Alice"],
+        [""],
+        ["111111111111111111", "999999999999999999"],
+    ],
+)
+def test_winner_resolution_rejects_nicknames_empty_and_off_session_ids(
+    winner_ids: list[str],
+) -> None:
+    replies = _replies(2)
+    replies[-1] = json.dumps({"winner_ids": winner_ids})
+    graph = BattleGraph(
+        BattleGraphRuntime(
+            PROMPTS,
+            llm_max_retries=0,
+            client=FakeGemini(replies),
+            sleep=lambda _: None,
+        )
+    )
+    with pytest.raises(NodeExecutionError, match="ResolveWinners"):
+        graph.invoke(battle_invocation_from_envelope(_envelope()))
+
+
+def test_battle_runtime_output_ceiling_fails_before_the_first_llm_call() -> None:
+    fake = FakeGemini([])
+    graph = BattleGraph(
+        BattleGraphRuntime(
+            PROMPTS,
+            llm_max_retries=0,
+            max_output_tokens=1023,
+            client=fake,
+            sleep=lambda _: None,
+        )
+    )
+    with pytest.raises(NodeExecutionError, match="output token"):
+        graph.invoke(battle_invocation_from_envelope(_envelope()))
+    assert fake.calls == []
+
+
+@pytest.mark.parametrize(
+    ("schema", "field", "maximum"),
+    [(EpisodeOutput, "text", 3500), (StoryOutput, "story", 12000)],
+)
+def test_story_output_character_boundaries_are_exact(
+    schema: type[BaseModel], field: str, maximum: int
+) -> None:
+    payload: dict[str, object] = {field: "x" * maximum}
+    if schema is EpisodeOutput:
+        payload["episode_index"] = 0
+    assert parse_structured_output(json.dumps(payload), schema)
+    payload[field] = "x" * (maximum + 1)
+    with pytest.raises(StructuredOutputError):
+        parse_structured_output(json.dumps(payload), schema)

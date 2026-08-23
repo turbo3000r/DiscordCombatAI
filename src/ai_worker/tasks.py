@@ -134,6 +134,10 @@ def run_graph_impl(
                         envelope,
                         llm_max_retries=settings.llm_max_retries,
                         publish_phase=publish_graph_phase,
+                        max_enhancer_retries=settings.environment_max_enhancer_retries,
+                        deadline_sec=settings.environment_task_deadline_sec,
+                        max_input_tokens=settings.environment_max_input_tokens,
+                        max_output_tokens=settings.environment_max_output_tokens,
                     )
                     EnvironmentState.model_validate(graph_result["final_environment"])
                 else:
@@ -141,6 +145,10 @@ def run_graph_impl(
                         envelope,
                         llm_max_retries=settings.llm_max_retries,
                         publish_phase=publish_graph_phase,
+                        max_modifier_retries=settings.battle_max_modifier_retries,
+                        deadline_sec=settings.battle_task_deadline_sec,
+                        max_input_tokens=settings.battle_max_input_tokens,
+                        max_output_tokens=settings.battle_max_output_tokens,
                     )
                 result = AiTaskResultSuccess(
                     task_id=envelope.task_id,

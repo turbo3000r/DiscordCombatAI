@@ -38,6 +38,7 @@ jobs:
               - '.github/workflows/python.yml'
               - 'src/**'
               - '!src/web/frontend/**'
+              - 'prompts/**'
               - 'tests/**'
               - 'pyproject.toml'
               - 'uv.lock'

@@ -120,36 +120,36 @@ class BattleInvocation(BaseModel):
 
 
 class PredefineOutput(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", strict=True)
     outcome_type: Literal["none", "one", "multiple"]
     episode_count: int = Field(ge=2, le=5)
     predetermined_winners: list[str] | None
 
 
 class EpisodeSkeleton(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", strict=True)
     episode_index: int = Field(ge=0)
     summary: str = Field(min_length=1, max_length=500)
 
 
 class SkeletonOutput(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", strict=True)
     episodes: list[EpisodeSkeleton]
 
 
 class EpisodeOutput(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", strict=True)
     episode_index: int
     text: str = Field(min_length=1, max_length=3500)
 
 
 class StoryOutput(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", strict=True)
     story: str = Field(min_length=1, max_length=12000)
 
 
 class WinnerResolution(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", strict=True)
     winner_ids: list[str]
 
 
@@ -157,6 +157,10 @@ class WinnerResolution(BaseModel):
 class BattleGraphRuntime:
     prompt_root: Path
     llm_max_retries: int
+    max_modifier_retries: int = 3
+    deadline_sec: int = BATTLE_TASK_DEADLINE_SEC
+    max_input_tokens: int = BATTLE_MAX_INPUT_TOKENS
+    max_output_tokens: int = BATTLE_MAX_OUTPUT_TOKENS
     client: GeminiClient | None = None
     publish_phase: Callable[[TaskPhase], None] | None = None
     sleep: Callable[[float], None] | None = None
@@ -183,9 +187,9 @@ class BattleGraph:
         self.r = runtime
         self.prompts = PromptLoader(runtime.prompt_root)
         self.ledger = ResourceLedger(
-            deadline_sec=BATTLE_TASK_DEADLINE_SEC,
-            max_input_tokens=BATTLE_MAX_INPUT_TOKENS,
-            max_output_tokens=BATTLE_MAX_OUTPUT_TOKENS,
+            deadline_sec=runtime.deadline_sec,
+            max_input_tokens=runtime.max_input_tokens,
+            max_output_tokens=runtime.max_output_tokens,
             clock=runtime.clock or time.monotonic,
         )
         self.compiled = self._compile()
@@ -303,10 +307,15 @@ class BattleGraph:
             raise StructuredOutputError("winner cardinality disagrees with outcome")
 
     def invoke(self, invocation: BattleInvocation) -> dict[str, object]:
+        if invocation.max_modifier_retries > self.r.max_modifier_retries:
+            raise NodeExecutionError(
+                "invalid_input",
+                "max_modifier_retries exceeds the worker graph configuration",
+            )
         self.ledger = ResourceLedger(
-            deadline_sec=BATTLE_TASK_DEADLINE_SEC,
-            max_input_tokens=BATTLE_MAX_INPUT_TOKENS,
-            max_output_tokens=BATTLE_MAX_OUTPUT_TOKENS,
+            deadline_sec=self.r.deadline_sec,
+            max_input_tokens=self.r.max_input_tokens,
+            max_output_tokens=self.r.max_output_tokens,
             clock=self.r.clock or time.monotonic,
         )
         result = cast(BattleGraphState, self.compiled.invoke({"invocation": invocation}))
@@ -404,7 +413,7 @@ class BattleGraph:
         )
 
     def _validator(self, state: BattleGraphState) -> dict[str, object]:
-        e, p, story = state["invocation"], state["plan"], state["current_story"]
+        e, story = state["invocation"], state["current_story"]
         self.r.publish_phase and self.r.publish_phase(TaskPhase.refining)
         verdict = validate_candidate(
             context=self._ctx(e, "Validator"),
@@ -419,16 +428,6 @@ class BattleGraph:
             max_output_tokens=NODE_MAX_OUTPUT_TOKENS["Validator"],
         )
         attempts = fill_attempt_verdict(cast(Any, state["attempts"]), verdict)
-        if (
-            verdict.is_valid
-            and e.random_winner_mode
-            and not self._scripted_story_mentions_winners(
-                story, p.predetermined_winners or [], e.fighters
-            )
-        ):
-            raise NodeExecutionError(
-                "Validator", "story violates scripted-winner hard postcondition"
-            )
         return {"attempts": attempts}
 
     def _after_validator(self, state: BattleGraphState) -> str:
@@ -466,7 +465,7 @@ class BattleGraph:
         }
 
     def _decider(self, state: BattleGraphState) -> dict[str, object]:
-        e, p = state["invocation"], state["plan"]
+        e = state["invocation"]
         self.r.publish_phase and self.r.publish_phase(TaskPhase.finishing)
         attempts = cast(Any, state["attempts"])
         selection = decide_candidate(
@@ -486,12 +485,6 @@ class BattleGraph:
                 a for a in attempts if a.attempt_index == selection.selected_attempt_index
             ).candidate
         )
-        if e.random_winner_mode and not self._scripted_story_mentions_winners(
-            story, p.predetermined_winners or [], e.fighters
-        ):
-            raise NodeExecutionError(
-                "Decider", "selected story violates scripted-winner hard postcondition"
-            )
         return {"story": story, "forced_selection": True}
 
     def _resolve_winners(self, state: BattleGraphState) -> dict[str, object]:
@@ -555,14 +548,6 @@ class BattleGraph:
             True,
         )
 
-    @staticmethod
-    def _scripted_story_mentions_winners(
-        story: str, winner_ids: list[str], fighters: list[Fighter]
-    ) -> bool:
-        names = {fighter.player_id: fighter.player_nick for fighter in fighters}
-        return all(names[winner_id].casefold() in story.casefold() for winner_id in winner_ids)
-
-
 def battle_invocation_from_envelope(envelope: BattleAiTaskEnvelope) -> BattleInvocation:
     """Translate the canonical task envelope into strict graph-local input."""
     try:
@@ -598,14 +583,22 @@ def run_battle_graph(
     client: GeminiClient | None = None,
     prompt_root: Path | None = None,
     sleep: Callable[[float], None] | None = None,
+    max_modifier_retries: int = 3,
+    deadline_sec: int = BATTLE_TASK_DEADLINE_SEC,
+    max_input_tokens: int = BATTLE_MAX_INPUT_TOKENS,
+    max_output_tokens: int = BATTLE_MAX_OUTPUT_TOKENS,
 ) -> dict[str, object]:
     graph = BattleGraph(
         BattleGraphRuntime(
             prompt_root=prompt_root or default_prompt_root(),
             llm_max_retries=llm_max_retries,
+            max_modifier_retries=max_modifier_retries,
             client=client,
             publish_phase=publish_phase,
             sleep=sleep,
+            deadline_sec=deadline_sec,
+            max_input_tokens=max_input_tokens,
+            max_output_tokens=max_output_tokens,
         )
     )
     return graph.invoke(battle_invocation_from_envelope(envelope))

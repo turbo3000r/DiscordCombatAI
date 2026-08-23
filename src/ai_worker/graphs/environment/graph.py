@@ -161,6 +161,10 @@ class EnvironmentGraphState(TypedDict, total=False):
 class EnvironmentGraphRuntime:
     prompt_root: Path
     llm_max_retries: int
+    max_enhancer_retries: int = 3
+    deadline_sec: int = ENVIRONMENT_TASK_DEADLINE_SEC
+    max_input_tokens: int = ENVIRONMENT_MAX_INPUT_TOKENS
+    max_output_tokens: int = ENVIRONMENT_MAX_OUTPUT_TOKENS
     client: GeminiClient | None = None
     publish_phase: Callable[[TaskPhase], None] | None = None
     sleep: Callable[[float], None] | None = None
@@ -175,15 +179,20 @@ class EnvironmentGraph:
         self._prompts = PromptLoader(runtime.prompt_root)
         self._last_phase: TaskPhase | None = None
         self._ledger = ResourceLedger(
-            deadline_sec=ENVIRONMENT_TASK_DEADLINE_SEC,
-            max_input_tokens=ENVIRONMENT_MAX_INPUT_TOKENS,
-            max_output_tokens=ENVIRONMENT_MAX_OUTPUT_TOKENS,
+            deadline_sec=runtime.deadline_sec,
+            max_input_tokens=runtime.max_input_tokens,
+            max_output_tokens=runtime.max_output_tokens,
             clock=runtime.clock if runtime.clock is not None else time.monotonic,
         )
         self.compiled = self._compile()
 
     def invoke(self, invocation: EnvironmentInvocation) -> dict[str, Any]:
         self._last_phase = None
+        if invocation.max_enhancer_retries > self._runtime.max_enhancer_retries:
+            raise NodeExecutionError(
+                "invalid_input",
+                "max_enhancer_retries exceeds the worker graph configuration",
+            )
         return cast(
             dict[str, Any],
             self.compiled.invoke({"invocation": invocation, "attempts": []}),
@@ -321,6 +330,10 @@ class EnvironmentGraph:
         if active_request is None:
             raise NodeExecutionError("Enhancer", "Enhancer requires an active modification request")
         current = state["current_environment"]
+        origin_request = state.get("origin_request")
+        original_instruction = (
+            origin_request.instruction if origin_request is not None else active_request.instruction
+        )
         prompt = self._prompts.assemble(
             base_path="graphs/environment/enhancer.txt",
             elements=[
@@ -334,7 +347,11 @@ class EnvironmentGraph:
             self._call(
                 invocation=invocation,
                 node="Enhancer",
-                prompt=f"{prompt}\n\n## MODIFICATION REQUEST:\n{active_request.instruction}",
+                prompt=(
+                    f"{prompt}\n\n## ORIGINAL PLAYER REQUEST:\n"
+                    f"{original_instruction}"
+                    f"\n\n## ACTIVE MODIFICATION REQUEST:\n{active_request.instruction}"
+                ),
                 schema=Environment,
             ),
         )
@@ -476,6 +493,10 @@ def run_environment_graph(
     client: GeminiClient | None = None,
     prompt_root: Path | None = None,
     sleep: Callable[[float], None] | None = None,
+    max_enhancer_retries: int = 3,
+    deadline_sec: int = ENVIRONMENT_TASK_DEADLINE_SEC,
+    max_input_tokens: int = ENVIRONMENT_MAX_INPUT_TOKENS,
+    max_output_tokens: int = ENVIRONMENT_MAX_OUTPUT_TOKENS,
 ) -> dict[str, Any]:
     """Validate and run one real environment graph execution."""
     invocation = environment_invocation_from_envelope(envelope)
@@ -483,9 +504,13 @@ def run_environment_graph(
         EnvironmentGraphRuntime(
             prompt_root=prompt_root or default_prompt_root(),
             llm_max_retries=llm_max_retries,
+            max_enhancer_retries=max_enhancer_retries,
             client=client,
             publish_phase=publish_phase,
             sleep=sleep,
+            deadline_sec=deadline_sec,
+            max_input_tokens=max_input_tokens,
+            max_output_tokens=max_output_tokens,
         )
     )
     state = graph.invoke(invocation)

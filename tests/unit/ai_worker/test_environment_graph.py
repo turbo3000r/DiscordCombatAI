@@ -299,3 +299,70 @@ def test_malformed_response_still_accumulates_provider_usage_before_retry() -> N
     state = graph.invoke(environment_invocation_from_envelope(_envelope()))
 
     assert state["attempts_used"] == 1
+
+
+def test_revision_retry_preserves_origin_request_in_enhancer_prompt() -> None:
+    existing = Environment(description="Old arena", tags=["stone"], setting="realistic")
+    envelope = _envelope(
+        input_type="revision",
+        raw_input=["add peaches"],
+        existing_environment=existing.model_dump(),
+        max_enhancer_retries=1,
+    )
+    fake = FakeGemini(
+        [
+            json.dumps({"instruction": "Add peaches.", "origin": "player", "reason": None}),
+            _environment("Peach arena"),
+            _invalid(),
+            _environment("Peach arena with river"),
+            _valid(),
+        ]
+    )
+    _graph(fake, []).invoke(environment_invocation_from_envelope(envelope))
+    retry_prompt = str(fake.calls[3]["prompt"])
+    assert "## ORIGINAL PLAYER REQUEST:\nAdd peaches." in retry_prompt
+    assert "## ACTIVE MODIFICATION REQUEST:\nAdd a river." in retry_prompt
+
+
+@pytest.mark.parametrize(
+    ("runtime_overrides", "message"),
+    [
+        ({"deadline_sec": 0}, "deadline"),
+        ({"max_output_tokens": 4095}, "output token"),
+    ],
+)
+def test_runtime_bounds_fail_before_a_partial_environment_or_next_call(
+    runtime_overrides: dict[str, int], message: str
+) -> None:
+    fake = FakeGemini([_environment()])
+    graph = EnvironmentGraph(
+        EnvironmentGraphRuntime(
+            prompt_root=PROMPTS,
+            llm_max_retries=0,
+            client=fake,
+            sleep=lambda _: None,
+            **runtime_overrides,
+        )
+    )
+
+    with pytest.raises(NodeExecutionError, match=message):
+        graph.invoke(environment_invocation_from_envelope(_envelope()))
+
+    assert fake.calls == []
+
+
+def test_runtime_retry_cap_rejects_a_caller_override_before_llm_work() -> None:
+    fake = FakeGemini([])
+    graph = EnvironmentGraph(
+        EnvironmentGraphRuntime(
+            prompt_root=PROMPTS,
+            llm_max_retries=0,
+            max_enhancer_retries=2,
+            client=fake,
+            sleep=lambda _: None,
+        )
+    )
+
+    with pytest.raises(NodeExecutionError, match="worker graph configuration"):
+        graph.invoke(environment_invocation_from_envelope(_envelope(max_enhancer_retries=3)))
+    assert fake.calls == []
