@@ -57,6 +57,33 @@
       "modal_title": "Поділіться пропозицією",
       "title_label": "Заголовок",
       "details_label": "Деталі"
+    },
+    "quick-battle": {
+      "description": "Відкрити лобі швидкого бою",
+      "denied_busy_guild": "У цьому сервері вже відкрито бойове лобі.",
+      "denied_busy_user": "Ви вже в бойовому лобі.",
+      "denied_invoker_cooldown": "Зачекайте, перш ніж починати ще один швидкий бій.",
+      "denied_guild_cooldown": "Цей сервер має зачекати, перш ніж починати ще один швидкий бій.",
+      "denied_ai_busy": "ШІ зайнятий. Спробуйте за мить.",
+      "lobby_title": "Лобі швидкого бою",
+      "join": "Приєднатися",
+      "leave": "Вийти",
+      "start": "Почати",
+      "abort": "Скасувати",
+      "submit": "Надіслати",
+      "approve": "Схвалити",
+      "decline": "Відхилити",
+      "phase_queued": "У черзі",
+      "phase_launching": "Запуск",
+      "phase_composing": "Композиція",
+      "phase_refining": "Уточнення",
+      "phase_finishing": "Завершення",
+      "session_expired": "Ця бойова сесія більше не активна.",
+      "no_victor": "Немає переможця.",
+      "winners": "Переможці:",
+      "aborted": "Бій скасовано.",
+      "timed_out": "Час бою вичерпано.",
+      "update_in_progress": "Триває оновлення. Спробуйте ще раз."
     }
   }
 }

@@ -9,6 +9,7 @@ from typing import Any
 import discord
 from discord import app_commands
 
+from bot.modules.commands.battle.models import SETTINGS
 from bot.modules.commands.context import CommandContext
 from bot.modules.commands.process_command import (
     CommandCallback,
@@ -20,6 +21,7 @@ logger = logging.getLogger(__name__)
 
 ConfigHandler = Callable[[discord.Interaction, CommandContext], Awaitable[None]]
 SuggestHandler = Callable[[discord.Interaction, CommandContext], Awaitable[None]]
+QuickBattleHandler = Callable[..., Awaitable[None]]
 
 
 async def _stub_config(interaction: discord.Interaction, ctx: CommandContext) -> None:
@@ -38,16 +40,32 @@ async def _stub_suggest(interaction: discord.Interaction, ctx: CommandContext) -
         )
 
 
+async def _stub_quick_battle(
+    interaction: discord.Interaction,
+    ctx: CommandContext,
+    custom_environment: int,
+    timeout: int = 60,
+    setting: str = "unpredictable-funny",
+) -> None:
+    if not interaction.response.is_done():
+        await interaction.response.send_message(
+            ctx.t("errors.error_unexpected"),
+            ephemeral=True,
+        )
+
+
 def register_phase3_commands(
     tree: app_commands.CommandTree[Any],
     guard: CommandGuardService,
     *,
     config_handler: ConfigHandler | None = None,
     suggest_handler: SuggestHandler | None = None,
+    quick_battle_handler: QuickBattleHandler | None = None,
 ) -> None:
-    """Register exactly `/config` and `/suggest` (no `/quick-battle`)."""
+    """Register `/config`, `/suggest`, and `/quick-battle`."""
     on_config = config_handler or _stub_config
     on_suggest = suggest_handler or _stub_suggest
+    on_quick_battle = quick_battle_handler or _stub_quick_battle
 
     async def config_body(interaction: discord.Interaction, ctx: CommandContext) -> None:
         await on_config(interaction, ctx)
@@ -77,7 +95,34 @@ def register_phase3_commands(
         name="suggest",
         description="Suggest a feature or report a bug",
     )(suggest_cb)  # type: ignore[arg-type]
-    logger.info("registered phase3 commands: config, suggest")
+
+    async def quick_battle_body(
+        interaction: discord.Interaction,
+        ctx: CommandContext,
+        custom_environment: app_commands.Range[int, 0, 1],
+        timeout: app_commands.Range[int, 30, 600] = 60,
+        setting: str = "unpredictable-funny",
+    ) -> None:
+        await on_quick_battle(interaction, ctx, custom_environment, timeout, setting)
+
+    quick_battle_cb: CommandCallback = ProcessCommand(
+        guard,
+        required_guild=True,
+        required_guild_enabled=True,
+        allowed_permissions=None,
+        blocked_during_drain=True,
+        load_guild_config=True,
+    )(quick_battle_body)
+    quick_battle_cb = app_commands.describe(
+        custom_environment="0 = generic arena, 1 = custom environment",
+        timeout="Lobby countdown in seconds",
+        setting="Battle setting",
+    )(quick_battle_cb)
+    quick_battle_cb = app_commands.choices(
+        setting=[app_commands.Choice(name=value, value=value) for value in SETTINGS]
+    )(quick_battle_cb)
+    tree.command(name="quick-battle", description="Start a quick battle lobby")(quick_battle_cb)  # type: ignore[arg-type]
+    logger.info("registered phase3 commands: config, suggest, quick-battle")
 
 
 __all__ = ["register_phase3_commands"]

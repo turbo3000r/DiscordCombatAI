@@ -19,6 +19,7 @@ logger = logging.getLogger(__name__)
 
 ConfigHandler = Callable[[discord.Interaction, CommandContext], Awaitable[None]]
 SuggestHandler = Callable[[discord.Interaction, CommandContext], Awaitable[None]]
+QuickBattleHandler = Callable[..., Awaitable[None]]
 
 
 def build_intents() -> discord.Intents:
@@ -44,6 +45,7 @@ class CombatBot(commands.Bot):
         draining_provider: Callable[[], bool] | None = None,
         config_handler: ConfigHandler | None = None,
         suggest_handler: SuggestHandler | None = None,
+        quick_battle_handler: QuickBattleHandler | None = None,
         register_commands: bool = True,
     ) -> None:
         super().__init__(
@@ -75,6 +77,7 @@ class CombatBot(commands.Bot):
                 self.guard,
                 config_handler=config_handler,
                 suggest_handler=suggest_handler,
+                quick_battle_handler=quick_battle_handler,
             )
 
     async def setup_hook(self) -> None:
@@ -118,6 +121,7 @@ def create_bot(
     draining_provider: Callable[[], bool] | None = None,
     config_handler: ConfigHandler | None = None,
     suggest_handler: SuggestHandler | None = None,
+    quick_battle_handler: QuickBattleHandler | None = None,
     register_commands: bool = True,
 ) -> CombatBot:
     return CombatBot(
@@ -131,6 +135,7 @@ def create_bot(
         draining_provider=draining_provider,
         config_handler=config_handler,
         suggest_handler=suggest_handler,
+        quick_battle_handler=quick_battle_handler,
         register_commands=register_commands,
     )
 

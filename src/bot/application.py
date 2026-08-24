@@ -17,6 +17,7 @@ from bot.modules.commands.suggestions.service import (
 )
 from shared.messaging.mqtt_topics import MQTT_TOPIC_POLICIES
 from shared.models import (
+    BattleAiTaskEnvelope,
     ControlAck,
     EnvironmentAiTaskEnvelope,
     UnknownSchemaVersionError,
@@ -178,6 +179,9 @@ class BotApplication:
             stall_timeout_sec=settings.ai_task_stall_timeout_sec,
             overall_timeout_sec=settings.ai_task_timeout_sec,
         )
+        self._ai_lock = asyncio.Lock()
+        self._ai_holder: str | None = None
+        self.quick_battle: Any = None
         self.lifecycle = LifecycleController(
             node_id=settings.node_id,
             drain_progress_interval_sec=settings.drain_progress_interval_sec,
@@ -228,6 +232,9 @@ class BotApplication:
             gateway=_GatewayView(self),
         )
         self._wire_lifecycle_suggestion_hooks()
+        from bot.modules.commands.battle.service.session import QuickBattleService
+
+        self.quick_battle = QuickBattleService(application=self)
 
     def _wire_lifecycle_suggestion_hooks(self) -> None:
         original_activate = self.lifecycle.on_activate
@@ -247,6 +254,8 @@ class BotApplication:
         async def _hard_stop() -> None:
             self.accepting_suggestion_claims = False
             await self._stop_suggestion_delivery()
+            if self.quick_battle is not None:
+                await self.quick_battle.hard_stop_all()
             await original_hard()
 
         self.lifecycle.on_activate = _activate  # type: ignore[method-assign]
@@ -394,9 +403,33 @@ class BotApplication:
         envelope: EnvironmentAiTaskEnvelope,
         completion_callback: CompletionCallback,
     ) -> None:
+        await self.dispatch(envelope, completion_callback, command="harness")
+
+    async def dispatch(
+        self,
+        envelope: EnvironmentAiTaskEnvelope | BattleAiTaskEnvelope,
+        completion_callback: CompletionCallback,
+        *,
+        command: str = "harness",
+    ) -> None:
         if self.transport is None:
             raise RuntimeError("AI transport is not enabled")
-        await self.transport.dispatch_environment(envelope, completion_callback)
+        await self.transport.dispatch(envelope, completion_callback, command=command)
+
+    async def acquire_ai_slot(self, holder: str, timeout_sec: float) -> bool:
+        try:
+            await asyncio.wait_for(self._ai_lock.acquire(), timeout=timeout_sec)
+        except TimeoutError:
+            return False
+        self._ai_holder = holder
+        return True
+
+    def release_ai_slot(self, holder: str) -> None:
+        if self._ai_holder != holder:
+            return
+        self._ai_holder = None
+        if self._ai_lock.locked():
+            self._ai_lock.release()
 
     async def close(self) -> None:
         await self.lifecycle.run_shutdown(
@@ -423,6 +456,7 @@ class BotApplication:
         await self.tracker.create_from_dispatch(
             envelope=pending.envelope,
             completion_callback=pending.completion_callback,
+            command=pending.command,
         )
 
     async def _publish_control_ack(self, ack: ControlAck) -> None:
@@ -483,6 +517,8 @@ class BotApplication:
     async def _control_tick_loop(self) -> None:
         while True:
             await self.control.tick()
+            if self.quick_battle is not None:
+                await self.quick_battle.process_timeouts()
             if self.transport is not None:
                 self.health.rabbitmq_connected = self.transport.rabbitmq_connected
             await asyncio.sleep(1.0)

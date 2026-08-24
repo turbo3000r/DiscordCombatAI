@@ -315,7 +315,7 @@ class CommandGuardService:
     def _guild_ai_enabled(document: GuildConfigDocument) -> bool:
         key = (document.api_key or "").strip()
         model = (document.model or "").strip()
-        return bool(document.enabled and key and model)
+        return bool(document.enabled and key and model and document.left_at is None)
 
     async def deny_ephemeral(
         self, interaction: discord.Interaction, message: str, *, ephemeral: bool = True

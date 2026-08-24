@@ -27,6 +27,7 @@ from shared.messaging import (
 )
 from shared.models import (
     AiTaskResult,
+    BattleAiTaskEnvelope,
     EnvironmentAiTaskEnvelope,
     TaskProgressMessage,
     UnknownSchemaVersionError,
@@ -45,6 +46,7 @@ CompletionCallback = Callable[[AiTaskResult], Awaitable[None]]
 ResultHandler = Callable[[AiTaskResult], Awaitable[None]]
 ProgressHandler = Callable[[TaskProgressMessage], Awaitable[None]]
 AdmitFn = Callable[[], bool]
+DispatchEnvelope = EnvironmentAiTaskEnvelope | BattleAiTaskEnvelope
 
 
 class CeleryPublisher(Protocol):
@@ -58,8 +60,9 @@ class CeleryPublisher(Protocol):
 @dataclass
 class PendingDispatch:
     task_id: str
-    envelope: EnvironmentAiTaskEnvelope
+    envelope: DispatchEnvelope
     completion_callback: CompletionCallback
+    command: str = "harness"
     buffered_progress: list[TaskProgressMessage] = field(default_factory=list)
     buffered_result: AiTaskResult | None = None
     confirmed: bool = False
@@ -91,7 +94,7 @@ def next_reconnect_delay(attempt: int) -> float:
 def _publish_task(
     celery_app: Celery,
     *,
-    envelope: EnvironmentAiTaskEnvelope,
+    envelope: DispatchEnvelope,
     task_id: str,
 ) -> None:
     payload = envelope.model_dump(mode="json")
@@ -179,12 +182,24 @@ class AiTransport:
         envelope: EnvironmentAiTaskEnvelope,
         completion_callback: CompletionCallback,
     ) -> None:
-        """Harness-only dispatch. Requires active admission and exact task identity."""
+        """Harness-only environment dispatch. Requires active admission and exact task identity."""
+        if envelope.graph != "environment":
+            raise ValueError("Phase 2 harness accepts environment graph only")
+        await self.dispatch(envelope, completion_callback, command="harness")
+
+    async def dispatch(
+        self,
+        envelope: DispatchEnvelope,
+        completion_callback: CompletionCallback,
+        *,
+        command: str = "harness",
+    ) -> None:
+        """Dispatch an environment or battle envelope after publisher confirm."""
         if not self._accepting or not self._admit_dispatch():
             raise PermissionError("dispatch not admitted")
         task_id = str(envelope.task_id)
-        if envelope.graph != "environment":
-            raise ValueError("Phase 2 harness accepts environment graph only")
+        if envelope.graph not in {"environment", "battle"}:
+            raise ValueError(f"unsupported graph: {envelope.graph}")
         if task_id in self._pending:
             raise ValueError(f"duplicate pending dispatch for {task_id}")
 
@@ -192,6 +207,7 @@ class AiTransport:
             task_id=task_id,
             envelope=envelope,
             completion_callback=completion_callback,
+            command=command,
         )
         self._pending[task_id] = pending
         send_kwargs = {

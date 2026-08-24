@@ -57,6 +57,33 @@
       "modal_title": "Comparte tu sugerencia",
       "title_label": "Título",
       "details_label": "Detalles"
+    },
+    "quick-battle": {
+      "description": "Abrir un lobby de batalla rapida",
+      "denied_busy_guild": "Ya hay un lobby de batalla abierto en este servidor.",
+      "denied_busy_user": "Ya estas en un lobby de batalla.",
+      "denied_invoker_cooldown": "Debes esperar antes de iniciar otra batalla rapida.",
+      "denied_guild_cooldown": "Este servidor debe esperar antes de iniciar otra batalla rapida.",
+      "denied_ai_busy": "La IA esta ocupada. Intentalo en un momento.",
+      "lobby_title": "Lobby de batalla rapida",
+      "join": "Unirse",
+      "leave": "Salir",
+      "start": "Empezar",
+      "abort": "Abortar",
+      "submit": "Enviar",
+      "approve": "Aprobar",
+      "decline": "Rechazar",
+      "phase_queued": "En cola",
+      "phase_launching": "Lanzando",
+      "phase_composing": "Componiendo",
+      "phase_refining": "Refinando",
+      "phase_finishing": "Finalizando",
+      "session_expired": "Esta sesion de batalla ya no esta activa.",
+      "no_victor": "Sin vencedor.",
+      "winners": "Ganadores:",
+      "aborted": "La batalla fue abortada.",
+      "timed_out": "La batalla expiro.",
+      "update_in_progress": "Hay una actualizacion en curso. Intentalo de nuevo."
     }
   }
 }
