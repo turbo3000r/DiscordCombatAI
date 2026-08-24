@@ -9,6 +9,7 @@ import pytest
 
 from bot.localization.handler import (
     REQUIRED_PHASE3_KEYS,
+    REQUIRED_PHASE5_KEYS,
     LocalizationError,
     load_localization,
 )
@@ -16,7 +17,7 @@ from bot.localization.handler import (
 
 def test_load_localization_validates_required_keys() -> None:
     handler = load_localization()
-    for key in REQUIRED_PHASE3_KEYS:
+    for key in (*REQUIRED_PHASE3_KEYS, *REQUIRED_PHASE5_KEYS):
         assert handler.t(key, locale="en")
         assert not handler.t(key, locale="en").startswith("[")
 

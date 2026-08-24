@@ -228,6 +228,44 @@ def test_battle_graph_rejected_in_transport_shell() -> None:
     assert exc_info.value.requeue is False
 
 
+def test_real_battle_graph_receives_validated_worker_bounds() -> None:
+    battle = json.loads((FIXTURES / "ai_task_battle.json").read_text(encoding="utf-8"))
+    received: dict[str, object] = {}
+
+    def battle_runner(*_args: object, **kwargs: object) -> dict[str, object]:
+        received.update(kwargs)
+        return {
+            "story": "A finished battle.",
+            "winners": [],
+            "attempts_used": 1,
+            "forced_selection": False,
+        }
+
+    settings = _settings(transport_shell=False).model_copy(
+        update={
+            "llm_max_retries": 2,
+            "battle_max_modifier_retries": 2,
+            "battle_task_deadline_sec": 841,
+            "battle_max_input_tokens": 350_001,
+            "battle_max_output_tokens": 90_001,
+        }
+    )
+    run_graph_impl(
+        battle,
+        celery_task_id=str(battle["task_id"]),
+        settings=settings,
+        results=RecordingResultPublisher(),
+        battle_runner=battle_runner,
+    )
+
+    assert received["llm_max_retries"] == 2
+    assert callable(received["publish_phase"])
+    assert received["max_modifier_retries"] == 2
+    assert received["deadline_sec"] == 841
+    assert received["max_input_tokens"] == 350_001
+    assert received["max_output_tokens"] == 90_001
+
+
 def test_battle_graph_dispatches_real_runner_without_transport_shell() -> None:
     battle = json.loads((FIXTURES / "ai_task_battle.json").read_text(encoding="utf-8"))
     results = RecordingResultPublisher()

@@ -20,7 +20,12 @@ from ai_worker.graphs.battle.graph import (
     battle_invocation_from_envelope,
 )
 from ai_worker.graphs.foundation import NodeExecutionError
-from ai_worker.llm import GeminiResponse, StructuredOutputError, parse_structured_output
+from ai_worker.llm import (
+    GeminiResponse,
+    GeminiUsage,
+    StructuredOutputError,
+    parse_structured_output,
+)
 from shared.models import BattleAiTaskEnvelope, TaskPhase
 
 FIXTURES = Path(__file__).resolve().parents[2] / "fixtures" / "contracts"
@@ -469,6 +474,51 @@ def test_winner_resolution_rejects_nicknames_empty_and_off_session_ids(
     )
     with pytest.raises(NodeExecutionError, match="ResolveWinners"):
         graph.invoke(battle_invocation_from_envelope(_envelope()))
+
+
+def test_battle_runtime_deadline_fails_before_the_first_llm_call() -> None:
+    fake = FakeGemini([])
+    graph = BattleGraph(
+        BattleGraphRuntime(
+            PROMPTS,
+            llm_max_retries=0,
+            deadline_sec=0,
+            client=fake,
+            sleep=lambda _: None,
+        )
+    )
+    with pytest.raises(NodeExecutionError, match="deadline"):
+        graph.invoke(battle_invocation_from_envelope(_envelope()))
+    assert fake.calls == []
+
+
+def test_battle_runtime_input_token_exhaustion_stops_before_the_next_llm_call() -> None:
+    fake = FakeGemini(
+        [
+            GeminiResponse(
+                json.dumps(
+                    {
+                        "outcome_type": "one",
+                        "episode_count": 2,
+                        "predetermined_winners": None,
+                    }
+                ),
+                GeminiUsage(input_tokens=10, output_tokens=1),
+            )
+        ]
+    )
+    graph = BattleGraph(
+        BattleGraphRuntime(
+            PROMPTS,
+            llm_max_retries=0,
+            max_input_tokens=5,
+            client=fake,
+            sleep=lambda _: None,
+        )
+    )
+    with pytest.raises(NodeExecutionError, match="input token"):
+        graph.invoke(battle_invocation_from_envelope(_envelope()))
+    assert len(fake.calls) == 1
 
 
 def test_battle_runtime_output_ceiling_fails_before_the_first_llm_call() -> None:
