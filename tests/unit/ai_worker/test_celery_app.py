@@ -17,6 +17,13 @@ def test_celery_app_configuration() -> None:
     assert app.conf.task_acks_on_failure_or_timeout is False
     assert app.conf.task_reject_on_worker_lost is True
     assert app.conf.task_default_queue == AI_TASKS_QUEUE
+    assert app.conf.task_create_missing_queues is False
+    queues = list(app.conf.task_queues or ())
+    assert len(queues) == 1
+    queue = queues[0]
+    assert queue.name == AI_TASKS_QUEUE
+    assert queue.no_declare is True
+    assert queue.queue_arguments == {"x-dead-letter-exchange": "dlx"}
     assert AI_WORKER_RUN_GRAPH_TASK in app.tasks
     assert run_graph.name == AI_WORKER_RUN_GRAPH_TASK
 

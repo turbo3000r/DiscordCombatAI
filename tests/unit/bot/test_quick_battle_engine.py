@@ -26,6 +26,7 @@ class FakeMessenger:
         self.edited: list[tuple[str, str]] = []
         self.files: list[str] = []
         self.mentionable: set[str] = set()
+        self.last_view: Any = None
         self._seq = 0
 
     async def send(
@@ -45,6 +46,7 @@ class FakeMessenger:
         allowed_mentions: Any = None,
         mention_user_ids: list[str] | None = None,
     ) -> None:
+        self.last_view = view
         self.edited.append((message_id, content))
 
     async def send_file(self, *, filename: str, data: bytes, preview: str) -> None:
@@ -79,10 +81,13 @@ class FakeHost:
         self.dispatched: list[Any] = []
         self.slot_ok = True
         self.holder: str | None = None
+        self.fail_dispatch: BaseException | None = None
 
     async def dispatch(
         self, envelope: Any, completion_callback: Any, *, command: str = "harness"
     ) -> None:
+        if self.fail_dispatch is not None:
+            raise self.fail_dispatch
         self.dispatched.append((envelope, command))
         await self.tracker.create_from_dispatch(
             envelope=envelope,
@@ -321,6 +326,149 @@ async def test_archive_failure_does_not_rollback_delivery() -> None:
     )
     assert session.phase is SessionPhase.delivered
     assert any("Hero stands alone" in item for item in messenger.sent)
+
+
+@pytest.mark.asyncio
+async def test_failed_battle_result_clears_busy_state() -> None:
+    from datetime import UTC, datetime
+
+    from shared.models.ai_task import AiTaskResultFailed
+
+    host = FakeHost()
+    clock = FakeClock()
+    service = QuickBattleService(application=host, clock=clock)
+    messenger = FakeMessenger()
+    session = await _open_lobby(service, messenger, custom_environment=False)
+    await service.start_from_lobby(session.session_id)
+    await service.submit_fighter(
+        session.session_id,
+        "u1",
+        fighter_name="Hero",
+        description="A brave duelist from the docks.",
+        strategy=None,
+    )
+    session.active_message_id = "1"
+    assert session.phase is SessionPhase.battle_progress
+    assert session.phase_deadline is None
+    clock.value += 200
+    await service.process_timeouts()
+    assert session.phase is SessionPhase.battle_progress
+    await service.handle_ai_result(
+        AiTaskResultFailed(
+            task_id=str(session.expected_task_id),
+            graph="battle",
+            node="ImplementFirstEpisode",
+            reason="episode index does not match request",
+            completed_at=datetime(2026, 8, 24, tzinfo=UTC),
+        )
+    )
+    assert session.phase is SessionPhase.failed
+    assert session.session_id not in service.sessions
+    assert (
+        service.admit(guild_id="g1", user_id="u1", now=clock.value)
+        is AdmissionError.invoker_cooldown
+    )
+    assert (
+        service.admit(guild_id="g1", user_id="u2", now=clock.value) is AdmissionError.guild_cooldown
+    )
+    assert messenger.edited[-1][1] == "commands.quick-battle.generation_failed"
+
+
+@pytest.mark.asyncio
+async def test_dispatch_failure_terminates_session_and_releases_slot() -> None:
+    host = FakeHost()
+    host.fail_dispatch = ConnectionError("publish confirm failed")
+    clock = FakeClock()
+    service = QuickBattleService(application=host, clock=clock)
+    messenger = FakeMessenger()
+    session = await _open_lobby(service, messenger, custom_environment=False)
+    await service.start_from_lobby(session.session_id)
+    session.active_message_id = "1"
+    with pytest.raises(PermissionError) as exc:
+        await service.submit_fighter(
+            session.session_id,
+            "u1",
+            fighter_name="Hero",
+            description="A brave duelist from the docks.",
+            strategy=None,
+        )
+    assert str(exc.value) == "errors.error_transient"
+    assert session.phase is SessionPhase.dispatch_failed
+    assert host.holder is None
+    assert host.dispatched == []
+    assert session.session_id not in service.sessions
+    assert (
+        service.admit(guild_id="g1", user_id="u2", now=clock.value) is AdmissionError.guild_cooldown
+    )
+    assert messenger.edited[-1][1] == "commands.quick-battle.dispatch_failed"
+
+
+@pytest.mark.asyncio
+async def test_task_progress_edits_checklist() -> None:
+    from shared.models import TaskPhase
+
+    host = FakeHost()
+    service = QuickBattleService(application=host, clock=FakeClock())
+    messenger = FakeMessenger()
+    session = await _open_lobby(service, messenger, custom_environment=False)
+    await service.start_from_lobby(session.session_id)
+    await service.submit_fighter(
+        session.session_id,
+        "u1",
+        fighter_name="Hero",
+        description="A brave duelist from the docks.",
+        strategy=None,
+    )
+    assert session.progress_message_id is not None
+    await service.handle_task_progress(str(session.expected_task_id), TaskPhase.launching)
+    assert messenger.edited[-1][0] == session.progress_message_id
+    assert session.phase is SessionPhase.battle_progress
+    from bot.modules.commands.battle.UI.views import TaskProgressContainer
+
+    assert isinstance(messenger.last_view, TaskProgressContainer)
+
+
+@pytest.mark.asyncio
+async def test_progress_container_is_posted_before_ai_dispatch() -> None:
+    host = FakeHost()
+    service = QuickBattleService(application=host, clock=FakeClock())
+    messenger = FakeMessenger()
+    sent_at_dispatch: list[int] = []
+    original = host.dispatch
+
+    async def wrapped(envelope: Any, completion_callback: Any, *, command: str = "harness") -> None:
+        sent_at_dispatch.append(len(messenger.sent))
+        await original(envelope, completion_callback, command=command)
+
+    host.dispatch = wrapped  # type: ignore[method-assign]
+    session = await _open_lobby(service, messenger, custom_environment=False)
+    await service.start_from_lobby(session.session_id)
+    await service.submit_fighter(
+        session.session_id,
+        "u1",
+        fighter_name="Hero",
+        description="A brave duelist from the docks.",
+        strategy=None,
+    )
+    assert sent_at_dispatch
+    assert messenger.sent[sent_at_dispatch[0] - 1] == "commands.quick-battle.phase_queued"
+    assert session.progress_message_id is not None
+
+
+@pytest.mark.asyncio
+async def test_progress_ticks_ignored_until_checklist_posted() -> None:
+    from shared.models import TaskPhase
+
+    host = FakeHost()
+    service = QuickBattleService(application=host, clock=FakeClock())
+    messenger = FakeMessenger()
+    session = await _open_lobby(service, messenger, custom_environment=False)
+    await service.start_from_lobby(session.session_id)
+    session.phase = SessionPhase.battle_progress
+    session.expected_task_id = "08b2f245-8955-4834-966a-7629247fee0c"
+    edited_before = len(messenger.edited)
+    await service.handle_task_progress(session.expected_task_id, TaskPhase.launching)
+    assert len(messenger.edited) == edited_before
 
 
 def test_normalize_user_text_rejects_mentions_and_bounds() -> None:

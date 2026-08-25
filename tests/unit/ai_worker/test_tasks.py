@@ -329,3 +329,76 @@ def test_api_key_redacted_from_string_form() -> None:
     redacted = redact_sensitive(f"api_key={envelope['api_key']}")
     assert "AIzaSyTestKey" not in redacted
     assert "[REDACTED]" in redacted
+
+
+def test_live_progress_connect_failure_is_noop(monkeypatch: pytest.MonkeyPatch) -> None:
+    from ai_worker.progress import NoOpProgressPublisher
+    from ai_worker.tasks import _live_progress_publisher
+
+    closed = {"n": 0}
+
+    class FakeTransport:
+        def __init__(self, **_kwargs: object) -> None:
+            return None
+
+        def connect(self) -> None:
+            raise ConnectionError("mosquitto down")
+
+        def close(self) -> None:
+            closed["n"] += 1
+
+    monkeypatch.setattr("ai_worker.tasks.SyncPahoMqttTransport", FakeTransport)
+    publisher = _live_progress_publisher(_settings())
+    assert isinstance(publisher, NoOpProgressPublisher)
+    assert closed["n"] == 1
+
+
+def test_live_progress_success_uses_heartbeat_publisher(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from ai_worker.progress import HeartbeatProgressPublisher
+    from ai_worker.tasks import _live_progress_publisher
+
+    closed = {"n": 0}
+
+    class FakeTransport:
+        def __init__(self, **_kwargs: object) -> None:
+            return None
+
+        def connect(self) -> None:
+            return None
+
+        def close(self) -> None:
+            closed["n"] += 1
+
+        def publish(self, topic: str, payload: bytes, *, qos: int, retain: bool) -> None:
+            return None
+
+    monkeypatch.setattr("ai_worker.tasks.SyncPahoMqttTransport", FakeTransport)
+    publisher = _live_progress_publisher(_settings(transport_shell=False))
+    assert isinstance(publisher, HeartbeatProgressPublisher)
+    publisher.publish_phase(task_id=TASK_ID, graph="environment", phase=TaskPhase.launching)
+    publisher.stop()
+    assert closed["n"] == 1
+
+
+def test_celery_entry_wires_live_progress(monkeypatch: pytest.MonkeyPatch) -> None:
+    from ai_worker.tasks import run_graph
+
+    seen: dict[str, object] = {}
+    live = object()
+
+    def fake_impl(_envelope: object, **kwargs: object) -> dict[str, object]:
+        seen.update(kwargs)
+        return {"ok": True}
+
+    monkeypatch.setattr("ai_worker.tasks.run_graph_impl", fake_impl)
+    monkeypatch.setattr("ai_worker.tasks._live_progress_publisher", lambda _settings: live)
+    monkeypatch.setattr("ai_worker.tasks._settings", lambda: _settings())
+    run_graph.push_request(id=TASK_ID)
+    try:
+        run_graph.run(_envelope())
+    finally:
+        run_graph.pop_request()
+    assert seen["progress"] is live
+    assert seen["celery_task_id"] == TASK_ID

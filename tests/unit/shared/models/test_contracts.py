@@ -200,7 +200,11 @@ def test_task_progress_roundtrip_and_validation() -> None:
         timestamp="2026-07-15T17:20:00Z",
         attempt=2,
     )
-    assert parse_task_progress_message(message.model_dump(mode="json")).phase is TaskPhase.refining
+    dumped = message.model_dump(mode="json")
+    assert parse_task_progress_message(dumped).phase is TaskPhase.refining
+    encoded = message.model_dump_json()
+    assert parse_task_progress_message(encoded).phase is TaskPhase.refining
+    assert parse_task_progress_message(encoded.encode("utf-8")).phase is TaskPhase.refining
 
     bad = message.model_dump(mode="json")
     bad["schema_version"] = 7
