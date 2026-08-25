@@ -31,10 +31,26 @@ from shared.models import (
     EnvironmentAiTaskEnvelope,
     EnvironmentState,
     FighterState,
+    TaskPhase,
 )
 from shared.models.localization import to_ai_language_locale
 
 logger = logging.getLogger(__name__)
+
+
+def _log_extra(session: Session, **more: Any) -> dict[str, Any]:
+    extra: dict[str, Any] = {
+        "guild_id": session.guild_id,
+        "user_id": session.invoker_id,
+        "command": "quick-battle",
+        "trace_id": session.session_id,
+        "session_id": session.session_id,
+        "phase": session.phase.value,
+    }
+    if session.expected_task_id:
+        extra["task_id"] = session.expected_task_id
+    extra.update({key: value for key, value in more.items() if value is not None})
+    return extra
 
 
 def _passthrough(key: str) -> str:
@@ -183,6 +199,13 @@ class QuickBattleService:
         self._invoker_cooldown_until[owner_id] = moment + int(
             self.settings().quickbattle_invoker_cooldown_sec
         )
+        logger.info(
+            "quick-battle lobby started setting=%s custom_environment=%s timeout=%s",
+            setting,
+            custom_environment,
+            lobby_timeout_sec,
+            extra=_log_extra(session, participant_count=1),
+        )
         return session
 
     def join(self, session_id: str, user_id: str, display_name: str) -> Session:
@@ -228,10 +251,20 @@ class QuickBattleService:
             session.phase_deadline = self._now() + int(
                 self.settings().quickbattle_environment_input_timeout_sec
             )
+            logger.info(
+                "quick-battle lobby started environment collection participant_count=%s",
+                len(session.frozen_roster),
+                extra=_log_extra(session, participant_count=len(session.frozen_roster)),
+            )
             await self._publish_phase(session)
             return session
         session.current_environment = pick_generic_arena(
             setting=session.setting, index=random.randrange(2)
+        )
+        logger.info(
+            "quick-battle lobby started fighter collection participant_count=%s",
+            len(session.frozen_roster),
+            extra=_log_extra(session, participant_count=len(session.frozen_roster)),
         )
         await self._begin_fighter_collect(session)
         return session
@@ -260,6 +293,11 @@ class QuickBattleService:
             raise PermissionError("not_participant")
         session.environment_texts[user_id] = normalize_user_text(text, min_length=1, max_length=500)
         if set(session.environment_texts) >= set(session.roster_ids()):
+            logger.info(
+                "quick-battle environment submissions complete count=%s",
+                len(session.environment_texts),
+                extra=_log_extra(session, participant_count=len(session.roster_ids())),
+            )
             await self._dispatch_environment(session)
         return session
 
@@ -288,6 +326,11 @@ class QuickBattleService:
             ),
         )
         if set(session.fighter_submissions) >= set(session.roster_ids()):
+            logger.info(
+                "quick-battle fighter submissions complete count=%s",
+                len(session.fighter_submissions),
+                extra=_log_extra(session, participant_count=len(session.roster_ids())),
+            )
             await self._dispatch_battle(session)
         return session
 
@@ -311,6 +354,52 @@ class QuickBattleService:
             await self._resolve_ballot(session)
         return session
 
+    async def handle_task_progress(self, task_id: str, phase: Any) -> None:
+        session = next(
+            (item for item in self.sessions.values() if item.expected_task_id == task_id),
+            None,
+        )
+        if session is None or session.phase not in {
+            SessionPhase.environment_progress,
+            SessionPhase.battle_progress,
+        }:
+            return
+        from bot.modules.commands.battle.UI.views import TaskProgressContainer
+
+        current = phase if isinstance(phase, TaskPhase) else TaskPhase(str(phase))
+        logger.info(
+            "quick-battle progress phase=%s",
+            current.value,
+            extra=_log_extra(
+                session,
+                task_id=task_id,
+                graph=session.expected_graph,
+                phase=current.value,
+            ),
+        )
+        messenger = self._messengers.get(session.session_id)
+        translate: Callable[[str], str] = self._translators.get(session.session_id, _passthrough)
+        if messenger is None or not session.progress_message_id:
+            return
+        view = TaskProgressContainer(
+            service=self,
+            session_id=session.session_id,
+            translate=translate,
+            timeout=None,
+            current_phase=current,
+        )
+        try:
+            await messenger.edit(
+                session.progress_message_id,
+                translate("commands.quick-battle.phase_queued"),
+                view=view,
+            )
+        except Exception:
+            logger.exception(
+                "quick-battle progress edit failed",
+                extra=_log_extra(session, task_id=task_id),
+            )
+
     async def handle_ai_result(self, result: Any) -> None:
         task_id = str(getattr(result, "task_id", ""))
         graph = str(getattr(result, "graph", ""))
@@ -325,7 +414,8 @@ class QuickBattleService:
             session.revoke_on_cancel = node not in STALL_NODES
             if session.revoke_on_cancel and session.expected_task_id:
                 await self._revoke(session.expected_task_id)
-            await self._terminate(session, SessionPhase.timed_out)
+            phase = SessionPhase.task_timeout if node in STALL_NODES else SessionPhase.failed
+            await self._terminate(session, phase)
             return
         payload = getattr(result, "result", None) or {}
         if graph == "environment":
@@ -438,6 +528,7 @@ class QuickBattleService:
                 service=self,
                 session_id=session.session_id,
                 translate=translate,
+                description=content,
             )
         elif session.phase in {SessionPhase.environment_progress, SessionPhase.battle_progress}:
             content = translate("commands.quick-battle.phase_queued")
@@ -446,11 +537,54 @@ class QuickBattleService:
                 session_id=session.session_id,
                 translate=translate,
                 timeout=None,
+                current_phase=TaskPhase.queued,
             )
         else:
             return
         message_id = await messenger.send(content, view=view)
         session.active_message_id = message_id
+        if session.phase in {SessionPhase.environment_progress, SessionPhase.battle_progress}:
+            session.progress_message_id = message_id
+        else:
+            session.progress_message_id = None
+
+    async def _publish_task(self, session: Session, envelope: Any) -> None:
+        logger.info(
+            "quick-battle dispatching graph=%s task_id=%s",
+            envelope.graph,
+            envelope.task_id,
+            extra=_log_extra(
+                session,
+                graph=envelope.graph,
+                task_id=str(envelope.task_id),
+                participant_count=len(session.roster_ids()),
+            ),
+        )
+        try:
+            await self._app.dispatch(envelope, self.handle_ai_result, command="quick-battle")
+        except Exception:
+            logger.exception(
+                "quick-battle dispatch failed graph=%s task_id=%s",
+                envelope.graph,
+                envelope.task_id,
+                extra=_log_extra(
+                    session,
+                    graph=envelope.graph,
+                    task_id=str(envelope.task_id),
+                ),
+            )
+            await self._terminate(session, SessionPhase.dispatch_failed)
+            raise PermissionError("errors.error_transient") from None
+        logger.info(
+            "quick-battle dispatched graph=%s task_id=%s",
+            envelope.graph,
+            envelope.task_id,
+            extra=_log_extra(
+                session,
+                graph=envelope.graph,
+                task_id=str(envelope.task_id),
+            ),
+        )
 
     def _require_live(self, session_id: str) -> Session:
         session = self.sessions.get(session_id)
@@ -519,6 +653,7 @@ class QuickBattleService:
                 if user_id in session.decline_comments
             ]
         session.phase = SessionPhase.environment_progress
+        session.phase_deadline = None
         session.revoke_on_cancel = True
         envelope = EnvironmentAiTaskEnvelope(
             task_id=str(uuid4()),
@@ -538,12 +673,24 @@ class QuickBattleService:
         session.expected_graph = "environment"
         session.expected_revision = session.environment_attempts
         session.environment_attempts += 1
-        await self._app.dispatch(envelope, self.handle_ai_result, command="quick-battle")
         await self._publish_phase(session)
+        await self._publish_task(session, envelope)
 
     async def _resolve_ballot(self, session: Session) -> None:
         approvals = sum(1 for value in session.approvals.values() if value)
-        if approvals >= session.required_approvals():
+        required = session.required_approvals()
+        logger.info(
+            "quick-battle ballot complete approvals=%s required=%s",
+            approvals,
+            required,
+            extra=_log_extra(
+                session,
+                participant_count=len(session.roster_ids()),
+                approval_round=session.environment_attempts,
+                approve_ratio=f"{approvals}/{len(session.roster_ids())}",
+            ),
+        )
+        if approvals >= required:
             await self._begin_fighter_collect(session)
             return
         maximum = int(self.settings().quickbattle_max_environment_revision_rounds)
@@ -559,6 +706,7 @@ class QuickBattleService:
             await self._terminate(session, SessionPhase.timed_out)
             return
         session.phase = SessionPhase.battle_progress
+        session.phase_deadline = None
         session.revoke_on_cancel = True
         fighters = [
             FighterState(
@@ -586,13 +734,20 @@ class QuickBattleService:
         )
         session.expected_task_id = str(envelope.task_id)
         session.expected_graph = "battle"
-        await self._app.dispatch(envelope, self.handle_ai_result, command="quick-battle")
         await self._publish_phase(session)
+        await self._publish_task(session, envelope)
 
     async def _deliver_battle(self, session: Session, payload: dict[str, Any], result: Any) -> None:
         story = str(payload.get("story") or "")
         roster_ids = {item.user_id for item in (session.frozen_roster or session.roster())}
-        winners = validated_winners(payload.get("winners"), roster_ids)
+        raw_winners = payload.get("winners")
+        winners = validated_winners(raw_winners, roster_ids)
+        if isinstance(raw_winners, list) and raw_winners and not winners:
+            logger.warning(
+                "quick-battle winners not in roster count=%s",
+                len(raw_winners),
+                extra=_log_extra(session),
+            )
         session.last_story = story
         session.last_winners = winners
         chunks, attachment = split_story(story)
@@ -663,6 +818,11 @@ class QuickBattleService:
         session.phase_deadline = None
         session.expected_task_id = None
         self._release_slot(session)
+        logger.info(
+            "quick-battle session terminated phase=%s",
+            phase.value,
+            extra=_log_extra(session),
+        )
         try:
             self._app.tracker.finish_workflow(session.workflow_id)
         except Exception:
@@ -679,6 +839,9 @@ class QuickBattleService:
         key = {
             SessionPhase.aborted: "commands.quick-battle.aborted",
             SessionPhase.timed_out: "commands.quick-battle.timed_out",
+            SessionPhase.failed: "commands.quick-battle.generation_failed",
+            SessionPhase.dispatch_failed: "commands.quick-battle.dispatch_failed",
+            SessionPhase.task_timeout: "commands.quick-battle.task_timeout",
             SessionPhase.hard_stopped: "commands.quick-battle.update_in_progress",
         }.get(phase)
         if messenger is not None and key is not None:
@@ -688,6 +851,9 @@ class QuickBattleService:
                         await messenger.edit(message_id, translate(key), disable=True)
                     except Exception:
                         logger.exception("quick-battle terminal edit failed")
+        self.sessions.pop(session.session_id, None)
+        self._messengers.pop(session.session_id, None)
+        self._translators.pop(session.session_id, None)
         return session
 
 

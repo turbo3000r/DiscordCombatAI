@@ -143,6 +143,15 @@ class EpisodeOutput(BaseModel):
     text: str = Field(min_length=1, max_length=3500)
 
 
+def episode_output_schema(expected_index: int) -> type[EpisodeOutput]:
+    """EpisodeOutput whose schema admits only the requested 0-based index."""
+
+    class BoundEpisodeOutput(EpisodeOutput):
+        episode_index: int = Field(ge=expected_index, le=expected_index)
+
+    return BoundEpisodeOutput
+
+
 class StoryOutput(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     story: str = Field(min_length=1, max_length=12000)
@@ -392,14 +401,19 @@ class BattleGraph:
         self, state: BattleGraphState, *, node: str, path: str, index: int, include_prior: bool
     ) -> dict[str, object]:
         e = state["invocation"]
-        extra = state["skeleton"][index].model_dump_json()
+        extra = (
+            f"## REQUESTED EPISODE INDEX:\n{index}\n"
+            "episode_index must be this exact 0-based integer. The first episode is 0, not 1.\n\n"
+            f"{self._outcome_block(e, state['plan'])}\n\n"
+            f"## SKELETON BEAT:\n{state['skeleton'][index].model_dump_json()}"
+        )
         if include_prior:
             extra += "\n\n## PRIOR EPISODES:\n" + "\n\n".join(state["episode_texts"])
         output = self._call(
             e,
             node,
             self._prompt(path, e, extra, language=True, fighters=True),
-            EpisodeOutput,
+            episode_output_schema(index),
             validate=self._episode_validator(index),
         )
         assert isinstance(output, EpisodeOutput)
@@ -547,7 +561,7 @@ class BattleGraph:
                 self._prompt(
                     "graphs/battle/resolve_winners.txt",
                     e,
-                    story,
+                    self._outcome_block(e, p) + "\n\n## STORY:\n" + story,
                     language=False,
                     fighters=True,
                     environment=False,

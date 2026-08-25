@@ -4,9 +4,11 @@ import asyncio
 from contextlib import suppress
 
 from .composition import build_bot_application, prepare_bot_application
+from .logging_config import configure_bot_logging
 
 
 async def async_main() -> None:
+    configure_bot_logging()
     application = build_bot_application(enable_mqtt=True, enable_transport=True)
     await prepare_bot_application(application)
     try:

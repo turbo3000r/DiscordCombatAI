@@ -11,7 +11,7 @@ import pytest
 from bot.modules.commands.battle.models import SETTINGS, SessionPhase
 from bot.modules.commands.battle.service.session import QuickBattleService
 from bot.modules.services.task_tracker import TaskTracker
-from shared.models import AiTaskResultSuccess
+from shared.models import AiTaskResultFailed, AiTaskResultSuccess
 
 pytestmark = pytest.mark.acceptance
 
@@ -215,9 +215,16 @@ async def test_s11_d_local_timeout_discards_late_result() -> None:
         strategy=None,
     )
     envelope = host.dispatched[-1]
-    clock.value += 1000
-    await service.process_timeouts(now=clock.value)
-    assert session.phase is SessionPhase.timed_out
+    await service.handle_ai_result(
+        AiTaskResultFailed(
+            task_id=envelope.task_id,
+            graph="battle",
+            node="bot_task_timeout",
+            reason="overall timeout",
+            completed_at=datetime(2026, 8, 23, tzinfo=UTC),
+        )
+    )
+    assert session.phase is SessionPhase.task_timeout
     assert host.transport.revoked == []
     before = list(messenger.sent)
     await service.handle_ai_result(

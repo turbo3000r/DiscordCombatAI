@@ -23,6 +23,7 @@ def main() -> None:
             "worker",
             "-Q",
             "ai_tasks",
+            "--loglevel=INFO",
             f"--concurrency={concurrency}",
         ],
     )

@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import json
+import logging
+import os
+from contextlib import suppress
 from datetime import UTC, datetime
 from typing import Any
 
@@ -24,7 +27,9 @@ from shared.security.redact import redact_sensitive
 from .celery_app import app
 from .graphs.battle import run_battle_graph
 from .graphs.environment import run_environment_graph
+from .mqtt import SyncPahoMqttTransport
 from .progress import (
+    HeartbeatProgressPublisher,
     NoOpProgressPublisher,
     ProgressPublisher,
     safe_publish_phase,
@@ -49,9 +54,32 @@ WORKER_PHASES = (
     TaskPhase.finishing,
 )
 
+logger = logging.getLogger(__name__)
+
 
 def _settings() -> AiWorkerSettings:
     return AiWorkerSettings()  # type: ignore[call-arg]
+
+
+def _live_progress_publisher(settings: AiWorkerSettings) -> ProgressPublisher:
+    client_id = f"ai-worker-{settings.node_id}-progress-{os.getpid()}"
+    transport = SyncPahoMqttTransport(
+        host=settings.mosquitto_host,
+        port=settings.mosquitto_port,
+        client_id=client_id,
+    )
+    try:
+        transport.connect()
+    except Exception:
+        logger.warning("progress mqtt connect failed; continuing without ticks", exc_info=True)
+        with suppress(Exception):
+            transport.close()
+        return NoOpProgressPublisher()
+    return HeartbeatProgressPublisher(
+        transport=transport,
+        heartbeat_sec=settings.progress_heartbeat_sec,
+        on_stop=transport.close,
+    )
 
 
 def run_graph_impl(
@@ -180,10 +208,12 @@ def run_graph_impl(
 @app.task(name=AI_WORKER_RUN_GRAPH_TASK, bind=True)  # type: ignore[untyped-decorator]
 def run_graph(self: Any, envelope: Any) -> dict[str, Any]:
     celery_task_id = str(self.request.id)
+    settings = _settings()
     return run_graph_impl(
         envelope,
         celery_task_id=celery_task_id,
-        settings=_settings(),
+        settings=settings,
+        progress=_live_progress_publisher(settings),
     )
 
 

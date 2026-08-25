@@ -55,7 +55,7 @@ services:
       rabbitmq:
         condition: service_healthy
     environment:
-      APPLICATION_VERSION: ${APPLICATION_VERSION:-}
+      APPLICATION_VERSION: ${APPLICATION_VERSION:-v0.1.0}
       HEAD_NODE_ID: ${NODE_ID:-node-local}
       HEAD_GITHUB_REPO: ${HEAD_GITHUB_REPO:-}
       HEAD_MOSQUITTO_HOST: ${HEAD_MOSQUITTO_HOST:-mosquitto}
@@ -93,7 +93,7 @@ services:
       rabbitmq:
         condition: service_healthy
     environment:
-      APPLICATION_VERSION: ${APPLICATION_VERSION:-}
+      APPLICATION_VERSION: ${APPLICATION_VERSION:-v0.1.0}
       NODE_ID: ${NODE_ID:-node-local}
       BOT_NODE_ID: ${NODE_ID:-node-local}
       DCA_RUNTIME_MODE: ${DCA_RUNTIME_MODE:-production}
@@ -146,7 +146,7 @@ services:
       rabbitmq:
         condition: service_healthy
     environment:
-      APPLICATION_VERSION: ${APPLICATION_VERSION:-}
+      APPLICATION_VERSION: ${APPLICATION_VERSION:-v0.1.0}
       NODE_ID: ${NODE_ID:-node-local}
       AI_WORKER_NODE_ID: ${NODE_ID:-node-local}
       AI_WORKER_MOSQUITTO_HOST: ${AI_WORKER_MOSQUITTO_HOST:-mosquitto}

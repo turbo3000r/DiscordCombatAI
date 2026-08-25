@@ -83,6 +83,9 @@
       "winners": "Ganadores:",
       "aborted": "La batalla fue abortada.",
       "timed_out": "La batalla expiro.",
+      "generation_failed": "La generacion de la batalla fallo. Puedes empezar otra despues de la espera.",
+      "dispatch_failed": "No se pudo poner la batalla en cola. Intentalo de nuevo en breve.",
+      "task_timeout": "La tarea de batalla expiro.",
       "update_in_progress": "Hay una actualizacion en curso. Intentalo de nuevo."
     }
   }

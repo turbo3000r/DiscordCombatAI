@@ -81,6 +81,9 @@ REQUIRED_PHASE5_KEYS: tuple[str, ...] = (
     "commands.quick-battle.winners",
     "commands.quick-battle.aborted",
     "commands.quick-battle.timed_out",
+    "commands.quick-battle.generation_failed",
+    "commands.quick-battle.dispatch_failed",
+    "commands.quick-battle.task_timeout",
     "commands.quick-battle.update_in_progress",
 )
 

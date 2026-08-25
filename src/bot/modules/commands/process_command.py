@@ -12,6 +12,7 @@ import discord
 from discord import app_commands
 
 from bot.localization.handler import LocalizationHandler
+from bot.logging_config import public_command_params
 from bot.modules.commands.context import CommandContext
 from bot.modules.commands.errors import (
     CommandDenial,
@@ -131,9 +132,7 @@ class CommandGuardService:
             wants_ctx = "ctx" in inspect.signature(func).parameters
 
             @functools.wraps(func)
-            async def wrapper(
-                interaction: discord.Interaction, *args: Any, **kwargs: Any
-            ) -> Any:
+            async def wrapper(interaction: discord.Interaction, *args: Any, **kwargs: Any) -> Any:
                 try:
                     ctx = await self.build_context(
                         interaction,
@@ -156,12 +155,17 @@ class CommandGuardService:
                     await self._unexpected(interaction)
                     return None
 
-                self._log_decision(ctx, "allowed")
+                self._log_command(
+                    ctx,
+                    "command started params=%s",
+                    public_command_params(kwargs),
+                    decision="allowed",
+                )
                 try:
                     call_kwargs = dict(kwargs)
                     if wants_ctx:
                         call_kwargs["ctx"] = ctx
-                    return await func(interaction, *args, **call_kwargs)
+                    result = await func(interaction, *args, **call_kwargs)
                 except CommandDenial as denial:
                     await self._deny(interaction, denial, ctx=ctx)
                     return None
@@ -186,6 +190,8 @@ class CommandGuardService:
                 except Exception:  # noqa: BLE001
                     await self._unexpected(interaction, ctx=ctx)
                     return None
+                self._log_command(ctx, "command finished", decision="allowed")
+                return result
 
             # discord.py must only see interaction (+ slash options), never ctx.
             original = inspect.signature(func)
@@ -335,8 +341,7 @@ class CommandGuardService:
         locale = ctx.locale_key if ctx is not None else self._fallback_locale(interaction)
         message = self.l10n.t(denial.message_key, locale=locale)
         self._log_decision(
-            ctx
-            or self._minimal_log_ctx(interaction, locale),
+            ctx or self._minimal_log_ctx(interaction, locale),
             denial.decision,
             level=logging.INFO,
         )
@@ -400,10 +405,26 @@ class CommandGuardService:
     def _log_decision(
         self, ctx: CommandContext, decision: str, *, level: int = logging.INFO
     ) -> None:
-        logger.log(
-            level,
+        self._log_command(
+            ctx,
             "process_command decision=%s",
             decision,
+            decision=decision,
+            level=level,
+        )
+
+    def _log_command(
+        self,
+        ctx: CommandContext,
+        message: str,
+        *args: Any,
+        decision: str,
+        level: int = logging.INFO,
+    ) -> None:
+        logger.log(
+            level,
+            message,
+            *args,
             extra={
                 "guild_id": ctx.guild_id,
                 "user_id": ctx.user_id,

@@ -24,6 +24,7 @@ from shared.messaging import (
     AI_TASKS_RESULTS_QUEUE,
     AI_WORKER_RUN_GRAPH_TASK,
     RABBITMQ_QUEUE_ARGS,
+    ai_tasks_kombu_queue,
 )
 from shared.models import (
     AiTaskResult,
@@ -40,6 +41,12 @@ CONFIRM_WAIT_SEC = 5.0
 RECONNECT_BASE_SEC = 1.0
 RECONNECT_MAX_SEC = 60.0
 RECONNECT_JITTER = 0.2
+PUBLISH_RETRY_POLICY = {
+    "max_retries": 3,
+    "interval_start": RECONNECT_BASE_SEC,
+    "interval_step": RECONNECT_BASE_SEC,
+    "interval_max": RECONNECT_MAX_SEC,
+}
 
 
 CompletionCallback = Callable[[AiTaskResult], Awaitable[None]]
@@ -78,8 +85,16 @@ def build_bot_celery_app(broker_url: str) -> Celery:
         task_ignore_result=True,
         task_track_started=False,
         broker_connection_retry_on_startup=True,
+        broker_connection_retry=True,
+        broker_heartbeat=30.0,
+        broker_connection_timeout=CONFIRM_WAIT_SEC,
         broker_transport_options={"confirm_publish": True},
+        task_publish_retry=True,
+        task_publish_retry_policy=dict(PUBLISH_RETRY_POLICY),
         task_default_queue=AI_TASKS_QUEUE,
+        task_queues=(ai_tasks_kombu_queue(),),
+        task_create_missing_queues=False,
+        task_routes={AI_WORKER_RUN_GRAPH_TASK: {"queue": AI_TASKS_QUEUE}},
     )
     return app
 
@@ -103,7 +118,8 @@ def _publish_task(
         kwargs={"envelope": payload},
         task_id=task_id,
         queue=AI_TASKS_QUEUE,
-        retry=False,
+        retry=True,
+        retry_policy=dict(PUBLISH_RETRY_POLICY),
     )
 
 
@@ -223,9 +239,29 @@ class AiTransport:
                 lambda: _publish_task(self._celery, envelope=envelope, task_id=task_id),
             )
         except Exception:
+            logger.exception(
+                "ai_task publish failed",
+                extra={
+                    "task_id": task_id,
+                    "command": command,
+                    "graph": envelope.graph,
+                    "trace_id": str(envelope.trace_id),
+                    "guild_id": envelope.guild_id,
+                },
+            )
             self._pending.pop(task_id, None)
             raise
         pending.confirmed = True
+        logger.info(
+            "ai_task published",
+            extra={
+                "task_id": task_id,
+                "command": command,
+                "graph": envelope.graph,
+                "trace_id": str(envelope.trace_id),
+                "guild_id": envelope.guild_id,
+            },
+        )
         buffered_progress = list(pending.buffered_progress)
         buffered_result = pending.buffered_result
         # Leave the pending map before tracker creation/replay so concurrent
@@ -376,6 +412,7 @@ __all__ = [
     "CONFIRM_WAIT_SEC",
     "CompletionCallback",
     "PendingDispatch",
+    "PUBLISH_RETRY_POLICY",
     "build_bot_celery_app",
     "next_reconnect_delay",
 ]

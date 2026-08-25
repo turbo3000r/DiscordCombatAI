@@ -51,6 +51,7 @@ class FakeGemini:
                 "api_key": api_key,
                 "model": model,
                 "prompt": prompt,
+                "response_schema": response_schema,
                 "max_output_tokens": max_output_tokens,
             }
         )
@@ -138,6 +139,9 @@ def test_episode_boundaries_and_call_limits(episode_count: int) -> None:
     assert "111111111111111111:" in str(fake.calls[0]["prompt"])
     assert "## LANGUAGE-LOCALE:" not in str(fake.calls[0]["prompt"])
     assert "## LANGUAGE-LOCALE:\nen" in str(fake.calls[2]["prompt"])
+    last_episode_prompt = str(fake.calls[1 + episode_count]["prompt"])
+    assert "## OUTCOME:" in last_episode_prompt
+    assert '"outcome_type":"one"' in last_episode_prompt
     validator_prompt = str(fake.calls[2 + episode_count]["prompt"])
     assert "## FIGHTERS:" in validator_prompt
     assert "## Environment:" in validator_prompt
@@ -319,6 +323,46 @@ def test_compiled_graph_has_documented_nodes_and_middle_context() -> None:
     assert "Episode 0: Alice fights." in next_prompt
     assert "## PRIOR EPISODES:" in last_prompt
     assert "Episode 2: Alice fights." in last_prompt
+
+
+def test_first_episode_requests_exact_zero_based_index() -> None:
+    fake = FakeGemini(_replies(2))
+    graph = BattleGraph(
+        BattleGraphRuntime(PROMPTS, llm_max_retries=0, client=fake, sleep=lambda _: None)
+    )
+    graph.invoke(battle_invocation_from_envelope(_envelope()))
+    first = fake.calls[2]
+    prompt = str(first["prompt"])
+    assert "## REQUESTED EPISODE INDEX:\n0" in prompt
+    schema = first["response_schema"]
+    assert isinstance(schema, type)
+    props = schema.model_json_schema()["properties"]["episode_index"]
+    assert props["minimum"] == 0
+    assert props["maximum"] == 0
+
+
+def test_one_based_first_episode_index_is_rejected() -> None:
+    replies = _replies(2)
+    replies[2] = _episode(1)
+    fake = FakeGemini(replies)
+    graph = BattleGraph(
+        BattleGraphRuntime(PROMPTS, llm_max_retries=0, client=fake, sleep=lambda _: None)
+    )
+    with pytest.raises(NodeExecutionError, match="ImplementFirstEpisode"):
+        graph.invoke(battle_invocation_from_envelope(_envelope()))
+
+
+def test_resolve_winners_prompt_includes_planned_outcome() -> None:
+    fake = FakeGemini(_replies(2))
+    graph = BattleGraph(
+        BattleGraphRuntime(PROMPTS, llm_max_retries=0, client=fake, sleep=lambda _: None)
+    )
+    graph.invoke(battle_invocation_from_envelope(_envelope()))
+    resolve = str(fake.calls[-1]["prompt"])
+    assert "## OUTCOME:" in resolve
+    assert '"outcome_type":"one"' in resolve
+    assert "## STORY:" in resolve
+    assert "## FIGHTERS:" in resolve
 
 
 def test_solo_no_victor_and_multiple_outcomes_are_exact() -> None:

@@ -8,6 +8,7 @@ import discord
 
 from bot.modules.commands.battle.models import SETTINGS
 from bot.modules.commands.battle.UI.views import LobbyView
+from bot.modules.commands.battle.v2 import edit_kwargs, localization_key_for_denial, send_kwargs
 from bot.modules.commands.context import CommandContext
 
 QUICK_BATTLE_GUARDS = {
@@ -45,9 +46,11 @@ class InteractionMessenger:
         if sender is None:
             raise RuntimeError("channel missing")
         message = await sender(
-            content,
-            view=view,
-            allowed_mentions=self._mentions(mention_user_ids),
+            **send_kwargs(
+                content=content,
+                view=view,
+                allowed_mentions=self._mentions(mention_user_ids),
+            )
         )
         return str(message.id)
 
@@ -66,14 +69,17 @@ class InteractionMessenger:
         if getter is None:
             return
         message = getter(int(message_id))
-        if disable and view is not None:
-            for child in getattr(view, "children", []):
-                if hasattr(child, "disabled"):
-                    child.disabled = True
         mentions = (
             allowed_mentions if allowed_mentions is not None else self._mentions(mention_user_ids)
         )
-        await message.edit(content=content, view=view, allowed_mentions=mentions)
+        await message.edit(
+            **edit_kwargs(
+                content=content,
+                view=view,
+                disable=disable,
+                allowed_mentions=mentions,
+            )
+        )
 
     async def send_file(self, *, filename: str, data: bytes, preview: str) -> None:
         sender = getattr(self._interaction.channel, "send", None)
@@ -131,7 +137,7 @@ async def handle_quick_battle_command(
             translate=translate,
         )
     except PermissionError as exc:
-        key = str(exc.args[0]) if exc.args else "errors.error_unexpected"
+        key = localization_key_for_denial(str(exc.args[0]) if exc.args else "")
         if not interaction.response.is_done():
             await interaction.response.send_message(translate(key), ephemeral=True)
         else:

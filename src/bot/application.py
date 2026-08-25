@@ -235,6 +235,7 @@ class BotApplication:
         from bot.modules.commands.battle.service.session import QuickBattleService
 
         self.quick_battle = QuickBattleService(application=self)
+        self.tracker.on_phase_change = self.quick_battle.handle_task_progress
 
     def _wire_lifecycle_suggestion_hooks(self) -> None:
         original_activate = self.lifecycle.on_activate
@@ -504,11 +505,24 @@ class BotApplication:
         try:
             progress = parse_task_progress_message(payload.decode("utf-8"))
         except (UnicodeDecodeError, ValueError, UnknownSchemaVersionError):
-            logger.warning("ignoring malformed task progress")
+            logger.warning(
+                "ignoring malformed task progress",
+                extra={"topic": topic},
+                exc_info=True,
+            )
             return
         if suffix and suffix != str(progress.task_id):
             logger.warning("progress topic/task_id mismatch")
             return
+        extra: dict[str, Any] = {
+            "task_id": str(progress.task_id),
+            "graph": progress.graph,
+            "phase": progress.phase.value,
+        }
+        record = self.tracker.records.get(str(progress.task_id))
+        if record is not None:
+            extra["command"] = record.command
+        logger.info("ai_task progress received phase=%s", progress.phase.value, extra=extra)
         if self.transport is not None:
             await self.transport.handle_progress(progress)
         else:

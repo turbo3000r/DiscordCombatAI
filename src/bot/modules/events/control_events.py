@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Protocol
 
+from shared.messaging import mqtt_connect_accepted
 from shared.messaging.mqtt_topics import MQTT_TOPIC_POLICIES
 from shared.models import (
     ActivationGrant,
@@ -261,7 +262,7 @@ class BotPahoMqttTransport:
     ) -> None:
         if self._loop is None or self._connected is None:
             return
-        if int(reason_code) == 0:
+        if mqtt_connect_accepted(reason_code):
             initial_connect = not self._connected.done()
             self._loop.call_soon_threadsafe(self._resolve_connected, None)
             if not initial_connect and self._connect_handler is not None:

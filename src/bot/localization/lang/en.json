@@ -83,6 +83,9 @@
       "winners": "Winners:",
       "aborted": "The battle was aborted.",
       "timed_out": "The battle timed out.",
+      "generation_failed": "Battle generation failed. You can start a new one after the cooldown.",
+      "dispatch_failed": "The battle could not be queued. Please try again shortly.",
+      "task_timeout": "The battle task timed out.",
       "update_in_progress": "An update is in progress. Please retry."
     }
   }

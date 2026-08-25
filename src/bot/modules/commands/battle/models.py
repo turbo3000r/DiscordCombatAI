@@ -33,6 +33,9 @@ class SessionPhase(StrEnum):
     delivered = "delivered"
     aborted = "aborted"
     timed_out = "timed_out"
+    failed = "failed"
+    dispatch_failed = "dispatch_failed"
+    task_timeout = "task_timeout"
     hard_stopped = "hard_stopped"
 
 
@@ -91,6 +94,7 @@ class Session:
     cleanup_done: bool = False
     lobby_message_id: str | None = None
     active_message_id: str | None = None
+    progress_message_id: str | None = None
     created_at: float = 0.0
     phase_deadline: float | None = None
     last_story: str | None = None

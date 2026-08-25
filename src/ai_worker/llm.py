@@ -18,6 +18,33 @@ from .graphs.foundation import GraphExecutionContext, NodeExecutionError
 T = TypeVar("T", bound=BaseModel)
 LOGGER = logging.getLogger(__name__)
 
+_GEMINI_UNSUPPORTED_SCHEMA_KEYS = frozenset(
+    {"additionalProperties", "additional_properties"}
+)
+
+
+def gemini_compatible_schema(model: type[BaseModel]) -> dict[str, Any]:
+    """JSON Schema that the Gemini Developer API will accept.
+
+    Pydantic ``extra='forbid'`` emits ``additionalProperties: false``. The
+    google-genai SDK treats that falsy value as unset, then serializes it as
+    ``additional_properties``, which the Gemini REST API rejects with HTTP 400.
+    Keep strict parsing on our models; only strip the unsupported wire keys.
+    """
+    return _strip_unsupported_schema_keys(model.model_json_schema())
+
+
+def _strip_unsupported_schema_keys(node: Any) -> Any:
+    if isinstance(node, dict):
+        return {
+            key: _strip_unsupported_schema_keys(value)
+            for key, value in node.items()
+            if key not in _GEMINI_UNSUPPORTED_SCHEMA_KEYS
+        }
+    if isinstance(node, list):
+        return [_strip_unsupported_schema_keys(item) for item in node]
+    return node
+
 
 class GeminiClient(Protocol):
     """Small fakeable surface; a new client is created for each task credential."""
@@ -103,7 +130,7 @@ class GoogleGeminiClient:
             contents=prompt,
             config=types.GenerateContentConfig(
                 response_mime_type="application/json",
-                response_schema=response_schema,
+                response_schema=gemini_compatible_schema(response_schema),
                 max_output_tokens=max_output_tokens,
             ),
         )
@@ -142,6 +169,16 @@ def parse_structured_output(raw: str, schema: type[T]) -> T:
         raise StructuredOutputError("response does not satisfy the structured schema") from exc
 
 
+_LOG_RESPONSE_CHARS = 2000
+
+
+def _clip_log_text(value: str) -> str:
+    text = redact_sensitive(value)
+    if len(text) <= _LOG_RESPONSE_CHARS:
+        return text
+    return f"{text[:_LOG_RESPONSE_CHARS]}...[truncated]"
+
+
 def _is_transient_gemini_failure(error: Exception) -> bool:
     """Retry only documented transient HTTP/provider failures."""
     status = getattr(error, "status_code", None) or getattr(error, "code", None)
@@ -169,6 +206,8 @@ def invoke_structured(
     provider = client or GoogleGeminiClient()
     for retry_number in range(max_retries + 1):
         failure: Exception
+        raw = ""
+        parsed: T | None = None
         try:
             if ledger is not None:
                 if max_output_tokens is None:
@@ -210,10 +249,12 @@ def invoke_structured(
             failure = exc
 
         LOGGER.warning(
-            "Gemini structured call failed node=%s retry=%s reason=%s",
+            "Gemini structured call failed node=%s retry=%s reason=%s response=%s parsed=%s",
             context.executing_node,
             retry_number,
             redact_sensitive(str(failure)),
+            _clip_log_text(raw),
+            _clip_log_text("" if parsed is None else parsed.model_dump_json()),
         )
         if not retryable or retry_number == max_retries:
             raise NodeExecutionError(
@@ -237,6 +278,7 @@ __all__ = [
     "GeminiUsage",
     "ResourceLedger",
     "StructuredOutputError",
+    "gemini_compatible_schema",
     "invoke_structured",
     "parse_structured_output",
 ]
