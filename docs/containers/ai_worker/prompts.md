@@ -103,7 +103,7 @@ Generic no-AI arenas are not prompts and are not mounted into AI Worker. Their t
 | `Validator` (shared) | `nodes/validator_base.txt` + `graphs/battle/validator_criteria.txt` | `elements/fighters.txt` + fighter list, `elements/environment.txt`, `elements/setting/<setting>.txt`, plus `## OUTCOME:` (`outcome_type`, `random_winner_mode`, `predetermined_winners`) |
 | `Modifier` | `graphs/battle/modifier.txt` | `elements/language.txt`, `elements/setting/<setting>.txt` |
 | `Decider` (shared) | `nodes/decider_base.txt` + `graphs/battle/decider_criteria.txt` | Same identity context as Validator; each attempt presented as labelled story text (`## ATTEMPT <index>:`) |
-| `ResolveWinners` (emergent mode only) | `graphs/battle/resolve_winners.txt` | `elements/fighters.txt` + fighter list; output must contain exact supplied `player_id` values and is never derived by nickname matching (`graphs/battle.md` §5/§6) |
+| `ResolveWinners` (emergent mode only) | `graphs/battle/resolve_winners.txt` | Safe fighter list plus the narrow neutral-label/fighter-name → exact `player_id` identity map; output must contain one of those supplied IDs and is never derived by nickname matching (`graphs/battle.md` §5/§6) |
 
 ---
 

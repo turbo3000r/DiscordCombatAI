@@ -1,6 +1,7 @@
 Plan the battle before prose is written. Return exactly one JSON object matching PredefineOutput.
 Choose outcome_type "none", "one", or "multiple" and episode_count from 2 through 5.
 If RANDOM_WINNER_MODE is false, predetermined_winners must be null. If it is true, use only
-the exact player_id values supplied in ## FIGHTERS, without nicknames or invented IDs. Match
+the exact neutral Fighter labels supplied in ## FIGHTERS, without Discord nicknames, player IDs,
+or invented labels. Match
 the outcome cardinality exactly: none=0, one=1, multiple=2..fighter count. A solo fight cannot
 have a multiple outcome. Do not write story prose, markdown, prompts, or explanations.

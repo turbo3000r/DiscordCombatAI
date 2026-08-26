@@ -176,7 +176,7 @@ Two distinct graphs are separate `ai_tasks`: `environment` may run once initiall
 | **Invoked** | `initial` once, then at most three `revision` calls | Once after a ballot meets threshold |
 | **Key inputs** | `input_type`, `raw_input` (all descriptions on `initial`; decliners' comments only on `revision`), `setting`, `language_locale`, `existing_environment` (revision only) | `fighters`, `environment` (the accepted candidate), `setting`, `language_locale`, `random_winner_mode: false` (§3) |
 | **Progress UI** | Own `TaskProgressContainer` per invocation (§6 step 3/5) | Own `TaskProgressContainer` (§6 step 7) |
-| **Result consumed** | `final_environment` → displayed + voted on (§6 step 4) | `story` + `winners` → final message (§6 step 8) |
+| **Result consumed** | `final_environment` → displayed + voted on (§6 step 4) | `story` + `winners` → final message (§6 step 8); `player_nick` stays a Bot-side display/mention-fallback snapshot and is excluded from every LLM prompt |
 
 `language_locale` and `setting` are sourced identically for both calls, per `contracts/localization.md` §3/§4 — this command never resolves them itself beyond reading the guild's configured locale and the `setting` command option.
 

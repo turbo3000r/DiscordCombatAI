@@ -4,4 +4,6 @@ Finish the story from the prior episodes and skeleton beat with a coherent, reso
 that matches ## OUTCOME outcome_type: none declares no surviving victor; one/multiple declares
 only those supplied fighters as victors. Preserve exact fighter identity, environment, setting,
 and requested language. In scripted mode, narrate only the predetermined victors as the outcome.
-Write 1..3,500 characters of prose and no content outside the JSON object.
+Write 1..3,500 characters of prose using fighter names only. Never refer to Discord nicknames,
+player IDs, account identifiers, or neutral Fighter labels. Return no content outside the JSON
+object.

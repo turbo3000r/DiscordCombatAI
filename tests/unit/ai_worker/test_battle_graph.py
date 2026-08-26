@@ -136,9 +136,19 @@ def test_episode_boundaries_and_call_limits(episode_count: int) -> None:
         [1024, 4096] + [4096] * episode_count + [2048, 1024]
     )
     assert "## FIGHTERS:" in str(fake.calls[0]["prompt"])
-    assert "111111111111111111:" in str(fake.calls[0]["prompt"])
+    assert "### Fighter 1" in str(fake.calls[0]["prompt"])
+    assert "Name: Alice" in str(fake.calls[0]["prompt"])
+    assert "alice" not in str(fake.calls[0]["prompt"])
+    assert "111111111111111111" not in str(fake.calls[0]["prompt"])
     assert "## LANGUAGE-LOCALE:" not in str(fake.calls[0]["prompt"])
     assert "## LANGUAGE-LOCALE:\nen" in str(fake.calls[2]["prompt"])
+    skeleton_call = fake.calls[1]
+    skeleton_prompt = str(skeleton_call["prompt"])
+    assert f"## REQUESTED EPISODE COUNT:\n{episode_count}" in skeleton_prompt
+    assert f'"episode_count":{episode_count}' in skeleton_prompt
+    episodes_schema = skeleton_call["response_schema"].model_json_schema()["properties"]["episodes"]
+    assert episodes_schema["minItems"] == episode_count
+    assert episodes_schema["maxItems"] == episode_count
     last_episode_prompt = str(fake.calls[1 + episode_count]["prompt"])
     assert "## OUTCOME:" in last_episode_prompt
     assert '"outcome_type":"one"' in last_episode_prompt
@@ -149,7 +159,7 @@ def test_episode_boundaries_and_call_limits(episode_count: int) -> None:
     assert "## OUTCOME:" in validator_prompt
     assert '"predetermined_winners":null' in validator_prompt
     assert '"random_winner_mode":false' in validator_prompt
-    assert "111111111111111111:" in validator_prompt
+    assert "111111111111111111" not in validator_prompt
 
 
 def test_malformed_predefine_and_skeleton_mismatch_retry_then_fail() -> None:
@@ -226,8 +236,36 @@ def test_modifier_decider_and_attempt_accounting() -> None:
     assert "## OUTCOME:" in decider_prompt
     assert "## ATTEMPT 0:" in decider_prompt
     assert "## ATTEMPT 1:" in decider_prompt
-    assert "111111111111111111:" in decider_prompt
+    assert "111111111111111111" not in decider_prompt
     assert '"predetermined_winners":null' in decider_prompt
+
+
+def test_prose_prompt_paths_exclude_discord_identity_but_winner_resolution_keeps_ids() -> None:
+    fake = FakeGemini(
+        [
+            *_replies(2)[:4],
+            _invalid(),
+            json.dumps({"story": "Alice survives the storm."}),
+            _invalid(),
+            json.dumps({"selected_attempt_index": 1, "reason": "Most coherent."}),
+            json.dumps({"winner_ids": ["111111111111111111"]}),
+        ]
+    )
+    graph = BattleGraph(
+        BattleGraphRuntime(PROMPTS, llm_max_retries=0, client=fake, sleep=lambda _: None)
+    )
+
+    graph.invoke(battle_invocation_from_envelope(_envelope(max_modifier_retries=1)))
+
+    nickname = "alice"
+    player_id = "111111111111111111"
+    prose_prompts = [str(call["prompt"]) for call in fake.calls[:-1]]
+    assert all(nickname not in prompt and player_id not in prompt for prompt in prose_prompts)
+    assert all("Name: Alice" in prompt for prompt in prose_prompts if "## FIGHTERS:" in prompt)
+    winner_prompt = str(fake.calls[-1]["prompt"])
+    assert nickname not in winner_prompt
+    assert "## WINNER IDENTITY MAP:" in winner_prompt
+    assert "Fighter 1 (Alice): 111111111111111111" in winner_prompt
 
 
 def test_scripted_winners_are_validated_and_need_no_resolution_call() -> None:
@@ -237,7 +275,7 @@ def test_scripted_winners_are_validated_and_need_no_resolution_call() -> None:
                 {
                     "outcome_type": "one",
                     "episode_count": 2,
-                    "predetermined_winners": ["111111111111111111"],
+                    "predetermined_winners": ["Fighter 1"],
                 }
             ),
             json.dumps(
@@ -266,9 +304,9 @@ def test_scripted_winners_are_validated_and_need_no_resolution_call() -> None:
     assert "## Environment:" in validator_prompt
     assert "## SETTING:" in validator_prompt
     assert "## OUTCOME:" in validator_prompt
-    assert '"predetermined_winners":["111111111111111111"]' in validator_prompt
+    assert '"predetermined_winners":["Fighter 1"]' in validator_prompt
     assert '"random_winner_mode":true' in validator_prompt
-    assert "111111111111111111:" in validator_prompt
+    assert "111111111111111111" not in validator_prompt
 
 
 def test_graph_input_rejects_duplicate_ids_and_setting_mismatch_without_call() -> None:
@@ -362,7 +400,9 @@ def test_resolve_winners_prompt_includes_planned_outcome() -> None:
     assert "## OUTCOME:" in resolve
     assert '"outcome_type":"one"' in resolve
     assert "## STORY:" in resolve
-    assert "## FIGHTERS:" in resolve
+    assert "## WINNER IDENTITY MAP:" in resolve
+    assert "Fighter 1 (Alice): 111111111111111111" in resolve
+    assert "alice" not in resolve
 
 
 def test_solo_no_victor_and_multiple_outcomes_are_exact() -> None:
@@ -418,7 +458,7 @@ def test_scripted_decider_uses_rubric_selection_and_preserves_predetermined_ids(
                 {
                     "outcome_type": "one",
                     "episode_count": 2,
-                    "predetermined_winners": ["111111111111111111"],
+                    "predetermined_winners": ["Fighter 1"],
                 }
             ),
             json.dumps(
@@ -449,7 +489,7 @@ def test_scripted_decider_uses_rubric_selection_and_preserves_predetermined_ids(
     decider_prompt = str(fake.calls[-1]["prompt"])
     assert "## FIGHTERS:" in decider_prompt
     assert "## OUTCOME:" in decider_prompt
-    assert '"predetermined_winners":["111111111111111111"]' in decider_prompt
+    assert '"predetermined_winners":["Fighter 1"]' in decider_prompt
     assert "## ATTEMPT 0:" in decider_prompt
 
 

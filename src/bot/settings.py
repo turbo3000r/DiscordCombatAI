@@ -76,10 +76,10 @@ class BotSettings(BaseSettings):
         default=60, gt=0, validation_alias="QUICKBATTLE_AI_ADMISSION_TIMEOUT_SEC"
     )
     quickbattle_invoker_cooldown_sec: int = Field(
-        default=600, ge=0, validation_alias="QUICKBATTLE_INVOKER_COOLDOWN_SEC"
+        default=300, ge=0, validation_alias="QUICKBATTLE_INVOKER_COOLDOWN_SEC"
     )
     quickbattle_guild_cooldown_sec: int = Field(
-        default=300, ge=0, validation_alias="QUICKBATTLE_GUILD_COOLDOWN_SEC"
+        default=60, ge=0, validation_alias="QUICKBATTLE_GUILD_COOLDOWN_SEC"
     )
 
     @model_validator(mode="after")

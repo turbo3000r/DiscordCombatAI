@@ -42,6 +42,7 @@ class FakeGemini:
                 "api_key": api_key,
                 "model": model,
                 "prompt": prompt,
+                "response_schema": response_schema,
                 "max_output_tokens": max_output_tokens,
             }
         )
@@ -59,11 +60,15 @@ def _envelope(**overrides: Any) -> EnvironmentAiTaskEnvelope:
 
 
 def _environment(description: str = "A moonlit forest") -> str:
+    return _environment_with_setting("realistic", description)
+
+
+def _environment_with_setting(setting: str, description: str = "A moonlit forest") -> str:
     return json.dumps(
         {
             "description": description,
             "tags": ["forest", "moonlight"],
-            "setting": "realistic",
+            "setting": setting,
         }
     )
 
@@ -109,7 +114,37 @@ def test_initial_approved_attempt_zero_and_labelled_prompt_assembly() -> None:
     assert state["final_environment"].description == "A moonlit forest"
     assert phases == [TaskPhase.composing, TaskPhase.refining]
     assert "## SETTING:" in str(fake.calls[0]["prompt"])
+    assert "## REQUESTED SETTING:\nrealistic" in str(fake.calls[0]["prompt"])
     assert "## LANGUAGE-LOCALE:\nuk-UA" in str(fake.calls[0]["prompt"])
+    setting_schema = fake.calls[0]["response_schema"].model_json_schema()["properties"]["setting"]
+    assert setting_schema.get("const") == "realistic" or setting_schema.get("enum") == ["realistic"]
+
+
+def test_generator_setting_mismatch_retries_then_accepts() -> None:
+    fake = FakeGemini(
+        [_environment_with_setting("dreamcore"), _environment(), _valid()]
+    )
+    graph = EnvironmentGraph(
+        EnvironmentGraphRuntime(
+            prompt_root=PROMPTS,
+            llm_max_retries=1,
+            client=fake,
+            sleep=lambda _: None,
+        )
+    )
+
+    state = graph.invoke(environment_invocation_from_envelope(_envelope()))
+
+    assert state["final_environment"].setting == "realistic"
+    assert len(fake.calls) == 3
+
+
+def test_generator_setting_mismatch_exhausts_retries() -> None:
+    fake = FakeGemini([_environment_with_setting("dreamcore")])
+    phases: list[TaskPhase] = []
+    with pytest.raises(NodeExecutionError, match="Generator"):
+        _graph(fake, phases).invoke(environment_invocation_from_envelope(_envelope()))
+    assert len(fake.calls) == 1
 
 
 def test_revision_normalises_irrelevant_comment_and_enhances() -> None:
@@ -133,6 +168,7 @@ def test_revision_normalises_irrelevant_comment_and_enhances() -> None:
     assert state["final_environment"].description.endswith("peach orchard")
     assert state["attempts_used"] == 1
     assert "peach" in str(fake.calls[0]["prompt"])
+    assert "## REQUESTED SETTING:\nrealistic" in str(fake.calls[1]["prompt"])
 
 
 @pytest.mark.parametrize(

@@ -186,6 +186,11 @@ def run_graph_impl(
                 )
             except Exception as exc:
                 node = getattr(exc, "node", "invalid_input")
+                logger.warning(
+                    "graph execution failed node=%s reason=%s",
+                    node,
+                    redact_sensitive(str(exc)),
+                )
                 result = AiTaskResultFailed(
                     task_id=envelope.task_id,
                     graph=envelope.graph,
