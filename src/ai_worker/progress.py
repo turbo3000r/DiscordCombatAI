@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import threading
+from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Protocol
 
@@ -66,9 +67,11 @@ class HeartbeatProgressPublisher:
         *,
         transport: ProgressTransport,
         heartbeat_sec: float,
+        on_stop: Callable[[], None] | None = None,
     ) -> None:
         self._transport = transport
         self._heartbeat_sec = heartbeat_sec
+        self._on_stop = on_stop
         self._lock = threading.Lock()
         self._timer: threading.Timer | None = None
         self._current: tuple[str, str, TaskPhase] | None = None
@@ -79,7 +82,21 @@ class HeartbeatProgressPublisher:
             if self._stopped:
                 return
             self._current = (task_id, graph, phase)
-            self._publish_locked(task_id, graph, phase)
+            try:
+                self._publish_locked(task_id, graph, phase)
+            except Exception:
+                logger.warning(
+                    "progress publish failed phase=%s",
+                    phase.value,
+                    extra={"task_id": task_id, "graph": graph, "phase": phase.value},
+                    exc_info=True,
+                )
+            else:
+                logger.info(
+                    "progress phase=%s",
+                    phase.value,
+                    extra={"task_id": task_id, "graph": graph, "phase": phase.value},
+                )
             self._reschedule_locked()
 
     def stop(self) -> None:
@@ -87,6 +104,11 @@ class HeartbeatProgressPublisher:
             self._stopped = True
             self._cancel_timer_locked()
             self._current = None
+        if self._on_stop is not None:
+            try:
+                self._on_stop()
+            except Exception:
+                logger.warning("progress mqtt close failed", exc_info=True)
 
     def _reschedule_locked(self) -> None:
         self._cancel_timer_locked()
@@ -141,8 +163,12 @@ def safe_publish_phase(
     try:
         publisher.publish_phase(task_id=task_id, graph=graph, phase=phase)
     except Exception:
-        # Progress must never block or fail the task itself.
-        return
+        logger.warning(
+            "progress publish failed phase=%s",
+            phase.value,
+            extra={"task_id": task_id, "graph": graph, "phase": phase.value},
+            exc_info=True,
+        )
 
 
 __all__ = [

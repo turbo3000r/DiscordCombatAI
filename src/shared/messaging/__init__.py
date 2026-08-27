@@ -1,6 +1,7 @@
 """Shared broker topic and queue constants."""
 
 from .celery_transport import AI_WORKER_RUN_GRAPH_TASK, build_rabbitmq_broker_url
+from .mqtt_connack import mqtt_connect_accepted
 from .mqtt_topics import MQTT_TOPIC_POLICIES, TopicPolicy
 from .rabbitmq_topology import (
     AI_TASKS_QUEUE,
@@ -8,6 +9,7 @@ from .rabbitmq_topology import (
     DEAD_LETTER_QUEUE,
     DLX_EXCHANGE,
     RABBITMQ_QUEUE_ARGS,
+    ai_tasks_kombu_queue,
 )
 
 __all__ = [
@@ -19,5 +21,7 @@ __all__ = [
     "MQTT_TOPIC_POLICIES",
     "RABBITMQ_QUEUE_ARGS",
     "TopicPolicy",
+    "ai_tasks_kombu_queue",
     "build_rabbitmq_broker_url",
+    "mqtt_connect_accepted",
 ]

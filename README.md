@@ -5,7 +5,7 @@ Highly available, distributed AI-powered Discord bot.
 This repository currently contains **two layouts**:
 
 1. **Legacy monolith** (still runnable): `app.py`, `modules/`, root `web/`, `requirements.txt`.
-2. **Target architecture** (Phases 0–3 implemented under `src/`; Phase 4 AI graphs and Phase 5 `/quick-battle` not started): `src/`, `launcher/`, `infra/`, `tests/`, `pyproject.toml`, Compose.
+2. **Target architecture** (Phases 0–5 implemented under `src/`; Phase 6 Web completion remains): `src/`, `launcher/`, `infra/`, `tests/`, `pyproject.toml`, Compose.
 
 Do not mix imports between the layouts. New shared code lives under `src/shared/`.
 
@@ -20,8 +20,8 @@ Documentation sequencing: [`docs/to_resolve.md`](docs/to_resolve.md). Canonical 
 | 2 Bot / AI Worker transport | Implemented (transport shell; no real graphs) |
 | 2.5 Local development spine | Implemented (S14 spine; remaining S14 cases wait on later phases) |
 | 3 `/config` + `/suggest` + Web Suggestions | Implemented |
-| 4 AI graphs | Not started (blocked on P1.2) |
-| 5 `/quick-battle` | Not started (blocked on P1.1 / P1.2) |
+| 4 AI graphs | Implemented; real-Gemini qualification/tuning remains |
+| 5 `/quick-battle` | Implemented; broader multiplayer and production acceptance remain |
 | 6 Remaining Web pages / S13 | Partial (auth shell + Suggestions only) |
 
 ### Prerequisites

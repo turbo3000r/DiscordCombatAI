@@ -57,6 +57,30 @@ class BotSettings(BaseSettings):
     suggestion_sweep_min_age_sec: float = Field(default=600, gt=0)
     suggestion_max_dm_attempts: int = Field(default=5, gt=0)
     suggestion_claim_timeout_sec: float = Field(default=120, gt=0)
+    quickbattle_max_participants: int = Field(
+        default=10, ge=1, le=10, validation_alias="QUICKBATTLE_MAX_PARTICIPANTS"
+    )
+    quickbattle_environment_input_timeout_sec: int = Field(
+        default=120, gt=0, validation_alias="QUICKBATTLE_ENVIRONMENT_INPUT_TIMEOUT_SEC"
+    )
+    quickbattle_ballot_timeout_sec: int = Field(
+        default=120, gt=0, validation_alias="QUICKBATTLE_BALLOT_TIMEOUT_SEC"
+    )
+    quickbattle_fighter_input_timeout_sec: int = Field(
+        default=180, gt=0, validation_alias="QUICKBATTLE_FIGHTER_INPUT_TIMEOUT_SEC"
+    )
+    quickbattle_max_environment_revision_rounds: int = Field(
+        default=3, ge=0, le=3, validation_alias="QUICKBATTLE_MAX_ENVIRONMENT_REVISION_ROUNDS"
+    )
+    quickbattle_ai_admission_timeout_sec: int = Field(
+        default=60, gt=0, validation_alias="QUICKBATTLE_AI_ADMISSION_TIMEOUT_SEC"
+    )
+    quickbattle_invoker_cooldown_sec: int = Field(
+        default=300, ge=0, validation_alias="QUICKBATTLE_INVOKER_COOLDOWN_SEC"
+    )
+    quickbattle_guild_cooldown_sec: int = Field(
+        default=60, ge=0, validation_alias="QUICKBATTLE_GUILD_COOLDOWN_SEC"
+    )
 
     @model_validator(mode="after")
     def _validate_node_identity_and_timers(self) -> BotSettings:

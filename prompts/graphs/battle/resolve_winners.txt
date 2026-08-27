@@ -1,5 +1,8 @@
-Return exactly one WinnerResolution JSON object. Infer the resolved outcome only from the final
-story, then return winner_ids using only exact player_id values supplied in ## FIGHTERS. Never
-return player_nick, fighter_name, a nickname, an invented ID, a partial list, or explanation.
-The cardinality must exactly match the planned outcome: none=0, one=1, multiple=2..fighter
-count. A solo fight may have none or one winner, never multiple.
+Return exactly one WinnerResolution JSON object. Infer the victors from the final story, then
+return winner_ids using only exact player_id values supplied in ## WINNER IDENTITY MAP. This is
+the sole structured identity-mapping path: never return player_nick, fighter_name, a nickname,
+an invented ID, a partial list, or explanation. Narrative prose must use fighter names only and
+must never refer to Discord nicknames or identifiers.
+Copy the planned outcome_type from ## OUTCOME. winner_ids length must match it exactly:
+none=0, one=1, multiple=2..fighter count. A solo fight may have none or one winner, never
+multiple.

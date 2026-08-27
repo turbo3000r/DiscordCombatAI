@@ -57,6 +57,36 @@
       "modal_title": "Share your suggestion",
       "title_label": "Title",
       "details_label": "Details"
+    },
+    "quick-battle": {
+      "description": "Start a quick battle lobby",
+      "denied_busy_guild": "A battle lobby is already open in this server.",
+      "denied_busy_user": "You are already in a battle lobby.",
+      "denied_invoker_cooldown": "You must wait before starting another quick battle.",
+      "denied_guild_cooldown": "This server must wait before starting another quick battle.",
+      "denied_ai_busy": "The AI is busy. Try again in a moment.",
+      "lobby_title": "Quick Battle lobby",
+      "join": "Join",
+      "leave": "Leave",
+      "start": "Start",
+      "abort": "Abort",
+      "submit": "Submit",
+      "approve": "Approve",
+      "decline": "Decline",
+      "phase_queued": "Queued",
+      "phase_launching": "Launching",
+      "phase_composing": "Composing",
+      "phase_refining": "Refining",
+      "phase_finishing": "Finishing",
+      "session_expired": "This battle session is no longer active.",
+      "no_victor": "No victor.",
+      "winners": "Winners:",
+      "aborted": "The battle was aborted.",
+      "timed_out": "The battle timed out.",
+      "generation_failed": "Battle generation failed. You can start a new one after the cooldown.",
+      "dispatch_failed": "The battle could not be queued. Please try again shortly.",
+      "task_timeout": "The battle task timed out.",
+      "update_in_progress": "An update is in progress. Please retry."
     }
   }
 }

@@ -1,2 +1,6 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+
+# Windows bind-mounts of ./src would otherwise replace Linux shebangs with CRLF
+# (`exec .../entrypoint.sh: no such file or directory`).
+*.sh text eol=lf

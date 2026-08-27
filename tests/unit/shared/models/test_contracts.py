@@ -131,6 +131,21 @@ def test_transport_shell_environment_result_fixture_roundtrip() -> None:
     assert parse_ai_task_result(result.model_dump(mode="json")).task_id == result.task_id
 
 
+def test_battle_success_result_fixture_roundtrip() -> None:
+    payload = load_fixture("ai_task_battle_result.json")
+    result = parse_ai_task_result(payload)
+    envelope = parse_ai_task_envelope(load_fixture("ai_task_battle.json"))
+
+    assert result.status == "success"
+    assert result.task_id == envelope.task_id
+    assert result.graph == "battle"
+    assert result.result["story"]
+    assert result.result["winners"] == ["111111111111111111"]
+    assert result.result["attempts_used"] == 1
+    assert result.result["forced_selection"] is False
+    assert parse_ai_task_result(result.model_dump(mode="json")).task_id == result.task_id
+
+
 def test_transport_shell_progress_fixture_sequence() -> None:
     ticks = json.loads(
         (FIXTURES / "task_progress_transport_shell.json").read_text(encoding="utf-8")
@@ -185,7 +200,11 @@ def test_task_progress_roundtrip_and_validation() -> None:
         timestamp="2026-07-15T17:20:00Z",
         attempt=2,
     )
-    assert parse_task_progress_message(message.model_dump(mode="json")).phase is TaskPhase.refining
+    dumped = message.model_dump(mode="json")
+    assert parse_task_progress_message(dumped).phase is TaskPhase.refining
+    encoded = message.model_dump_json()
+    assert parse_task_progress_message(encoded).phase is TaskPhase.refining
+    assert parse_task_progress_message(encoded.encode("utf-8")).phase is TaskPhase.refining
 
     bad = message.model_dump(mode="json")
     bad["schema_version"] = 7

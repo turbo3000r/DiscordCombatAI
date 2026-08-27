@@ -39,7 +39,9 @@ def test_base_compose_has_expected_broker_topology() -> None:
         assert service["profiles"] == ["application"]  # type: ignore[index]
     for service in (head, bot, ai_worker):
         assert service["restart"] == "unless-stopped"  # type: ignore[index]
-        assert "APPLICATION_VERSION" in service["environment"]  # type: ignore[index]
+        assert service["environment"]["APPLICATION_VERSION"] == (  # type: ignore[index]
+            "${APPLICATION_VERSION:-v0.1.0}"
+        )
 
     assert head["extra_hosts"] == ["host.docker.internal:host-gateway"]  # type: ignore[index]
     assert head["ports"] == ["127.0.0.1:9800:9800"]  # type: ignore[index]

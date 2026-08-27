@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -214,10 +215,32 @@ async def test_drain_block_and_allow(l10n, guild_repo) -> None:
 
 
 @pytest.mark.asyncio
+async def test_allowed_command_logs_start_params_and_finish(l10n, guild_repo, caplog) -> None:
+    guard = _guard(l10n, guild_repo)
+    interaction = _interaction(command_name="quick-battle")
+
+    @guard.process_command(required_guild=True)
+    async def cmd(
+        interaction: discord.Interaction,
+        ctx: CommandContext,
+        setting: str = "dreamcore",
+        api_key: str = "AIzaShouldNeverAppear",
+    ) -> str:
+        return "ok"
+
+    with caplog.at_level(logging.INFO, logger="bot.modules.commands.process_command"):
+        assert await cmd(interaction, setting="dreamcore", api_key="AIzaShouldNeverAppear") == "ok"
+    joined = "\n".join(caplog.messages)
+    assert "command started" in joined
+    assert "dreamcore" in joined
+    assert "command finished" in joined
+    assert "AIzaShouldNeverAppear" not in joined
+    assert "secret-key" not in joined
+
+
+@pytest.mark.asyncio
 async def test_enabled_gate(l10n, guild_repo) -> None:
-    guild_repo.get = AsyncMock(
-        return_value=_guild_doc(enabled=False, api_key="", model="")
-    )
+    guild_repo.get = AsyncMock(return_value=_guild_doc(enabled=False, api_key="", model=""))
     guard = _guard(l10n, guild_repo)
     interaction = _interaction()
 

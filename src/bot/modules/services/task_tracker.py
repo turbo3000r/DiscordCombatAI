@@ -12,10 +12,13 @@ from typing import Any, Protocol
 from shared.models import (
     AiTaskResult,
     AiTaskResultFailed,
+    BattleAiTaskEnvelope,
     EnvironmentAiTaskEnvelope,
     TaskPhase,
     TaskProgressMessage,
 )
+
+DispatchEnvelope = EnvironmentAiTaskEnvelope | BattleAiTaskEnvelope
 
 logger = logging.getLogger(__name__)
 
@@ -66,10 +69,24 @@ class TaskTracker:
     on_phase_change: PhaseCallback | None = None
     records: dict[str, TaskRecord] = field(default_factory=dict)
     revoke_calls: list[str] = field(default_factory=list)
+    workflows: dict[str, None] = field(default_factory=dict)
 
     @property
     def in_flight_workflows(self) -> int:
+        """One accepted /quick-battle is one unit; nested graph tasks do not add."""
+        command_tasks = any(record.command != "harness" for record in self.records.values())
+        if self.workflows or command_tasks:
+            harness = sum(1 for record in self.records.values() if record.command == "harness")
+            return len(self.workflows) + harness
         return len(self.records)
+
+    def start_workflow(self, workflow_id: str) -> None:
+        if workflow_id in self.workflows:
+            raise ValueError(f"workflow already open: {workflow_id}")
+        self.workflows[workflow_id] = None
+
+    def finish_workflow(self, workflow_id: str) -> None:
+        self.workflows.pop(workflow_id, None)
 
     def task_ids(self) -> list[str]:
         return list(self.records)
@@ -77,7 +94,7 @@ class TaskTracker:
     async def create_from_dispatch(
         self,
         *,
-        envelope: EnvironmentAiTaskEnvelope,
+        envelope: DispatchEnvelope,
         completion_callback: CompletionCallback,
         command: str = "harness",
     ) -> TaskRecord:

@@ -143,6 +143,24 @@ class EpisodeOutput(BaseModel):
     text: str = Field(min_length=1, max_length=3500)
 
 
+def skeleton_output_schema(episode_count: int) -> type[SkeletonOutput]:
+    """SkeletonOutput whose schema admits only the planned episode count."""
+
+    class BoundSkeletonOutput(SkeletonOutput):
+        episodes: list[EpisodeSkeleton] = Field(min_length=episode_count, max_length=episode_count)
+
+    return BoundSkeletonOutput
+
+
+def episode_output_schema(expected_index: int) -> type[EpisodeOutput]:
+    """EpisodeOutput whose schema admits only the requested 0-based index."""
+
+    class BoundEpisodeOutput(EpisodeOutput):
+        episode_index: int = Field(ge=expected_index, le=expected_index)
+
+    return BoundEpisodeOutput
+
+
 class StoryOutput(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     story: str = Field(min_length=1, max_length=12000)
@@ -265,18 +283,43 @@ class BattleGraph:
         return cast(BaseModel, invoke_structured(**cast(Any, kwargs)))
 
     def _fighters_block(self, e: BattleInvocation) -> str:
-        listing = "\n".join(
-            f"{f.player_id}: {f.player_nick} — {f.fighter_name}: {f.description}"
-            for f in e.fighters
+        listing = "\n\n".join(
+            "\n".join(
+                [
+                    f"### Fighter {index}",
+                    f"Name: {fighter.fighter_name}",
+                    f"Description: {fighter.description}",
+                    *(
+                        [f"Strategy: {fighter.strategy}"]
+                        if fighter.strategy is not None
+                        else []
+                    ),
+                ]
+            )
+            for index, fighter in enumerate(e.fighters, start=1)
         )
         return f"{self.prompts.element('elements/fighters.txt')}\n{listing}"
+
+    @staticmethod
+    def _fighter_label(index: int) -> str:
+        return f"Fighter {index}"
+
+    def _winner_labels(self, e: BattleInvocation, winner_ids: list[str] | None) -> list[str] | None:
+        if winner_ids is None:
+            return None
+        labels_by_id = {
+            fighter.player_id: self._fighter_label(index)
+            for index, fighter in enumerate(e.fighters, start=1)
+        }
+        return [labels_by_id[winner_id] for winner_id in winner_ids]
 
     def _outcome_block(self, e: BattleInvocation, plan: PredefineOutput) -> str:
         return "## OUTCOME:\n" + json.dumps(
             {
                 "outcome_type": plan.outcome_type,
+                "episode_count": plan.episode_count,
                 "random_winner_mode": e.random_winner_mode,
-                "predetermined_winners": plan.predetermined_winners,
+                "predetermined_winners": self._winner_labels(e, plan.predetermined_winners),
             },
             separators=(",", ":"),
         )
@@ -306,7 +349,7 @@ class BattleGraph:
             prompt += "\n\n" + extra
         return prompt
 
-    def _identity_context(self, e: BattleInvocation, plan: PredefineOutput) -> str:
+    def _narrative_context(self, e: BattleInvocation, plan: PredefineOutput) -> str:
         return "\n\n".join(
             [
                 self.prompts.element(
@@ -338,6 +381,53 @@ class BattleGraph:
         ):
             raise StructuredOutputError("winner cardinality disagrees with outcome")
 
+    def _validate_planned_winner_labels(
+        self, output: PredefineOutput, fighters: list[Fighter], scripted: bool
+    ) -> None:
+        labels = [self._fighter_label(index) for index in range(1, len(fighters) + 1)]
+        winners = output.predetermined_winners
+        if not scripted and winners is not None:
+            raise StructuredOutputError("emergent mode requires null predetermined_winners")
+        if scripted and winners is None:
+            raise StructuredOutputError("scripted mode requires predetermined_winners")
+        if winners is not None and (
+            len(winners) != len(set(winners)) or not set(winners) <= set(labels)
+        ):
+            raise StructuredOutputError("invalid predetermined winner labels")
+        count = 0 if winners is None else len(winners)
+        if output.outcome_type == "multiple" and len(fighters) < 2:
+            raise StructuredOutputError("multiple outcome is invalid for a solo fighter")
+        if scripted and (
+            (output.outcome_type == "none" and count != 0)
+            or (output.outcome_type == "one" and count != 1)
+            or (output.outcome_type == "multiple" and not 2 <= count <= len(fighters))
+        ):
+            raise StructuredOutputError("winner cardinality disagrees with outcome")
+
+    def _plan_with_winner_ids(
+        self, output: PredefineOutput, fighters: list[Fighter]
+    ) -> PredefineOutput:
+        ids_by_label = {
+            self._fighter_label(index): fighter.player_id
+            for index, fighter in enumerate(fighters, start=1)
+        }
+        return PredefineOutput(
+            outcome_type=output.outcome_type,
+            episode_count=output.episode_count,
+            predetermined_winners=(
+                None
+                if output.predetermined_winners is None
+                else [ids_by_label[label] for label in output.predetermined_winners]
+            ),
+        )
+
+    def _winner_resolution_context(self, e: BattleInvocation) -> str:
+        identity_map = "\n".join(
+            f"{self._fighter_label(index)} ({fighter.fighter_name}): {fighter.player_id}"
+            for index, fighter in enumerate(e.fighters, start=1)
+        )
+        return "## WINNER IDENTITY MAP:\n" + identity_map
+
     def invoke(self, invocation: BattleInvocation) -> dict[str, object]:
         if invocation.max_modifier_retries > self.r.max_modifier_retries:
             raise NodeExecutionError(
@@ -356,17 +446,19 @@ class BattleGraph:
     def _predefine(self, state: BattleGraphState) -> dict[str, object]:
         e = state["invocation"]
         self.r.publish_phase and self.r.publish_phase(TaskPhase.composing)
-        p = self._call(
+        raw_plan = self._call(
             e,
             "Predefine",
             self._prompt("graphs/battle/predefine.txt", e, language=False, fighters=True),
             PredefineOutput,
-            validate=lambda output: self._validate_outcome(
+            validate=lambda output: self._validate_planned_winner_labels(
                 cast(PredefineOutput, output), e.fighters, e.random_winner_mode
             ),
         )
-        assert isinstance(p, PredefineOutput)
-        return {"plan": p}
+        assert isinstance(raw_plan, PredefineOutput)
+        plan = self._plan_with_winner_ids(raw_plan, e.fighters)
+        self._validate_outcome(plan, e.fighters, e.random_winner_mode)
+        return {"plan": plan}
 
     def _create_skeleton(self, state: BattleGraphState) -> dict[str, object]:
         e, p = state["invocation"], state["plan"]
@@ -376,11 +468,16 @@ class BattleGraph:
             self._prompt(
                 "graphs/battle/create_skeleton.txt",
                 e,
-                p.model_dump_json(),
+                (
+                    f"## REQUESTED EPISODE COUNT:\n{p.episode_count}\n"
+                    "Return exactly this many episodes. episode_index must be contiguous "
+                    f"0-based integers 0..{p.episode_count - 1}.\n\n"
+                    f"{self._outcome_block(e, p)}"
+                ),
                 language=False,
                 fighters=True,
             ),
-            SkeletonOutput,
+            skeleton_output_schema(p.episode_count),
             validate=lambda output: self._validate_skeleton(
                 cast(SkeletonOutput, output), p.episode_count
             ),
@@ -392,14 +489,19 @@ class BattleGraph:
         self, state: BattleGraphState, *, node: str, path: str, index: int, include_prior: bool
     ) -> dict[str, object]:
         e = state["invocation"]
-        extra = state["skeleton"][index].model_dump_json()
+        extra = (
+            f"## REQUESTED EPISODE INDEX:\n{index}\n"
+            "episode_index must be this exact 0-based integer. The first episode is 0, not 1.\n\n"
+            f"{self._outcome_block(e, state['plan'])}\n\n"
+            f"## SKELETON BEAT:\n{state['skeleton'][index].model_dump_json()}"
+        )
         if include_prior:
             extra += "\n\n## PRIOR EPISODES:\n" + "\n\n".join(state["episode_texts"])
         output = self._call(
             e,
             node,
             self._prompt(path, e, extra, language=True, fighters=True),
-            EpisodeOutput,
+            episode_output_schema(index),
             validate=self._episode_validator(index),
         )
         assert isinstance(output, EpisodeOutput)
@@ -459,7 +561,7 @@ class BattleGraph:
             base_prompt=self.prompts.read("nodes/validator_base.txt"),
             criteria=self.prompts.read("graphs/battle/validator_criteria.txt")
             + "\n\n"
-            + self._identity_context(e, plan),
+            + self._narrative_context(e, plan),
             candidate=story,
             candidate_serializer=lambda x: x,
             max_retries=self.r.llm_max_retries,
@@ -518,7 +620,7 @@ class BattleGraph:
             base_prompt=self.prompts.read("nodes/decider_base.txt"),
             criteria=self.prompts.read("graphs/battle/decider_criteria.txt")
             + "\n\n"
-            + self._identity_context(e, plan),
+            + self._narrative_context(e, plan),
             attempts=attempts,
             candidate_serializer=lambda a: f"## ATTEMPT {a.attempt_index}:\n{a.candidate}",
             max_retries=self.r.llm_max_retries,
@@ -547,9 +649,15 @@ class BattleGraph:
                 self._prompt(
                     "graphs/battle/resolve_winners.txt",
                     e,
-                    story,
+                    "\n\n".join(
+                        [
+                            self._outcome_block(e, p),
+                            self._winner_resolution_context(e),
+                            "## STORY:\n" + story,
+                        ]
+                    ),
                     language=False,
-                    fighters=True,
+                    fighters=False,
                     environment=False,
                     setting=False,
                 ),

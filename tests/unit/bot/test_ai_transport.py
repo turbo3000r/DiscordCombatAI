@@ -7,6 +7,7 @@ from uuid import uuid4
 import pytest
 
 from bot.modules.services.ai_transport import (
+    PUBLISH_RETRY_POLICY,
     AiTransport,
     PendingDispatch,
     build_bot_celery_app,
@@ -85,6 +86,7 @@ async def test_dispatch_send_task_kwargs_and_confirm_creates_pending_handoff() -
     assert call["name"] == AI_WORKER_RUN_GRAPH_TASK
     assert call["task_id"] == str(env.task_id)
     assert call["queue"] == AI_TASKS_QUEUE
+    assert call["retry"] is True
     assert "envelope" in call["kwargs"]
     assert confirmed == [str(env.task_id)]
     assert transport.pending_ids == set()
@@ -175,3 +177,14 @@ def test_build_bot_celery_app_no_backend() -> None:
     app = build_bot_celery_app("amqp://user:pass@localhost:5672/%2Fvhost")
     assert app.conf.result_backend is None or app.conf.result_backend is False
     assert app.conf.broker_transport_options.get("confirm_publish") is True
+    assert app.conf.task_publish_retry is True
+    assert app.conf.task_publish_retry_policy["max_retries"] == PUBLISH_RETRY_POLICY["max_retries"]
+    assert app.conf.task_publish_retry_policy["interval_start"] == 1.0
+    assert app.conf.task_publish_retry_policy["interval_max"] == 60.0
+    assert app.conf.broker_connection_retry is True
+    assert app.conf.task_create_missing_queues is False
+    queues = list(app.conf.task_queues or ())
+    assert len(queues) == 1
+    assert queues[0].name == AI_TASKS_QUEUE
+    assert queues[0].no_declare is True
+    assert queues[0].queue_arguments == {"x-dead-letter-exchange": "dlx"}

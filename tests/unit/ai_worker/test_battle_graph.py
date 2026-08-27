@@ -20,7 +20,12 @@ from ai_worker.graphs.battle.graph import (
     battle_invocation_from_envelope,
 )
 from ai_worker.graphs.foundation import NodeExecutionError
-from ai_worker.llm import GeminiResponse, StructuredOutputError, parse_structured_output
+from ai_worker.llm import (
+    GeminiResponse,
+    GeminiUsage,
+    StructuredOutputError,
+    parse_structured_output,
+)
 from shared.models import BattleAiTaskEnvelope, TaskPhase
 
 FIXTURES = Path(__file__).resolve().parents[2] / "fixtures" / "contracts"
@@ -46,6 +51,7 @@ class FakeGemini:
                 "api_key": api_key,
                 "model": model,
                 "prompt": prompt,
+                "response_schema": response_schema,
                 "max_output_tokens": max_output_tokens,
             }
         )
@@ -130,9 +136,22 @@ def test_episode_boundaries_and_call_limits(episode_count: int) -> None:
         [1024, 4096] + [4096] * episode_count + [2048, 1024]
     )
     assert "## FIGHTERS:" in str(fake.calls[0]["prompt"])
-    assert "111111111111111111:" in str(fake.calls[0]["prompt"])
+    assert "### Fighter 1" in str(fake.calls[0]["prompt"])
+    assert "Name: Alice" in str(fake.calls[0]["prompt"])
+    assert "alice" not in str(fake.calls[0]["prompt"])
+    assert "111111111111111111" not in str(fake.calls[0]["prompt"])
     assert "## LANGUAGE-LOCALE:" not in str(fake.calls[0]["prompt"])
     assert "## LANGUAGE-LOCALE:\nen" in str(fake.calls[2]["prompt"])
+    skeleton_call = fake.calls[1]
+    skeleton_prompt = str(skeleton_call["prompt"])
+    assert f"## REQUESTED EPISODE COUNT:\n{episode_count}" in skeleton_prompt
+    assert f'"episode_count":{episode_count}' in skeleton_prompt
+    episodes_schema = skeleton_call["response_schema"].model_json_schema()["properties"]["episodes"]
+    assert episodes_schema["minItems"] == episode_count
+    assert episodes_schema["maxItems"] == episode_count
+    last_episode_prompt = str(fake.calls[1 + episode_count]["prompt"])
+    assert "## OUTCOME:" in last_episode_prompt
+    assert '"outcome_type":"one"' in last_episode_prompt
     validator_prompt = str(fake.calls[2 + episode_count]["prompt"])
     assert "## FIGHTERS:" in validator_prompt
     assert "## Environment:" in validator_prompt
@@ -140,7 +159,7 @@ def test_episode_boundaries_and_call_limits(episode_count: int) -> None:
     assert "## OUTCOME:" in validator_prompt
     assert '"predetermined_winners":null' in validator_prompt
     assert '"random_winner_mode":false' in validator_prompt
-    assert "111111111111111111:" in validator_prompt
+    assert "111111111111111111" not in validator_prompt
 
 
 def test_malformed_predefine_and_skeleton_mismatch_retry_then_fail() -> None:
@@ -217,8 +236,36 @@ def test_modifier_decider_and_attempt_accounting() -> None:
     assert "## OUTCOME:" in decider_prompt
     assert "## ATTEMPT 0:" in decider_prompt
     assert "## ATTEMPT 1:" in decider_prompt
-    assert "111111111111111111:" in decider_prompt
+    assert "111111111111111111" not in decider_prompt
     assert '"predetermined_winners":null' in decider_prompt
+
+
+def test_prose_prompt_paths_exclude_discord_identity_but_winner_resolution_keeps_ids() -> None:
+    fake = FakeGemini(
+        [
+            *_replies(2)[:4],
+            _invalid(),
+            json.dumps({"story": "Alice survives the storm."}),
+            _invalid(),
+            json.dumps({"selected_attempt_index": 1, "reason": "Most coherent."}),
+            json.dumps({"winner_ids": ["111111111111111111"]}),
+        ]
+    )
+    graph = BattleGraph(
+        BattleGraphRuntime(PROMPTS, llm_max_retries=0, client=fake, sleep=lambda _: None)
+    )
+
+    graph.invoke(battle_invocation_from_envelope(_envelope(max_modifier_retries=1)))
+
+    nickname = "alice"
+    player_id = "111111111111111111"
+    prose_prompts = [str(call["prompt"]) for call in fake.calls[:-1]]
+    assert all(nickname not in prompt and player_id not in prompt for prompt in prose_prompts)
+    assert all("Name: Alice" in prompt for prompt in prose_prompts if "## FIGHTERS:" in prompt)
+    winner_prompt = str(fake.calls[-1]["prompt"])
+    assert nickname not in winner_prompt
+    assert "## WINNER IDENTITY MAP:" in winner_prompt
+    assert "Fighter 1 (Alice): 111111111111111111" in winner_prompt
 
 
 def test_scripted_winners_are_validated_and_need_no_resolution_call() -> None:
@@ -228,7 +275,7 @@ def test_scripted_winners_are_validated_and_need_no_resolution_call() -> None:
                 {
                     "outcome_type": "one",
                     "episode_count": 2,
-                    "predetermined_winners": ["111111111111111111"],
+                    "predetermined_winners": ["Fighter 1"],
                 }
             ),
             json.dumps(
@@ -257,9 +304,9 @@ def test_scripted_winners_are_validated_and_need_no_resolution_call() -> None:
     assert "## Environment:" in validator_prompt
     assert "## SETTING:" in validator_prompt
     assert "## OUTCOME:" in validator_prompt
-    assert '"predetermined_winners":["111111111111111111"]' in validator_prompt
+    assert '"predetermined_winners":["Fighter 1"]' in validator_prompt
     assert '"random_winner_mode":true' in validator_prompt
-    assert "111111111111111111:" in validator_prompt
+    assert "111111111111111111" not in validator_prompt
 
 
 def test_graph_input_rejects_duplicate_ids_and_setting_mismatch_without_call() -> None:
@@ -316,6 +363,48 @@ def test_compiled_graph_has_documented_nodes_and_middle_context() -> None:
     assert "Episode 2: Alice fights." in last_prompt
 
 
+def test_first_episode_requests_exact_zero_based_index() -> None:
+    fake = FakeGemini(_replies(2))
+    graph = BattleGraph(
+        BattleGraphRuntime(PROMPTS, llm_max_retries=0, client=fake, sleep=lambda _: None)
+    )
+    graph.invoke(battle_invocation_from_envelope(_envelope()))
+    first = fake.calls[2]
+    prompt = str(first["prompt"])
+    assert "## REQUESTED EPISODE INDEX:\n0" in prompt
+    schema = first["response_schema"]
+    assert isinstance(schema, type)
+    props = schema.model_json_schema()["properties"]["episode_index"]
+    assert props["minimum"] == 0
+    assert props["maximum"] == 0
+
+
+def test_one_based_first_episode_index_is_rejected() -> None:
+    replies = _replies(2)
+    replies[2] = _episode(1)
+    fake = FakeGemini(replies)
+    graph = BattleGraph(
+        BattleGraphRuntime(PROMPTS, llm_max_retries=0, client=fake, sleep=lambda _: None)
+    )
+    with pytest.raises(NodeExecutionError, match="ImplementFirstEpisode"):
+        graph.invoke(battle_invocation_from_envelope(_envelope()))
+
+
+def test_resolve_winners_prompt_includes_planned_outcome() -> None:
+    fake = FakeGemini(_replies(2))
+    graph = BattleGraph(
+        BattleGraphRuntime(PROMPTS, llm_max_retries=0, client=fake, sleep=lambda _: None)
+    )
+    graph.invoke(battle_invocation_from_envelope(_envelope()))
+    resolve = str(fake.calls[-1]["prompt"])
+    assert "## OUTCOME:" in resolve
+    assert '"outcome_type":"one"' in resolve
+    assert "## STORY:" in resolve
+    assert "## WINNER IDENTITY MAP:" in resolve
+    assert "Fighter 1 (Alice): 111111111111111111" in resolve
+    assert "alice" not in resolve
+
+
 def test_solo_no_victor_and_multiple_outcomes_are_exact() -> None:
     solo = _envelope(
         fighters=[
@@ -369,7 +458,7 @@ def test_scripted_decider_uses_rubric_selection_and_preserves_predetermined_ids(
                 {
                     "outcome_type": "one",
                     "episode_count": 2,
-                    "predetermined_winners": ["111111111111111111"],
+                    "predetermined_winners": ["Fighter 1"],
                 }
             ),
             json.dumps(
@@ -400,7 +489,7 @@ def test_scripted_decider_uses_rubric_selection_and_preserves_predetermined_ids(
     decider_prompt = str(fake.calls[-1]["prompt"])
     assert "## FIGHTERS:" in decider_prompt
     assert "## OUTCOME:" in decider_prompt
-    assert '"predetermined_winners":["111111111111111111"]' in decider_prompt
+    assert '"predetermined_winners":["Fighter 1"]' in decider_prompt
     assert "## ATTEMPT 0:" in decider_prompt
 
 
@@ -469,6 +558,51 @@ def test_winner_resolution_rejects_nicknames_empty_and_off_session_ids(
     )
     with pytest.raises(NodeExecutionError, match="ResolveWinners"):
         graph.invoke(battle_invocation_from_envelope(_envelope()))
+
+
+def test_battle_runtime_deadline_fails_before_the_first_llm_call() -> None:
+    fake = FakeGemini([])
+    graph = BattleGraph(
+        BattleGraphRuntime(
+            PROMPTS,
+            llm_max_retries=0,
+            deadline_sec=0,
+            client=fake,
+            sleep=lambda _: None,
+        )
+    )
+    with pytest.raises(NodeExecutionError, match="deadline"):
+        graph.invoke(battle_invocation_from_envelope(_envelope()))
+    assert fake.calls == []
+
+
+def test_battle_runtime_input_token_exhaustion_stops_before_the_next_llm_call() -> None:
+    fake = FakeGemini(
+        [
+            GeminiResponse(
+                json.dumps(
+                    {
+                        "outcome_type": "one",
+                        "episode_count": 2,
+                        "predetermined_winners": None,
+                    }
+                ),
+                GeminiUsage(input_tokens=10, output_tokens=1),
+            )
+        ]
+    )
+    graph = BattleGraph(
+        BattleGraphRuntime(
+            PROMPTS,
+            llm_max_retries=0,
+            max_input_tokens=5,
+            client=fake,
+            sleep=lambda _: None,
+        )
+    )
+    with pytest.raises(NodeExecutionError, match="input token"):
+        graph.invoke(battle_invocation_from_envelope(_envelope()))
+    assert len(fake.calls) == 1
 
 
 def test_battle_runtime_output_ceiling_fails_before_the_first_llm_call() -> None:

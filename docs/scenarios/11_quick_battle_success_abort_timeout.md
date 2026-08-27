@@ -137,7 +137,7 @@
 
 1. Freeze a multi-participant snapshot.
 2. If a participant misses environment/fighter collection, remove them if at least one submitter remains; otherwise abort.
-3. If a participant already submitted a fighter and later leaves the guild, retain their exact ID/snapshot name in graph input; if they win but cannot be mentioned, render escaped snapshot name.
+3. If a participant already submitted a fighter and later leaves the guild, retain their exact ID/snapshot name in the Bot-side task snapshot; LLM-facing graph context excludes that snapshot name and uses fighter names only, while winner resolution receives exact IDs through its structured identity map. If they win but cannot be mentioned, render escaped snapshot name.
 4. If any active voter misses the ballot, abort rather than shrinking the completed-ballot denominator.
 5. If the owner becomes unavailable, transfer Start/Abort ownership to the earliest available joined participant; abort if none exists.
 

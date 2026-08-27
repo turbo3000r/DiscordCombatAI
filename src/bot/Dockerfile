@@ -12,8 +12,10 @@ COPY pyproject.toml uv.lock README.md ./
 COPY src ./src
 
 RUN uv sync --frozen --no-dev --extra bot \
-    && chmod +x /app/src/bot/entrypoint.sh
+    && sed -i 's/\r$//' /app/src/bot/entrypoint.sh \
+    && cp /app/src/bot/entrypoint.sh /app/entrypoint.sh \
+    && chmod +x /app/entrypoint.sh
 
 USER 65532:65532
 
-ENTRYPOINT ["/app/src/bot/entrypoint.sh"]
+ENTRYPOINT ["/app/entrypoint.sh"]

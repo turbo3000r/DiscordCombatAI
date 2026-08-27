@@ -10,7 +10,9 @@ from shared.messaging import (
     DLX_EXCHANGE,
     MQTT_TOPIC_POLICIES,
     RABBITMQ_QUEUE_ARGS,
+    ai_tasks_kombu_queue,
     build_rabbitmq_broker_url,
+    mqtt_connect_accepted,
 )
 
 
@@ -30,6 +32,37 @@ def test_rabbitmq_topology_constants() -> None:
     assert DLX_EXCHANGE == "dlx"
     assert DEAD_LETTER_QUEUE == "dead_letter"
     assert RABBITMQ_QUEUE_ARGS == {"x-dead-letter-exchange": "dlx"}
+    queue = ai_tasks_kombu_queue()
+    assert queue.name == AI_TASKS_QUEUE
+    assert queue.no_declare is True
+    assert queue.queue_arguments == RABBITMQ_QUEUE_ARGS
+
+
+def test_rabbitmq_topology_does_not_import_kombu_at_module_level() -> None:
+    import ast
+    from pathlib import Path
+
+    source = Path("src/shared/messaging/rabbitmq_topology.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    imported: set[str] = set()
+    for node in tree.body:
+        if isinstance(node, ast.Import):
+            imported.update(alias.name.split(".", maxsplit=1)[0] for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            imported.add(node.module.split(".", maxsplit=1)[0])
+    assert "kombu" not in imported
+
+
+def test_mqtt_connect_accepted_handles_paho_v2_reason_code() -> None:
+    class ReasonCode:
+        def __init__(self, value: int, *, is_failure: bool) -> None:
+            self.value = value
+            self.is_failure = is_failure
+
+    assert mqtt_connect_accepted(0) is True
+    assert mqtt_connect_accepted(5) is False
+    assert mqtt_connect_accepted(ReasonCode(0, is_failure=False)) is True
+    assert mqtt_connect_accepted(ReasonCode(135, is_failure=True)) is False
 
 
 def test_celery_task_name_constant() -> None:

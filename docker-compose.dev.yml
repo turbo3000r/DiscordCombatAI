@@ -20,6 +20,8 @@ services:
       context: .
       dockerfile: src/bot/Dockerfile
     volumes:
+      # Hot-reload Python sources only. Images copy entrypoint.sh to /app/entrypoint.sh
+      # so a Windows CRLF bind-mount cannot replace the Linux shebang.
       - ./src:/app/src
     depends_on:
       mosquitto:

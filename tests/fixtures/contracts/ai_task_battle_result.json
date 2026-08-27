@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "task_id": "6b44781e-40f8-4807-9b4b-9087430c14b7",
+  "graph": "battle",
+  "status": "success",
+  "result": {
+    "story": "Alice stands alone on the stormy field after the final clash.",
+    "winners": ["111111111111111111"],
+    "attempts_used": 1,
+    "forced_selection": false
+  },
+  "completed_at": "2026-07-15T17:25:00Z"
+}

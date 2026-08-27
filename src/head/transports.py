@@ -10,6 +10,7 @@ import aiohttp
 import psutil
 
 from shared.azure.clients.pubsub import PubSubClient
+from shared.messaging import mqtt_connect_accepted
 
 from .http import HeadHttpApi, HttpRequest
 from .launcher import ClientResponse, HttpClientTransport
@@ -152,7 +153,7 @@ class PahoMqttTransport:
     ) -> None:
         if self._loop is None or self._connected is None:
             return
-        if int(reason_code) == 0:
+        if mqtt_connect_accepted(reason_code):
             initial_connect = not self._connected.done()
             self._loop.call_soon_threadsafe(self._resolve_connected, None)
             if not initial_connect and self._connect_handler is not None:

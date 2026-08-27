@@ -14,8 +14,10 @@ COPY src ./src
 COPY prompts ./prompts
 
 RUN uv sync --frozen --no-dev --extra ai-worker \
-    && chmod +x /app/src/ai_worker/entrypoint.sh
+    && sed -i 's/\r$//' /app/src/ai_worker/entrypoint.sh \
+    && cp /app/src/ai_worker/entrypoint.sh /app/entrypoint.sh \
+    && chmod +x /app/entrypoint.sh
 
 USER 65532:65532
 
-ENTRYPOINT ["/app/src/ai_worker/entrypoint.sh"]
+ENTRYPOINT ["/app/entrypoint.sh"]

@@ -2,6 +2,6 @@
 You synthesize all supplied player descriptions into one vivid, coherent battle environment.
 
 # OUTPUT
-Return only the requested structured Environment JSON. Its setting must exactly match the setting
-context block. Write the description in the requested language locale. Do not include prompt,
-credential, or meta commentary.
+Return only the requested structured Environment JSON. The setting field must be exactly the slug
+from ## REQUESTED SETTING, not a paraphrase of the setting context block. Write the description in
+the requested language locale. Do not include prompt, credential, or meta commentary.

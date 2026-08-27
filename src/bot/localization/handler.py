@@ -56,6 +56,37 @@ REQUIRED_PHASE3_KEYS: tuple[str, ...] = (
     "commands.suggest.notification_dm",
 )
 
+REQUIRED_PHASE5_KEYS: tuple[str, ...] = (
+    "commands.quick-battle.description",
+    "commands.quick-battle.denied_busy_guild",
+    "commands.quick-battle.denied_busy_user",
+    "commands.quick-battle.denied_invoker_cooldown",
+    "commands.quick-battle.denied_guild_cooldown",
+    "commands.quick-battle.denied_ai_busy",
+    "commands.quick-battle.lobby_title",
+    "commands.quick-battle.join",
+    "commands.quick-battle.leave",
+    "commands.quick-battle.start",
+    "commands.quick-battle.abort",
+    "commands.quick-battle.submit",
+    "commands.quick-battle.approve",
+    "commands.quick-battle.decline",
+    "commands.quick-battle.phase_queued",
+    "commands.quick-battle.phase_launching",
+    "commands.quick-battle.phase_composing",
+    "commands.quick-battle.phase_refining",
+    "commands.quick-battle.phase_finishing",
+    "commands.quick-battle.session_expired",
+    "commands.quick-battle.no_victor",
+    "commands.quick-battle.winners",
+    "commands.quick-battle.aborted",
+    "commands.quick-battle.timed_out",
+    "commands.quick-battle.generation_failed",
+    "commands.quick-battle.dispatch_failed",
+    "commands.quick-battle.task_timeout",
+    "commands.quick-battle.update_in_progress",
+)
+
 
 class LocalizationError(RuntimeError):
     """Fatal localization startup failure."""
@@ -157,16 +188,17 @@ def load_localization(lang_dir: Path | None = None) -> LocalizationHandler:
         locales[code] = data
 
     english = locales[DEFAULT_LOCALE]
-    for key in REQUIRED_PHASE3_KEYS:
+    for key in (*REQUIRED_PHASE3_KEYS, *REQUIRED_PHASE5_KEYS):
         en_value = _lookup(english, key)
         if not isinstance(en_value, str) or not en_value.strip():
             raise LocalizationError(f"English locale missing required key: {key}")
         en_placeholders = _placeholders(en_value)
+        require_presence = key in REQUIRED_PHASE5_KEYS
         for code in ("es", "ua"):
             other = _lookup(locales[code], key)
             if other is None:
-                # Non-English may fall back at runtime; presence preferred but not fatal
-                # beyond English completeness. Still require placeholder parity when present.
+                if require_presence:
+                    raise LocalizationError(f"{code} locale missing required key: {key}")
                 continue
             if not isinstance(other, str):
                 raise LocalizationError(f"{code} locale non-string for key: {key}")
@@ -183,6 +215,7 @@ __all__ = [
     "LocalizationError",
     "LocalizationHandler",
     "REQUIRED_PHASE3_KEYS",
+    "REQUIRED_PHASE5_KEYS",
     "SUPPORTED_LOCALES",
     "load_localization",
 ]

@@ -15,6 +15,8 @@ COPY pyproject.toml uv.lock README.md ./
 COPY src ./src
 COPY --from=frontend /frontend/dist /app/src/web/frontend/dist
 RUN uv sync --frozen --no-dev --extra web \
-    && chmod +x /app/src/web/entrypoint.sh
+    && sed -i 's/\r$//' /app/src/web/entrypoint.sh \
+    && cp /app/src/web/entrypoint.sh /app/entrypoint.sh \
+    && chmod +x /app/entrypoint.sh
 USER 65532:65532
-ENTRYPOINT ["/app/src/web/entrypoint.sh"]
+ENTRYPOINT ["/app/entrypoint.sh"]

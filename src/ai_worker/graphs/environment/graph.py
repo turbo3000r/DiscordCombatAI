@@ -28,7 +28,12 @@ from ai_worker.graphs.foundation import (
     append_unvalidated_attempt,
     fill_attempt_verdict,
 )
-from ai_worker.llm import GeminiClient, ResourceLedger, invoke_structured
+from ai_worker.llm import (
+    GeminiClient,
+    ResourceLedger,
+    StructuredOutputError,
+    invoke_structured,
+)
 from ai_worker.nodes.decider import decide_candidate
 from ai_worker.nodes.validation import validate_candidate
 from ai_worker.prompts import PromptLoader
@@ -94,6 +99,24 @@ class Environment(BaseModel):
         if len(set(result)) != len(result):
             raise ValueError("tags must be unique")
         return result
+
+
+def environment_output_schema(required_setting: str) -> type[Environment]:
+    """Environment whose schema admits only the invocation setting slug."""
+
+    schema_extra = {"const": required_setting, "enum": [required_setting]}
+
+    class BoundEnvironment(Environment):
+        setting: str = Field(json_schema_extra=schema_extra)
+
+        @field_validator("setting")
+        @classmethod
+        def match_invocation_setting(cls, value: str) -> str:
+            if value != required_setting:
+                raise ValueError("candidate setting must exactly match invocation setting")
+            return value
+
+    return BoundEnvironment
 
 
 class EnvironmentInvocation(BaseModel):
@@ -246,27 +269,22 @@ class EnvironmentGraph:
         node: str,
         prompt: str,
         schema: type[BaseModel],
+        validate: Callable[[BaseModel], None] | None = None,
     ) -> BaseModel:
-        if self._runtime.sleep is None:
-            return invoke_structured(
-                context=self._context(invocation, node),
-                prompt=prompt,
-                schema=schema,
-                client=self._runtime.client,
-                max_retries=self._runtime.llm_max_retries,
-                ledger=self._ledger,
-                max_output_tokens=NODE_MAX_OUTPUT_TOKENS[node],
-            )
-        return invoke_structured(
-            context=self._context(invocation, node),
-            prompt=prompt,
-            schema=schema,
-            client=self._runtime.client,
-            max_retries=self._runtime.llm_max_retries,
-            sleep=self._runtime.sleep,
-            ledger=self._ledger,
-            max_output_tokens=NODE_MAX_OUTPUT_TOKENS[node],
-        )
+        kwargs: dict[str, Any] = {
+            "context": self._context(invocation, node),
+            "prompt": prompt,
+            "schema": schema,
+            "client": self._runtime.client,
+            "max_retries": self._runtime.llm_max_retries,
+            "ledger": self._ledger,
+            "max_output_tokens": NODE_MAX_OUTPUT_TOKENS[node],
+        }
+        if validate is not None:
+            kwargs["validate"] = validate
+        if self._runtime.sleep is not None:
+            kwargs["sleep"] = self._runtime.sleep
+        return invoke_structured(**kwargs)
 
     def _route_input(self, state: EnvironmentGraphState) -> dict[str, Any]:
         self._emit(TaskPhase.composing)
@@ -286,11 +304,16 @@ class EnvironmentGraph:
             self._call(
                 invocation=invocation,
                 node="Generator",
-                prompt=f"{prompt}\n\n## PLAYER DESCRIPTIONS:\n" + "\n".join(invocation.raw_input),
-                schema=Environment,
+                prompt=(
+                    f"{prompt}\n\n{self._requested_setting_block(invocation)}\n\n"
+                    f"## PLAYER DESCRIPTIONS:\n" + "\n".join(invocation.raw_input)
+                ),
+                schema=environment_output_schema(invocation.setting),
+                validate=lambda output: self._require_candidate_setting(
+                    cast(Environment, output), invocation
+                ),
             ),
         )
-        self._require_candidate_setting(candidate, invocation, "Generator")
         attempts = append_unvalidated_attempt([], candidate=candidate, source="initial")
         return {"current_environment": candidate, "attempts": attempts, "retry_count": 0}
 
@@ -348,14 +371,16 @@ class EnvironmentGraph:
                 invocation=invocation,
                 node="Enhancer",
                 prompt=(
-                    f"{prompt}\n\n## ORIGINAL PLAYER REQUEST:\n"
-                    f"{original_instruction}"
+                    f"{prompt}\n\n{self._requested_setting_block(invocation)}\n\n"
+                    f"## ORIGINAL PLAYER REQUEST:\n{original_instruction}"
                     f"\n\n## ACTIVE MODIFICATION REQUEST:\n{active_request.instruction}"
                 ),
-                schema=Environment,
+                schema=environment_output_schema(invocation.setting),
+                validate=lambda output: self._require_candidate_setting(
+                    cast(Environment, output), invocation
+                ),
             ),
         )
-        self._require_candidate_setting(candidate, invocation, "Enhancer")
         attempts = append_unvalidated_attempt(
             state["attempts"],
             candidate=candidate,
@@ -444,13 +469,16 @@ class EnvironmentGraph:
         }
 
     @staticmethod
+    def _requested_setting_block(invocation: EnvironmentInvocation) -> str:
+        return f"## REQUESTED SETTING:\n{invocation.setting}"
+
+    @staticmethod
     def _require_candidate_setting(
-        candidate: Environment, invocation: EnvironmentInvocation, node: str
+        candidate: Environment, invocation: EnvironmentInvocation
     ) -> None:
         if candidate.setting != invocation.setting:
-            raise NodeExecutionError(
-                node,
-                "candidate setting must exactly match invocation setting",
+            raise StructuredOutputError(
+                "candidate setting must exactly match invocation setting"
             )
 
 
@@ -531,5 +559,6 @@ __all__ = [
     "SETTINGS",
     "default_prompt_root",
     "environment_invocation_from_envelope",
+    "environment_output_schema",
     "run_environment_graph",
 ]

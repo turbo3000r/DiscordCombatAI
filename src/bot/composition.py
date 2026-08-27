@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import logging
 
+import discord
 import httpx
 
 from bot.localization.handler import load_localization
+from bot.modules.commands.battle import handle_quick_battle_command
 from bot.modules.commands.config import handle_config_command
+from bot.modules.commands.context import CommandContext
 from bot.modules.commands.suggest import handle_suggest_command
 from shared.runtime.guards import RuntimeConfigurationError, assert_service_runtime
 from shared.runtime.settings import RuntimeMode, RuntimeSettings, load_runtime_settings
@@ -51,14 +54,21 @@ def build_bot_application(
 
     suggestion_queue_client = None
     suggestion_queue_name = None
+    archive_writer = None
     if mode is RuntimeMode.production:
-        # Construct Queue only on the production path; development never loads Azure.
+        # Construct Queue/Blob only on the production path; development never loads Azure.
+        from shared.azure.clients.blob import BlobClient
         from shared.azure.clients.queue import QueueClient
         from shared.azure.configs.settings import load_azure_settings
+        from shared.azure.services.guild_logs import GuildLogArchiveService
 
         azure_settings = load_azure_settings("bot")
         suggestion_queue_client = QueueClient(service="bot", settings=azure_settings)
         suggestion_queue_name = azure_settings.azure_queue_name
+        archive_writer = GuildLogArchiveService(
+            blob_client=BlobClient(service="bot", settings=azure_settings),
+            container_name=azure_settings.azure_battle_archive_container,
+        )
 
     app = BotApplication(
         settings,
@@ -76,6 +86,19 @@ def build_bot_application(
         suggestion_queue_client=suggestion_queue_client,
         suggestion_queue_name=suggestion_queue_name,
     )
+    if archive_writer is not None:
+        app.quick_battle._archive_writer = archive_writer
+
+    async def _quick_battle(
+        interaction: discord.Interaction,
+        ctx: CommandContext,
+        custom_environment: int,
+        timeout: int = 60,
+        setting: str = "unpredictable-funny",
+    ) -> None:
+        await handle_quick_battle_command(
+            interaction, ctx, app, custom_environment, timeout, setting
+        )
 
     def _factory() -> CombatBot:
         return create_bot(
@@ -89,6 +112,7 @@ def build_bot_application(
             draining_provider=lambda: app.lifecycle.draining,
             config_handler=handle_config_command,
             suggest_handler=handle_suggest_command,
+            quick_battle_handler=_quick_battle,
         )
 
     app._bot_factory = _factory

@@ -1,1 +1,4 @@
 ## FIGHTERS:
+The neutral Fighter labels are planning references only. Narrative prose must refer to fighters
+only by their supplied fighter names. Never refer to Discord nicknames, player IDs, account
+identifiers, or the neutral labels in narrative prose.
